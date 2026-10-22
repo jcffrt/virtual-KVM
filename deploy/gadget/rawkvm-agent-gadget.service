@@ -4,9 +4,12 @@
 Description=RawKVM USB gadget agent (receiver over USB)
 Wants=network-online.target
 After=network-online.target sys-kernel-config.mount
+Requires=sys-kernel-config.mount
 
 [Service]
 Type=simple
+# Do not start before a USB device controller exists (dwc2 / musb probe).
+ExecStartPre=/bin/sh -c 'for i in $$(seq 60); do [ -n "$$(ls /sys/class/udc 2>/dev/null)" ] && exit 0; sleep 1; done; echo "no UDC in /sys/class/udc" >&2; exit 1'
 ExecStart=/usr/local/bin/rawkvm-agent-gadget --config /etc/rawkvm/agent.toml
 Restart=always
 RestartSec=2

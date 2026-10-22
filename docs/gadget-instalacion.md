@@ -12,7 +12,7 @@ Un gadget sirve a **un** PC. Para varios PCs, una placa por PC (o combinar con l
 | Raspberry Pi Zero / Zero W (originales) | micro USB **USB** | El hardware sirve, pero son armv6: no hay binario en CI (compilar para `arm-unknown-linux-musleabihf`). |
 | Raspberry Pi 4 B | **USB-C** (el de alimentación) | Alimentación desde el PC: algunos puertos no dan los 1–3 A que pide; usar un puerto USB-C del PC o un Y-cable con alimentación aparte. |
 | Raspberry Pi 3 A+ | el USB-A | Necesita cable USB-A ↔ USB-A. **Cuidado**: un cable A‑A con VBUS conectado une las alimentaciones de Pi y PC; alimentar la Pi solo por ese cable o usar un cable/adaptador sin VBUS. |
-| Orange Pi Zero 2W | USB-C de **alimentación** (OTG, `musb`) | En la imagen Orange Pi el OTG ya viene en modo periférico (`dr_mode=peripheral`, comprobado). El otro USB-C es solo host (allí va el receptor en el hub). |
+| **Orange Pi Zero 2W** (primera placa del proyecto) | USB-C de **alimentación** (OTG, `musb`) | Comprobado (kernel 6.1.31): `usb@5100000` con `dr_mode=peripheral`, UDC `musb-hdrc.5.auto`, `CONFIG_USB_CONFIGFS_F_HID=y`; solo hay que cargar `libcomposite`. **No** aplicar el overlay `sun50i-h616-usb0-host`: convierte ese puerto en host. El otro USB-C es solo host. |
 | Raspberry Pi 3 B / 3 B+ / 2 / 1 B | — | **No sirven**: el OTG del SoC está detrás del hub/Ethernet LAN9514. |
 | Raspberry Pi 5 | USB-C | No probado. |
 

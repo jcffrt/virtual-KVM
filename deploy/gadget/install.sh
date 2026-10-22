@@ -28,8 +28,9 @@ case "$model" in
     fi
     modules="dwc2 libcomposite" ;;
 *)
-    # Armbian / others: the UDC driver is usually built in; the OTG port
-    # must be in peripheral mode in the device tree (see docs).
+    # Armbian / Orange Pi OS (Allwinner): the UDC (musb) is built in and the
+    # OTG port is already in peripheral mode; only libcomposite is a module.
+    # Do NOT apply the usb0-host overlay: it turns the OTG port into a host.
     modules="libcomposite" ;;
 esac
 
@@ -52,4 +53,9 @@ else
     systemctl restart rawkvm-agent-gadget.service
     echo "started; log: journalctl -u rawkvm-agent-gadget -f"
 fi
-ls /sys/class/udc 2>/dev/null | sed 's/^/UDC: /' || echo "no UDC yet"
+udc=$(ls /sys/class/udc 2>/dev/null | head -n 1)
+if [ -n "$udc" ]; then
+    echo "UDC: $udc"
+elif [ "$reboot_needed" -eq 0 ]; then
+    echo "WARNING: /sys/class/udc is empty: the OTG port is not in peripheral mode (see docs/gadget-instalacion.md)." >&2
+fi

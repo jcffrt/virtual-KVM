@@ -22,7 +22,7 @@ Binarios: `target/aarch64-unknown-linux-musl/release/rawkvm-hub` y `target/x86_6
 
 ```sh
 scp target/aarch64-unknown-linux-musl/release/rawkvm-hub orangepi@192.168.1.28:
-scp -r deploy/armbian orangepi@192.168.1.28:rawkvm-deploy
+scp -r deploy/hub-linux orangepi@192.168.1.28:rawkvm-deploy
 ssh orangepi@192.168.1.28 'sudo sh rawkvm-deploy/install.sh ./rawkvm-hub'
 ```
 
