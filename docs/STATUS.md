@@ -207,6 +207,7 @@ Layout inicial para `hub.toml` (índices de `nodes.toml`: gadget/Windows = 1, Ma
 - Resuelto reinstalando hub, gadget, unit y semilla con `sync` explícito y comprobando hashes. `dmesg` no muestra errores de ext4; es escritura diferida sin flush antes del corte.
 - **Medidas**: todos los scripts de despliegue hacen `sync` al final; el orquestador comprueba el hash tras instalar; y tras un despliegue hay que esperar unos segundos antes de cortar la alimentación. Como la Orange Pi se alimenta del PC Windows, cualquier apagado del PC es un corte brusco: valorar `commit=1` en `/etc/fstab` para la raíz, o alimentación por GPIO.
 - Tras el arreglo: hub v2 con semilla de layout, gadget activo (índice 1) enumerado por el Windows y funcionando allí (confirmado por el usuario), agente macOS v2 registrado como índice 2.
+- **Causa raíz confirmada**: la raíz de Armbian estaba montada con `commit=600` (10 min de caché de escritura). Aplicado `commit=5` en `/etc/fstab` (copia en `/etc/fstab.bak-rawkvm`) y remontado en caliente el 2026-10-22. Hub y gadget 0482dd1 desplegados (escrituras durables con fsync, `sync` en instaladores, commit en el log de arranque), hashes comprobados.
 
 ## Tras el apagón: escrituras durables y versión en el log (2026-10-22, VS Code)
 
@@ -214,6 +215,18 @@ Layout inicial para `hub.toml` (índices de `nodes.toml`: gadget/Windows = 1, Ma
 - Todos los `install.sh` terminan con `sync`; `install.ps1`, con `Write-VolumeCache`.
 - `rawkvm-hub` y `rawkvm-agent-gadget`: `--version` incluye el commit (`build.rs`), y la primera línea del log de cada arranque dice `starting version=… pid=…`.
 - Docs: «Cortes de alimentación y la tarjeta SD» en `gadget-instalacion.md` (Armbian monta con `commit=600`: recomendado `commit=5` o `1`, o alimentar por GPIO) y entrada en problemas conocidos de `fase0-validacion.md`.
+
+## Fase 2, paso 4: helper Windows (2026-10-22, VS Code)
+
+- `crates/edge-windows` (bin `rawkvm-edge.exe`, subsistema GUI):
+  - `EnumDisplayMonitors`/`GetDpiForMonitor`, `GetCursorPos`/`SetCursorPos`, DPI por monitor v2;
+  - log en `%LOCALAPPDATA%\rawkvm\edge.log` (se trunca al pasar de 4 MiB);
+  - config `%APPDATA%\rawkvm\edge.toml`;
+  - `--show`, `--hub/--token/--for-node/--unpin/--configure-only`.
+- `deploy/windows/install-edge.ps1` / `uninstall-edge.ps1`: sin administrador; clave `HKCU\...\Run`; `Unblock-File`.
+- CI: job `edge-windows` (MinGW en Ubuntu) con artefacto `rawkvm-edge-windows` (exe + scripts + LEEME). clippy cruzado en el job linux. El workflow `windows` (driver) ya no se dispara con los scripts del helper.
+- Docs: `docs/windows-borde.md` y ADR 0009 (sección Helper Windows).
+- Verificado: clippy con `x86_64-pc-windows-gnu` y el `.exe` compilado (PE32+ GUI). **No probado en Windows.**
 
 ## Convenciones
 

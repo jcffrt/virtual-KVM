@@ -23,7 +23,7 @@ jobs:
       # 8-minute Windows job. ring needs a MinGW C compiler.
       - run: sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64
       - run: rustup target add x86_64-pc-windows-gnu
-      - run: cargo clippy -p rawkvm-agent-windows --all-targets --target x86_64-pc-windows-gnu -- -D warnings
+      - run: cargo clippy -p rawkvm-agent-windows -p rawkvm-edge-windows --all-targets --target x86_64-pc-windows-gnu -- -D warnings
 
   hub-aarch64:
     runs-on: ubuntu-24.04
@@ -86,4 +86,30 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: rawkvm-agent-gadget-${{ matrix.arch }}
+          path: package/
+
+  # Edge helper for the Windows PC behind the USB gadget: plain Win32, no
+  # WDK, so MinGW on Linux builds it in a minute.
+  edge-windows:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: edge-windows
+      - run: sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64
+      - run: cargo build --release --target x86_64-pc-windows-gnu -p rawkvm-edge-windows
+      - name: Package
+        run: |
+          mkdir -p package
+          cp target/x86_64-pc-windows-gnu/release/rawkvm-edge.exe package/
+          cp deploy/windows/install-edge.ps1 deploy/windows/uninstall-edge.ps1 package/
+          cp docs/windows-borde.md package/LEEME.md
+          git rev-parse HEAD > package/COMMIT.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rawkvm-edge-windows
           path: package/

@@ -9,13 +9,15 @@ on:
     paths:
       - drivers/windows-vhf/**
       - crates/agent-windows/**
-      - deploy/windows/**
+      - deploy/windows/install.ps1
+      - deploy/windows/uninstall.ps1
       - .github/workflows/windows.yml
   pull_request:
     paths:
       - drivers/windows-vhf/**
       - crates/agent-windows/**
-      - deploy/windows/**
+      - deploy/windows/install.ps1
+      - deploy/windows/uninstall.ps1
       - .github/workflows/windows.yml
 
 env:

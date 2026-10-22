@@ -1,6 +1,6 @@
 # ADR 0009 — Cambio por borde: helpers de borde, layout en el hub, protocolo v2
 
-- Estado: aceptada (2026-10-22). Hechos: pasos 1 (protocolo y hub) y 2 (`agent-core::edge`), y el helper macOS (`crates/edge-macos`). Pendientes: los helpers de Windows y Linux.
+- Estado: aceptada (2026-10-22). Hechos: pasos 1 (protocolo y hub) y 2 (`agent-core::edge`), y el helper macOS (`crates/edge-macos`). Helper Windows (`crates/edge-windows`) también hecho. Pendiente: Linux (extensión GNOME).
 
 ## Contexto
 
@@ -53,6 +53,16 @@ Arquitectura definitiva: el PC Windows recibe por el gadget USB y no ejecuta nad
 - Índice de pantalla: la principal 0 y las demás de izquierda a derecha.
 - LaunchAgent por usuario (`LimitLoadToSessionType Aqua`) con configuración propia (`edge.toml`). El instalador la rellena, con sudo, desde la del agente (`--from-agent`), que es solo de root.
 - En este Mac, con `--show`: integrada 1470×956 a 2x en (0, 0) y externa 1720×1440 a 1x en (1470, −251).
+
+## Helper Windows
+
+- `crates/edge-windows`, binario `rawkvm-edge.exe` (subsistema GUI, sin ventana; `AttachConsole` para los comandos):
+  - DPI por monitor v2, así que todo va en píxeles físicos del escritorio virtual;
+  - monitores con `EnumDisplayMonitors`/`GetMonitorInfoW` y escala con `GetDpiForMonitor`;
+  - lectura con `GetCursorPos` (sondeo, no `WH_MOUSE_LL`) y colocación con `SetCursorPos`.
+- Sin driver, sin servicio (un servicio vive en la sesión 0 y no ve el escritorio) y sin administrador. Arranque con `HKCU\...\Run`. El programador de tareas «al iniciar sesión» pide administrador.
+- `for_node` es el `node_id` del gadget, que se lee en la Pi con `rawkvm-hub --list-nodes`. El PC no tiene ningún fichero del agente.
+- Se compila con MinGW en el job `edge-windows` del CI (artefacto `rawkvm-edge-windows`), sin el WDK.
 
 ## Alternativas descartadas
 

@@ -8,6 +8,7 @@ members = [
     "crates/agent-macos",
     "crates/edge-macos",
     "crates/agent-windows",
+    "crates/edge-windows",
     "crates/agent-gadget",
 ]
 
