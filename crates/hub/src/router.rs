@@ -856,8 +856,8 @@ mod tests {
     #[test]
     fn real_dj_keyboard_and_trackball() {
         let (Some(k230), Some(ergo)) = (
-            real_fixture("0003:046D:400D.0005.bin"),
-            real_fixture("0003:046D:406F.0004.bin"),
+            real_fixture("0003-046D-400D.0005.bin"),
+            real_fixture("0003-046D-406F.0004.bin"),
         ) else {
             eprintln!("fixtures missing; skipped");
             return;
@@ -897,9 +897,9 @@ mod tests {
     #[test]
     fn real_receiver_interfaces() {
         let (Some(i0), Some(i1), Some(i2)) = (
-            real_fixture("0003:046D:C52B.0007.nodj.bin"),
-            real_fixture("0003:046D:C52B.0008.nodj.bin"),
-            real_fixture("0003:046D:C52B.0009.nodj.bin"),
+            real_fixture("0003-046D-C52B.0007.nodj.bin"),
+            real_fixture("0003-046D-C52B.0008.nodj.bin"),
+            real_fixture("0003-046D-C52B.0009.nodj.bin"),
         ) else {
             eprintln!("fixtures missing; skipped");
             return;

@@ -54,9 +54,9 @@ mod tests {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/unifying-c52b");
         let read = |n: &str| std::fs::read(dir.join(n)).ok();
         let (Some(i0), Some(i1), Some(i2)) = (
-            read("0003:046D:C52B.0007.nodj.bin"),
-            read("0003:046D:C52B.0008.nodj.bin"),
-            read("0003:046D:C52B.0009.nodj.bin"),
+            read("0003-046D-C52B.0007.nodj.bin"),
+            read("0003-046D-C52B.0008.nodj.bin"),
+            read("0003-046D-C52B.0009.nodj.bin"),
         ) else {
             eprintln!("fixtures missing; skipped");
             return;
