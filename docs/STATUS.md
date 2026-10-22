@@ -274,6 +274,28 @@ Decisiones del usuario/orquestador sobre `docs/widget-plan.md`: (1) protocolo v3
 - Docs: `protocol.md` (v3, sección «Pantallas y unidades»), ADR 0010.
 - Redespliegue conjunto pendiente: hub y gadget en la Pi, agente y helper del Mac, `.exe` del helper Windows (artefacto `rawkvm-edge-windows`).
 
+## Protocolo v3 desplegado y validado (2026-10-22 23:0x)
+
+- Hub y gadget 0f83e4e en la Orange Pi (hashes comprobados, sync), agente y helper del Mac reinstalados por el usuario, helper del Windows reinstalado. Hub: `layout screens=4 links=2`. Cruce por el borde en ambos sentidos confirmado por el usuario con v3 (Entry dentro de SwitchTo/Activate).
+- **Encargado a VS Code (2026-10-22)**: intercambio opcional Alt↔GUI por nodo destino en el hub (parche para el perfil Mac del MX Keys en Windows; opt-in, solo interfaz de teclado, documentado como desviación del reenvío crudo). **Primer objetivo de la Fase 3**: cambio de perfil del teclado por HID++ (HOSTS_INFO 0x1815, setHostOsVersion) al conmutar, que sustituirá al parche. Mientras tanto, parche manual: Fn+O (Windows) / Fn+P (macOS) en el MX Keys.
+
+## Widget, paso 3: esqueleto Tauri, bandeja y pestaña Hub (2026-10-22, VS Code)
+
+- `widget/`: Svelte 5 + Vite 8 y `src-tauri` (Tauri 2) en su propio workspace (`exclude = ["widget"]` en la raíz).
+  - `view.rs` (puro, con tests) deriva lo que dibuja la UI: nodos con rol, helper de quién, pantallas, `has_helper`, activo, RTT y versión del hub.
+  - `lib.rs`:
+    - la sesión `run_widget` se reinicia al emparejar u olvidar;
+    - bandeja (icono plantilla, número del equipo activo como título, menú con los agentes y cambio rápido `SwitchTo { entry: None }`; el menú solo se reconstruye cuando cambian conexión, equipos o activo, no con cada RTT);
+    - ventana de ajustes que se oculta al cerrarla;
+    - `ActivationPolicy::Accessory` (sin icono en el Dock).
+  - Comandos: `get_view`, `discover` (mDNS, marca los hubs de otra versión de protocolo), `pair` (TOFU), `forget`, `switch_to`.
+- Pestaña Hub: emparejar (buscar o escribir dirección + token), estado, latencia, versión, certificado, y tabla de equipos con los agentes sin helper en gris y el botón «Usar».
+- Config local `~/Library/Application Support/rawkvm/widget.toml` (hub, token, huella); log `~/Library/Logs/rawkvm-widget.log`.
+- `[profile.release.build-override] strip = false`: con el `strip` por defecto, las dylib de proc-macros fallan al cargarse en este macOS («mis-aligned LINKEDIT string pool»).
+- CI: `.github/workflows/widget.yml` (macos-14; solo con cambios en `widget/`, `agent-core` o `proto`, o a mano). Artefacto `rawkvm-widget-macos` (`RawKVM.app.zip` firmada ad hoc + LEEME).
+- Docs: `docs/widget-instalacion.md`.
+- Verificado: `.app` de 9,4 MB; arranca y escribe el log («not paired»). **Sin probar contra el hub** (el emparejamiento lo hace el usuario con el token).
+
 ## Convenciones
 
 Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario en castellano, `cargo fmt` y `cargo clippy -D warnings` limpios, un ADR por decisión nueva.

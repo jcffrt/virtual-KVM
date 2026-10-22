@@ -11,6 +11,8 @@ members = [
     "crates/edge-windows",
     "crates/agent-gadget",
 ]
+# The widget (Tauri) is its own workspace: widget/src-tauri.
+exclude = ["widget"]
 
 [workspace.package]
 version = "0.1.0"

@@ -1,6 +1,6 @@
 # Widget (Tauri 2): plan para revisar
 
-Aprobado por el usuario el 2026-10-22, con estas respuestas: v3 sí; primera entrega solo en el Mac; Svelte; cambio rápido desde la bandeja. **Paso 1 hecho** (`agent-core::canvas`, `agent-core::widget`). **Paso 2 (v3) en revisión**: ver «Protocolo v3: propuesta detallada». Base: handoff §9, ADR 0009 (el layout vive en el hub) y la Fase 2 validada entre Mac y Windows.
+Aprobado por el usuario el 2026-10-22, con estas respuestas: v3 sí; primera entrega solo en el Mac; Svelte; cambio rápido desde la bandeja. **Hechos**: paso 1 (`agent-core::canvas`, `agent-core::widget`), paso 2 (protocolo v3, desplegado) y paso 3 (esqueleto Tauri, bandeja, pestaña Hub). Base: handoff §9, ADR 0009 (el layout vive en el hub) y la Fase 2 validada entre Mac y Windows.
 
 ## Qué es
 

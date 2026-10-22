@@ -1,0 +1,40 @@
+[package]
+name = "rawkvm-widget"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.80"
+description = "RawKVM widget: tray, hub pairing and monitor layout"
+
+# Its own workspace: Tauri and WebKit stay out of the hub and agents builds.
+[workspace]
+
+[lib]
+name = "rawkvm_widget_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+proto = { path = "../../crates/proto", package = "rawkvm-proto" }
+agent-core = { path = "../../crates/agent-core", package = "rawkvm-agent-core" }
+anyhow = "1"
+dirs = "6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tokio = { version = "1", features = ["sync", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+# Stripping proc-macro dylibs breaks them on this macOS ("mis-aligned
+# LINKEDIT string pool" at dlopen); only the final binary is stripped.
+[profile.release.build-override]
+strip = false

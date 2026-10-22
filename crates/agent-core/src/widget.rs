@@ -99,6 +99,19 @@ impl WidgetShared {
         self.state.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// Forget everything (the widget unpaired or switched hubs).
+    pub fn reset(&self) {
+        self.update(|st| {
+            *st = WidgetState::default();
+            true
+        });
+    }
+
+    /// Tell the UI to redraw (the config it shows next to the state changed).
+    pub fn touch(&self) {
+        self.update(|_| true);
+    }
+
     fn update(&self, f: impl FnOnce(&mut WidgetState) -> bool) {
         let snap = {
             let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());

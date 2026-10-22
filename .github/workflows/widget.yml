@@ -1,0 +1,62 @@
+name: widget
+
+# The Tauri widget pulls WebKit bindings and a Node toolchain: build it only
+# when it (or the crates it uses) changes, or on demand.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - widget/**
+      - crates/agent-core/**
+      - crates/proto/**
+      - .github/workflows/widget.yml
+  pull_request:
+    paths:
+      - widget/**
+      - crates/agent-core/**
+      - crates/proto/**
+      - .github/workflows/widget.yml
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  macos:
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: widget
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: widget/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: widget/src-tauri
+      - run: npm ci
+      - run: npm run build
+      - run: cargo fmt --check
+        working-directory: widget/src-tauri
+      - run: cargo clippy --all-targets -- -D warnings
+        working-directory: widget/src-tauri
+      - run: cargo test
+        working-directory: widget/src-tauri
+      - run: npx tauri build --bundles app
+      - name: Package
+        run: |
+          app=src-tauri/target/release/bundle/macos/RawKVM.app
+          codesign --force --deep --sign - "$app"
+          mkdir -p ../package
+          ditto -c -k --keepParent "$app" ../package/RawKVM.app.zip
+          cp ../docs/widget-instalacion.md ../package/LEEME.md
+          git rev-parse HEAD > ../package/COMMIT.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rawkvm-widget-macos
+          path: package/
