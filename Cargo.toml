@@ -5,6 +5,7 @@ members = [
     "crates/hub",
     "crates/agent-core",
     "crates/agent-linux",
+    "crates/agent-macos",
 ]
 
 [workspace.package]

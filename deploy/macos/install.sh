@@ -1,0 +1,49 @@
+#!/bin/sh
+# Install the RawKVM agent on macOS. Run with sudo from the repository root:
+#   sudo deploy/macos/install.sh [path/to/rawkvm-agent-macos]
+# Requires Karabiner-DriverKit-VirtualHIDDevice (see docs/macos-instalacion.md).
+set -eu
+[ "$(id -u)" -eq 0 ] || { echo "run with sudo" >&2; exit 1; }
+here=$(cd "$(dirname "$0")" && pwd)
+bin=${1:-target/release/rawkvm-agent-macos}
+vhid="/Library/Application Support/org.pqrs/Karabiner-DriverKit-VirtualHIDDevice"
+daemon_label=org.pqrs.service.daemon.Karabiner-VirtualHIDDevice-Daemon
+agent_label=cc.olitec.rawkvm.agent
+
+[ -f "$bin" ] || { echo "binary not found: $bin (cargo build --release -p rawkvm-agent-macos)" >&2; exit 1; }
+[ -d "$vhid" ] || { echo "Karabiner-DriverKit-VirtualHIDDevice is not installed" >&2; exit 1; }
+
+# Binary, signed ad hoc.
+install -d -m 0755 /usr/local/bin
+install -m 0755 "$bin" /usr/local/bin/rawkvm-agent
+codesign --force --sign - /usr/local/bin/rawkvm-agent
+
+# System config: reuse the invoking user's pairing if there is one.
+sysdir="/Library/Application Support/rawkvm"
+install -d -m 0755 "$sysdir"
+if [ ! -f "$sysdir/agent.toml" ] && [ -n "${SUDO_USER:-}" ]; then
+    user_home=$(dscl . -read "/Users/$SUDO_USER" NFSHomeDirectory | awk '{print $2}')
+    user_cfg="$user_home/Library/Application Support/rawkvm/agent.toml"
+    if [ -f "$user_cfg" ]; then
+        install -m 0600 "$user_cfg" "$sysdir/agent.toml"
+        echo "copied pairing from $user_cfg"
+    fi
+fi
+[ -f "$sysdir/agent.toml" ] || echo "not paired yet: sudo /usr/local/bin/rawkvm-agent --hub <pi-ip> --token <hex>, then Ctrl+C"
+
+reload() { # label plist
+    launchctl bootout system "/Library/LaunchDaemons/$1.plist" 2>/dev/null || true
+    install -m 0644 -o root -g wheel "$2" "/Library/LaunchDaemons/$1.plist"
+    launchctl bootstrap system "/Library/LaunchDaemons/$1.plist"
+}
+
+# Karabiner's daemon does not start by itself. Karabiner-Elements runs its
+# own copy; do not start a second one next to it.
+if [ -d /Applications/Karabiner-Elements.app ]; then
+    echo "Karabiner-Elements found: leaving the VirtualHIDDevice daemon to it"
+else
+    reload "$daemon_label" "$here/$daemon_label.plist"
+fi
+reload "$agent_label" "$here/$agent_label.plist"
+
+echo "installed; log: tail -f /var/log/rawkvm-agent.log"

@@ -8,6 +8,12 @@
 //! 3. where the modifier byte and key array of a keyboard report live, for
 //!    the emergency hotkey.
 //!
+//! Agents that cannot hand the descriptor to the OS as is (macOS, where the
+//! virtual device's descriptor is fixed by Karabiner) also need a general
+//! decoder: [`DescriptorInfo::fields`] describes every input field and
+//! [`DescriptorInfo::decode`] turns a report into `(page, usage, value)`
+//! triples. That is a 1:1 reading of the usages, not a reinterpretation.
+//!
 //! This parser handles short items, `Push`/`Pop`, and multiple report IDs. It
 //! ignores long items (none exist in practice).
 
@@ -43,10 +49,87 @@ pub struct InputReport {
     pub app_usage: u16,
 }
 
+/// Main item flags (HID 1.11 §6.2.2.5).
+pub const FLAG_CONSTANT: u32 = 0x01;
+pub const FLAG_VARIABLE: u32 = 0x02;
+pub const FLAG_RELATIVE: u32 = 0x04;
+
+/// One `Input` main item.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Field {
+    pub report_id: Option<u8>,
+    /// Bit offset inside the payload (after the report ID byte, if any).
+    pub bit_offset: usize,
+    pub size: u32,
+    pub count: u32,
+    pub usage_page: u16,
+    /// Explicit `Usage` items as (page, usage). 32-bit usages carry their
+    /// own page; 16-bit ones take the current usage page.
+    pub usages: Vec<(u16, u16)>,
+    /// `Usage Minimum` / `Usage Maximum`.
+    pub usage_range: Option<(u16, u16)>,
+    pub logical_min: i32,
+    pub logical_max: i32,
+    pub flags: u32,
+}
+
+impl Field {
+    pub fn is_constant(&self) -> bool {
+        self.flags & FLAG_CONSTANT != 0
+    }
+    pub fn is_variable(&self) -> bool {
+        self.flags & FLAG_VARIABLE != 0
+    }
+    pub fn is_relative(&self) -> bool {
+        self.flags & FLAG_RELATIVE != 0
+    }
+
+    /// Usage of element `i` of a variable field.
+    fn variable_usage(&self, i: usize) -> Option<(u16, u16)> {
+        if let Some(u) = self.usages.get(i).or(self.usages.last()) {
+            return Some(*u);
+        }
+        let (min, max) = self.usage_range?;
+        let u = (min as usize + i).min(max as usize) as u16;
+        Some((self.usage_page, u))
+    }
+
+    /// Usage selected by value `v` of an array field, or `None` for the
+    /// "nothing" value.
+    fn array_usage(&self, v: i32) -> Option<(u16, u16)> {
+        if v < self.logical_min || v > self.logical_max {
+            return None;
+        }
+        let idx = (v - self.logical_min) as usize;
+        if !self.usages.is_empty() {
+            return self.usages.get(idx).copied();
+        }
+        let (min, max) = self.usage_range?;
+        let u = min as usize + idx;
+        if u > max as usize || u == 0 {
+            return None; // usage 0 means "no event"
+        }
+        Some((self.usage_page, u as u16))
+    }
+}
+
+/// One decoded value of an input report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Value {
+    pub usage_page: u16,
+    pub usage: u16,
+    /// Sign-extended when the field's logical minimum is negative. For an
+    /// array field the usage is the pressed one and the value is 1.
+    pub value: i32,
+    pub relative: bool,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DescriptorInfo {
     pub uses_report_ids: bool,
     pub inputs: Vec<InputReport>,
+    /// Every non-constant input field, in descriptor order.
+    pub fields: Vec<Field>,
     pub keyboard: Option<KeyboardLayout>,
     /// Top-level application collections as (usage page, usage).
     pub applications: Vec<(u16, u16)>,
@@ -55,9 +138,37 @@ pub struct DescriptorInfo {
 #[derive(Clone, Copy, Default)]
 struct Globals {
     usage_page: u16,
+    logical_min: i32,
+    logical_max: i32,
+    /// `Logical Maximum` read as unsigned, see the Input handling.
+    logical_max_unsigned: i32,
     report_size: u32,
     report_count: u32,
     report_id: Option<u8>,
+}
+
+/// Sign-extend an item's data according to its size.
+fn signed(data: u32, size: usize) -> i32 {
+    match size {
+        1 => data as u8 as i8 as i32,
+        2 => data as u16 as i16 as i32,
+        _ => data as i32,
+    }
+}
+
+/// Read `size` bits at `bit` (LSB first, as HID packs fields).
+fn extract(payload: &[u8], bit: usize, size: u32) -> Option<u32> {
+    if size == 0 || size > 32 || bit + size as usize > payload.len() * 8 {
+        return None;
+    }
+    let mut v: u32 = 0;
+    for k in 0..size as usize {
+        let b = bit + k;
+        if (payload[b / 8] >> (b % 8)) & 1 == 1 {
+            v |= 1 << k;
+        }
+    }
+    Some(v)
 }
 
 impl DescriptorInfo {
@@ -65,8 +176,9 @@ impl DescriptorInfo {
         let mut info = DescriptorInfo::default();
         let mut g = Globals::default();
         let mut stack: Vec<Globals> = Vec::new();
-        let mut usages: Vec<u16> = Vec::new();
+        let mut usages: Vec<(u16, u16)> = Vec::new();
         let mut usage_min: Option<u16> = None;
+        let mut usage_max: Option<u16> = None;
         // bit position per report id, for input reports
         let mut bit_pos: BTreeMap<Option<u8>, usize> = BTreeMap::new();
         let mut app: Option<(u16, u16)> = None;
@@ -130,25 +242,49 @@ impl DescriptorInfo {
                             keyboard_keys = Some((g.report_id, start / 8, g.report_count as usize));
                         }
                     }
+                    if data & FLAG_CONSTANT == 0 && bits > 0 {
+                        // A broken `Logical Maximum 0xFF` (one byte) reads
+                        // as -1: take it as unsigned then.
+                        let max = if g.logical_max < g.logical_min {
+                            g.logical_max_unsigned
+                        } else {
+                            g.logical_max
+                        };
+                        info.fields.push(Field {
+                            report_id: g.report_id,
+                            bit_offset: start,
+                            size: g.report_size,
+                            count: g.report_count,
+                            usage_page: g.usage_page,
+                            usages: usages.clone(),
+                            usage_range: usage_min.map(|m| (m, usage_max.unwrap_or(m))),
+                            logical_min: g.logical_min,
+                            logical_max: max,
+                            flags: data,
+                        });
+                    }
                     *pos += bits;
                     usages.clear();
                     usage_min = None;
+                    usage_max = None;
                 }
                 (0, 0x9) | (0, 0xB) => {
                     // Output / Feature: ignore sizes, clear locals
                     usages.clear();
                     usage_min = None;
+                    usage_max = None;
                 }
                 (0, 0xA) => {
                     // Collection
                     if depth == 0 && data == 0x01 {
-                        let usage = usages.first().copied().unwrap_or(0);
-                        app = Some((g.usage_page, usage));
-                        info.applications.push((g.usage_page, usage));
+                        let (page, usage) = usages.first().copied().unwrap_or((g.usage_page, 0));
+                        app = Some((page, usage));
+                        info.applications.push((page, usage));
                     }
                     depth += 1;
                     usages.clear();
                     usage_min = None;
+                    usage_max = None;
                 }
                 (0, 0xC) => {
                     // End collection
@@ -172,6 +308,11 @@ impl DescriptorInfo {
                 }
                 // ---- global items ----
                 (1, 0x0) => g.usage_page = data as u16,
+                (1, 0x1) => g.logical_min = signed(data, size),
+                (1, 0x2) => {
+                    g.logical_max = signed(data, size);
+                    g.logical_max_unsigned = data as i32;
+                }
                 (1, 0x7) => g.report_size = data,
                 (1, 0x8) => {
                     g.report_id = Some(data as u8);
@@ -185,8 +326,16 @@ impl DescriptorInfo {
                     }
                 }
                 // ---- local items ----
-                (2, 0x0) => usages.push(data as u16),
+                (2, 0x0) => {
+                    let page = if size == 4 {
+                        (data >> 16) as u16
+                    } else {
+                        g.usage_page
+                    };
+                    usages.push((page, data as u16));
+                }
                 (2, 0x1) => usage_min = Some(data as u16),
+                (2, 0x2) => usage_max = Some(data as u16),
                 _ => {}
             }
         }
@@ -234,6 +383,53 @@ impl DescriptorInfo {
                 v
             })
             .collect()
+    }
+
+    /// Decode a raw report (with its report ID byte, if the descriptor uses
+    /// IDs) into the values of its fields. Variable fields yield one value
+    /// per element, zeros included; array fields yield one value per
+    /// selected usage. Unknown report IDs yield nothing.
+    pub fn decode(&self, report: &[u8]) -> Vec<Value> {
+        let (id, payload) = if self.uses_report_ids {
+            match report.split_first() {
+                Some((id, rest)) => (Some(*id), rest),
+                None => return Vec::new(),
+            }
+        } else {
+            (None, report)
+        };
+        let mut out = Vec::new();
+        for f in self.fields.iter().filter(|f| f.report_id == id) {
+            for i in 0..f.count as usize {
+                let Some(raw) = extract(payload, f.bit_offset + i * f.size as usize, f.size) else {
+                    break;
+                };
+                let v = if f.logical_min < 0 && f.size < 32 {
+                    let shift = 32 - f.size;
+                    ((raw << shift) as i32) >> shift
+                } else {
+                    raw as i32
+                };
+                if f.is_variable() {
+                    if let Some((page, usage)) = f.variable_usage(i) {
+                        out.push(Value {
+                            usage_page: page,
+                            usage,
+                            value: v,
+                            relative: f.is_relative(),
+                        });
+                    }
+                } else if let Some((page, usage)) = f.array_usage(v) {
+                    out.push(Value {
+                        usage_page: page,
+                        usage,
+                        value: 1,
+                        relative: false,
+                    });
+                }
+            }
+        }
+        out
     }
 
     /// True if the descriptor contains a keyboard application collection.

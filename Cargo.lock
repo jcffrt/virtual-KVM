@@ -950,6 +950,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "rawkvm-agent-macos"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "libc",
+ "rawkvm-agent-core",
+ "rawkvm-proto",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "rawkvm-hub"
 version = "0.1.0"
 dependencies = [

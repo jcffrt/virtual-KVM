@@ -64,8 +64,16 @@
 - Desde el Mac: `dns-sd -L orangepizero2w _rawkvm._udp local.` resuelve `rawkvm-orangepizero2w.local.:4433`. RTT ICMP Wi‑Fi Mac→Pi: media 4,5 ms, máx 8,4 ms (30 pings).
 - **Cambio de orden (decisión del usuario, 2026-10-22)**: no hay Ubuntu disponible, así que la validación del agente Linux queda aplazada. Se sigue con el **agente macOS** (este Mac, macOS 27.0, es el PC3) y después el **agente Windows**. El agente Linux se validará cuando haya un Ubuntu.
 - Preparado en este Mac: `~/Library/Application Support/rawkvm/agent.toml` con `hub = "192.168.1.28:4433"` y el token del hub (0600). El `node_id` se genera en el primer arranque.
-- **Prerrequisito macOS pendiente del usuario**: instalar Karabiner-DriverKit-VirtualHIDDevice (`.pkg` de pqrs-org) y aprobar la extensión del sistema. No está instalado (`/Library/Application Support/org.pqrs/` no existe). Riesgo: comprobar que la versión soporte macOS 27.
+- **Karabiner-DriverKit-VirtualHIDDevice 8.6.0 instalado en este Mac (2026-10-22)**: pkg firmado y notarizado por pqrs-org; extensión `org.pqrs.Karabiner-DriverKit-VirtualHIDDevice` 1.8.0 en estado `activated enabled` en macOS 27.0; el dext aparece en IOKit (`org_pqrs_Karabiner_DriverKit_VirtualHIDDeviceRoot` con las clases VirtualHIDKeyboard/VirtualHIDPointing). **El daemon `Karabiner-VirtualHIDDevice-Daemon` no arranca solo**: lo tiene que lanzar el instalador de nuestro agente (LaunchDaemon como root) para que exista el socket `/Library/Application Support/org.pqrs/tmp/rootonly/karabiner_virtual_hid_device_service.sock` (stream; la ruta `vhidd_server/` era de versiones antiguas, ver ADR 0005).
 - Aplazado: instalar `rawkvm-agent` en el Ubuntu (`deploy/linux/install.sh`), emparejar con el token, y validar con `evtest` que al teclear en el MX Keys escribe en el Ubuntu; medir RTT y pérdidas con las estadísticas del agente.
+
+## Fase 1 — agente macOS (2026-10-22)
+
+- `crates/agent-macos` (binario `rawkvm-agent-macos`, instalado como `/usr/local/bin/rawkvm-agent`): cliente Rust del daemon de Karabiner (protocolo de cliente 7, ADR 0005), mapeo 1:1 de usages (`mapper.rs`), `--dry-run`, LaunchDaemon como root. `proto::descriptor` gana `fields` y `decode()` (decodificador general de informes) con tests sobre los `.nodj.bin`.
+- `deploy/macos/`: `cc.olitec.rawkvm.agent.plist`, plist del daemon de Karabiner (no se instala si hay Karabiner-Elements), `install.sh` (firma ad hoc, copia el emparejamiento del usuario a `/Library/Application Support/rawkvm/agent.toml`), `uninstall.sh`. Guía: `docs/macos-instalacion.md`.
+- Verificado: tests (16 del crate, incluido un daemon falso por socket Unix), clippy en macOS y Linux. `--dry-run` contra el hub real: conecta, fija la huella `71a6f657…ecac`, recibe 3 dispositivos, activo, RTT 6 ms.
+- **Pendiente**: instalar con `sudo deploy/macos/install.sh` y validar con el daemon real (requiere sudo del usuario): `KeyboardReady`/`PointingReady`, escribir y mover el puntero, Cmd/Option, teclas multimedia.
+- Fase 2 (no empezada): helper de usuario para bordes (CGEventTap) que hable con el daemon por socket local.
 
 ## Convenciones
 

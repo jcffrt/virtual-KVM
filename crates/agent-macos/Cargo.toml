@@ -1,0 +1,21 @@
+[package]
+name = "rawkvm-agent-macos"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "RawKVM agent for macOS: drives Karabiner-DriverKit-VirtualHIDDevice"
+
+[[bin]]
+name = "rawkvm-agent-macos"
+path = "src/main.rs"
+
+[dependencies]
+proto.workspace = true
+agent-core.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+libc.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
