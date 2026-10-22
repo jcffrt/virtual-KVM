@@ -1,0 +1,68 @@
+name: windows
+
+# The VHF driver and the Windows agent are a parked alternative (ADR 0006):
+# the gadget is the recommended way to reach a Windows PC. This job only runs
+# when their code changes, or on demand.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - drivers/windows-vhf/**
+      - crates/agent-windows/**
+      - deploy/windows/**
+      - .github/workflows/windows.yml
+  pull_request:
+    paths:
+      - drivers/windows-vhf/**
+      - crates/agent-windows/**
+      - deploy/windows/**
+      - .github/workflows/windows.yml
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Driver + agent package for Windows. windows-2022 ships the WDK
+  # (10.0.26100, KMDF, vhfkm.lib, Inf2Cat, signtool); windows-2025 does not.
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy -p rawkvm-agent-windows --all-targets -- -D warnings
+      - run: cargo test -p rawkvm-agent-windows
+      - run: cargo build --release -p rawkvm-agent-windows
+      - name: Build driver
+        shell: pwsh
+        run: |
+          $msbuild = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" `
+            -latest -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
+          & $msbuild drivers/windows-vhf/RawKvmVhf.vcxproj /p:Configuration=Release /p:Platform=x64 /m /nologo /v:minimal
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: InfVerif
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $iv = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Tools" -Recurse -Filter infverif.exe |
+            Where-Object { $_.Directory.Name -eq 'x64' } | Select-Object -First 1
+          $inf = Get-ChildItem drivers/windows-vhf/build/Release -Recurse -Filter RawKvmVhf.inf | Select-Object -First 1
+          & $iv.FullName /v /w $inf.FullName
+      - name: Test-sign driver
+        shell: pwsh
+        # A fresh certificate per build; its private key dies with the runner.
+        run: drivers/windows-vhf/sign-test.ps1 -BuildDir drivers/windows-vhf/build/Release -OutDir package/driver
+      - name: Package
+        shell: pwsh
+        run: |
+          Copy-Item target/release/rawkvm-agent-windows.exe package/rawkvm-agent.exe
+          Copy-Item deploy/windows/install.ps1, deploy/windows/uninstall.ps1 package/
+          Copy-Item docs/windows-instalacion.md package/LEEME.md
+          git rev-parse HEAD | Out-File package/COMMIT.txt
+          Get-ChildItem -Recurse package | Format-Table FullName, Length
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rawkvm-windows
+          path: package/

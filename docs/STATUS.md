@@ -123,6 +123,7 @@
 - Tras el reinicio el hub reasignó índices: gadget = 1 (activo), Mac/Karabiner = 2. Mejora propuesta: persistir índices y último activo en el state_dir.
 - **Confirmado por el usuario y por los logs (2026-10-22 21:01)**: escritura y trackball por USB en el Mac vía gadget (5.588 informes, 0 perdidos); **atajo de emergencia validado**: Ctrl,Ctrl,2 → Mac/Karabiner y Ctrl,Ctrl,1 → gadget, cuatro pulsaciones reconocidas por el hub ("emergency hotkey index=N" + "switched"), agentes pasando a active/inactive y recibiendo informes en consecuencia, sin teclas pegadas. Con esto el criterio de la Fase 1 "conmutación por atajo de emergencia" queda cumplido (Mac + gadget; Windows pendiente de prueba).
 - 6a7c018 desplegado en la Orange Pi: bind único del gadget 500 ms tras la DeviceList, verificado.
+- **6c66734 desplegado y verificado (21:03)**: `/var/lib/rawkvm/nodes.toml` con gadget = índice 1 y Mac = índice 2 (fijos desde ahora; cambiar con `--forget-node` con el hub parado); al reiniciar el hub espera hasta 10 s al último activo y lo reactiva al reconectar. Log de diagnóstico del atajo disponible con `RUST_LOG=info,rawkvm_hub::hotkey=debug`.
 
 ## Correcciones tras la prueba del gadget (2026-10-22, VS Code)
 
@@ -136,6 +137,26 @@
 - `crates/hub/src/nodes.rs`: `NodeStore` sobre `<state_dir>/nodes.toml` (node_id → índice, nombre, `last_active`). El router lo usa (`Router::with_store`). Índice reservado aunque el nodo esté desconectado, nodo nuevo al primer libre no reservado, último activo restaurado si conecta en 10 s (`RESTORE_GRACE`, `end_restore()`). ADR 0008.
 - CLI del hub: `--list-nodes`, `--forget-node <uuid|índice>` (con el hub parado).
 - `hotkey.rs`: log `debug` de la máquina de estados sin códigos de tecla (`RUST_LOG=info,rawkvm_hub::hotkey=debug`). Documentado en `docs/fase0-validacion.md` §6.
+
+## Arquitectura definitiva (decisión del usuario, 2026-10-22)
+
+| Equipo | Papel | Cómo recibe la entrada |
+|---|---|---|
+| Orange Pi Zero 2W | **Hub** (receptor Unifying en el USB‑C host) **y gadget** (USB‑C OTG) | — |
+| PC Windows | Conectado por cable USB al OTG de la Orange Pi | Ve un receptor Unifying real: **sin driver, sin test‑signing** |
+| Mac | Agente macOS (Karabiner) por Wi‑Fi | Dispositivos virtuales Karabiner |
+| Ubuntu | Agente Linux (uhid) por Wi‑Fi | uhid (pendiente de validar cuando haya máquina) |
+
+- **Descartados**: la Raspberry Pi 3 como hub, y el driver VHF + agente Windows (quedan en el repo como alternativa, sin seguimiento; el job de CI `windows` debería pasar a manual para no costar 8 min por push).
+- **Riesgo de alimentación**: el USB‑C OTG de la Orange Pi es también su entrada de alimentación. Conectado al Windows, el hub se apaga o reinicia con el PC (suspensión, apagado, BIOS con ErP) y todos los agentes pierden el hub. Soluciones: alimentar la placa por los pines 5V/GND del conector de 40 pines con una fuente propia (el OTG sigue funcionando solo para datos), o asegurarse de que el PC mantiene 5 V en USB en S3/S5. Pendiente de decidir por el usuario.
+- **Fase 2 con este esquema**: el PC Windows no ejecuta ningún agente, así que no puede detectar el borde de pantalla por sí solo. Hace falta un *helper* de usuario en Windows sin driver (solo hook de ratón + QUIC al hub) que envíe `SwitchTo` en nombre del nodo gadget; el código de `agent-windows` (servicio, config, cliente) se puede reutilizar sin la parte del driver. En Mac el helper de borde va en sesión de usuario junto al daemon; en Linux la extensión GNOME.
+
+## Ajustes a la arquitectura definitiva (2026-10-22, VS Code)
+
+- CI: el job `windows` pasa a `.github/workflows/windows.yml` (solo con cambios en `drivers/windows-vhf`, `crates/agent-windows`, `deploy/windows`, o a mano con *Run workflow*). El job `linux` mantiene clippy de `agent-windows` cruzado a `x86_64-pc-windows-gnu` (MinGW).
+- Docs: driver VHF marcado como alternativa aparcada (`windows-instalacion.md`, ADR 0006); en `gadget-instalacion.md`, el gadget como vía recomendada para Windows, alimentación por el conector de 40 pines y nota sobre Logitech Options+/G HUB.
+- Gadget: `--udc-wait <s>` (60 por defecto; sustituye al `ExecStartPre` de la unit) y `HostState`: si el PC deja de leer (ESHUTDOWN o EAGAIN agotado), se registra una vez, se escribe sin esperar y se avisa al volver.
+- `docs/fase2-plan.md`: plan de Fase 2 para revisar con el usuario (sin implementar).
 
 ## Convenciones
 

@@ -4,6 +4,21 @@ Una placa Linux con puerto USB en **modo dispositivo** recibe por Wi‑Fi los in
 
 Un gadget sirve a **un** PC. Para varios PCs, una placa por PC (o combinar con los agentes de software).
 
+**Es la vía recomendada para Windows** (el driver VHF de [windows-instalacion.md](windows-instalacion.md) queda como alternativa aparcada). La placa puede ser la misma que hace de hub: en la Orange Pi Zero 2W el receptor va en el USB‑C host y el PC en el USB‑C OTG.
+
+### Alimentación (importante con la Orange Pi)
+
+En la Orange Pi Zero 2W (y en la Pi 4 o la Pi Zero 2 W) el puerto OTG es **también la entrada de alimentación**. Si la placa se alimenta solo del PC, se apaga o reinicia cuando el PC se suspende o se apaga, o cuando la BIOS corta los 5 V del USB (ErP/EuP), y si además es el hub, **todos los agentes pierden el hub**. Soluciones:
+
+- Alimentar la placa por los pines **5V (2 o 4) y GND (6)** del conector de 40 pines (comprobar en el pinout de la placa) con una fuente propia de 5 V / 2 A; el OTG sigue funcionando para datos. Lo ideal es un cable USB sin la línea de 5 V (o un adaptador "power blocker") para no enfrentar las dos fuentes; muchos PCs lo toleran, pero no es seguro con todos.
+- O comprobar que el PC mantiene 5 V en USB en suspensión y apagado (opción de la BIOS «USB power in S3/S4/S5» y ErP desactivado).
+
+Cuando el PC deja de leer (apagado, suspendido o cable fuera), el agente lo registra una vez («the USB host is not reading reports»), descarta los informes sin esperar y avisa al volver.
+
+### Logitech Options+ / G HUB en el PC
+
+Si el PC tiene instalados Logitech Options+, Logi Options o G HUB, intentarán hablar HID++ con el «receptor» del gadget y no obtendrán respuesta (el gadget descarta lo que el PC envía). Es inocuo: teclado y ratón funcionan igual, pero esos programas no verán el receptor como gestionable (ni batería, ni emparejar, ni botones configurables). La configuración de los botones se hace en el PC donde esté el receptor real, o no se hace.
+
 ## Placas
 
 | Placa | Puerto al PC | Notas |
@@ -65,10 +80,10 @@ Después: pasar la entrada a este agente (**Ctrl, Ctrl, N** o si es el único co
 
 | Síntoma en el log | Causa |
 |---|---|
-| `no USB device controller in /sys/class/udc` | Falta el overlay `dwc2` o reiniciar; en otras placas el OTG está en modo host en el device tree. |
+| `waiting for a USB device controller` y después `no USB device controller in /sys/class/udc after 60 s` | Falta el overlay `dwc2` o reiniciar; en otras placas el OTG está en modo host en el device tree. El servicio espera hasta 60 s (`--udc-wait`). |
 | `creating /sys/kernel/config/usb_gadget/rawkvm (is libcomposite loaded?)` | `sudo modprobe libcomposite`; ConfigFS no montado. |
 | `binding to … (is another gadget using it?)` | Otro gadget usa el UDC (`g_ether`/`g_serial` en `modules-load`, o `usb_gadget` de otra herramienta): quitarlo. |
-| `host not polling (suspended or unplugged?)` | El PC duerme, el cable no lleva datos o no está conectado. Los informes se descartan sin bloquear. |
+| `the USB host is not reading reports` | El PC duerme o está apagado, el cable no lleva datos o no está conectado. Los informes se descartan sin esperar hasta `the USB host is reading reports again`. |
 | El PC Linux reconoce el receptor pero no escribe | Falta `--no-hidpp` (modo DJ). |
 | El gadget sale con menos de 3 interfaces (`bound to … with 1 interfaces`) | El hub no reenvía todo el receptor: en la placa del hub `hid_logitech_dj` se cargó desde el initramfs. Ver «Problemas conocidos» en `docs/fase0-validacion.md` (`update-initramfs -u` y reiniciar). |
 

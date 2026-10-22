@@ -19,6 +19,11 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      # agent-windows is parked (ADR 0006); keep it compiling without the
+      # 8-minute Windows job. ring needs a MinGW C compiler.
+      - run: sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64
+      - run: rustup target add x86_64-pc-windows-gnu
+      - run: cargo clippy -p rawkvm-agent-windows --all-targets --target x86_64-pc-windows-gnu -- -D warnings
 
   hub-aarch64:
     runs-on: ubuntu-24.04
@@ -81,49 +86,4 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: rawkvm-agent-gadget-${{ matrix.arch }}
-          path: package/
-
-  # Driver + agent package for Windows. windows-2022 ships the WDK
-  # (10.0.26100, KMDF, vhfkm.lib, Inf2Cat, signtool); windows-2025 does not.
-  windows:
-    runs-on: windows-2022
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy -p rawkvm-agent-windows --all-targets -- -D warnings
-      - run: cargo test -p rawkvm-agent-windows
-      - run: cargo build --release -p rawkvm-agent-windows
-      - name: Build driver
-        shell: pwsh
-        run: |
-          $msbuild = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" `
-            -latest -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
-          & $msbuild drivers/windows-vhf/RawKvmVhf.vcxproj /p:Configuration=Release /p:Platform=x64 /m /nologo /v:minimal
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-      - name: InfVerif
-        shell: pwsh
-        continue-on-error: true
-        run: |
-          $iv = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Tools" -Recurse -Filter infverif.exe |
-            Where-Object { $_.Directory.Name -eq 'x64' } | Select-Object -First 1
-          $inf = Get-ChildItem drivers/windows-vhf/build/Release -Recurse -Filter RawKvmVhf.inf | Select-Object -First 1
-          & $iv.FullName /v /w $inf.FullName
-      - name: Test-sign driver
-        shell: pwsh
-        # A fresh certificate per build; its private key dies with the runner.
-        run: drivers/windows-vhf/sign-test.ps1 -BuildDir drivers/windows-vhf/build/Release -OutDir package/driver
-      - name: Package
-        shell: pwsh
-        run: |
-          Copy-Item target/release/rawkvm-agent-windows.exe package/rawkvm-agent.exe
-          Copy-Item deploy/windows/install.ps1, deploy/windows/uninstall.ps1 package/
-          Copy-Item docs/windows-instalacion.md package/LEEME.md
-          git rev-parse HEAD | Out-File package/COMMIT.txt
-          Get-ChildItem -Recurse package | Format-Table FullName, Length
-      - uses: actions/upload-artifact@v4
-        with:
-          name: rawkvm-windows
           path: package/

@@ -1,11 +1,12 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use agent_core::{AgentConfig, AgentOptions};
 use anyhow::{Context, Result};
 use clap::Parser;
-use rawkvm_agent_gadget::configfs::Options;
+use rawkvm_agent_gadget::configfs::{self, Options};
 use rawkvm_agent_gadget::sink::{GadgetSink, Paths};
-use tracing::info;
+use tracing::{info, warn};
 
 /// Config of the system service.
 const SYSTEM_CONFIG: &str = "/etc/rawkvm/agent.toml";
@@ -31,6 +32,11 @@ struct Args {
     /// USB device controller to bind (default: the first in /sys/class/udc).
     #[arg(long)]
     udc: Option<String>,
+
+    /// Seconds to wait at startup for the USB device controller to appear
+    /// (the dwc2 / musb driver may probe after the service starts).
+    #[arg(long, default_value_t = 60, value_name = "SECS")]
+    udc_wait: u64,
 
     /// Do not present the HID++ interface. Use it when the PC runs Linux:
     /// hid-logitech-dj would switch our "receiver" to DJ mode and silence
@@ -87,11 +93,13 @@ fn main() -> Result<()> {
     let serial = args
         .serial
         .unwrap_or_else(|| cfg.node_id.simple().to_string()[..12].to_uppercase());
+    let paths = Paths {
+        udc: args.udc,
+        ..Default::default()
+    };
+    wait_for_udc(&paths, Duration::from_secs(args.udc_wait))?;
     let mut sink = GadgetSink::new(
-        Paths {
-            udc: args.udc,
-            ..Default::default()
-        },
+        paths,
         Options {
             expose_hidpp: !args.no_hidpp,
             serial,
@@ -115,4 +123,38 @@ fn main() -> Result<()> {
         });
     sink.shutdown();
     result
+}
+
+/// Wait until the chosen (or any) UDC exists in `/sys/class/udc`.
+fn wait_for_udc(paths: &Paths, timeout: Duration) -> Result<()> {
+    let present = |p: &Path| match &paths.udc {
+        Some(name) => p.join(name).exists(),
+        None => configfs::find_udc(p).is_some(),
+    };
+    let start = Instant::now();
+    let mut warned = false;
+    while !present(&paths.udc_class) {
+        if start.elapsed() >= timeout {
+            anyhow::bail!(
+                "no USB device controller in {} after {} s (dtoverlay=dwc2 / OTG port in peripheral mode?)",
+                paths.udc_class.display(),
+                timeout.as_secs()
+            );
+        }
+        if !warned {
+            warn!(
+                "waiting for a USB device controller in {}",
+                paths.udc_class.display()
+            );
+            warned = true;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    if warned {
+        info!(
+            "USB device controller present after {:.1} s",
+            start.elapsed().as_secs_f32()
+        );
+    }
+    Ok(())
 }

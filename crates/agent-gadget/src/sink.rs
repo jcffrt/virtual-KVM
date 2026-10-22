@@ -44,6 +44,41 @@ const PATIENCE_OTHER: Duration = Duration::from_millis(50);
 /// rebuilding for each would re-enumerate the gadget on the PC every time.
 pub const SETTLE_TIME: Duration = Duration::from_millis(500);
 
+/// Whether the PC on the cable is reading reports. While it is not (off,
+/// suspended, unplugged, not enumerated yet), writes are tried without
+/// waiting and the change is logged once instead of per report.
+#[derive(Debug, Default)]
+pub struct HostState {
+    away: bool,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum HostChange {
+    Lost,
+    Back,
+}
+
+impl HostState {
+    pub fn is_away(&self) -> bool {
+        self.away
+    }
+
+    /// Record the outcome of one write.
+    pub fn on_write(&mut self, delivered: bool) -> Option<HostChange> {
+        match (self.away, delivered) {
+            (false, false) => {
+                self.away = true;
+                Some(HostChange::Lost)
+            }
+            (true, true) => {
+                self.away = false;
+                Some(HostChange::Back)
+            }
+            _ => None,
+        }
+    }
+}
+
 struct Port {
     hidg: Option<Hidg>,
     info: DescriptorInfo,
@@ -72,6 +107,7 @@ pub struct GadgetSink {
     spec: Option<GadgetSpec>,
     ports: BTreeMap<u8, Port>,
     dropped: u64,
+    host: HostState,
 }
 
 impl GadgetSink {
@@ -83,6 +119,7 @@ impl GadgetSink {
             spec: None,
             ports: BTreeMap::new(),
             dropped: 0,
+            host: HostState::default(),
         }
     }
 
@@ -170,12 +207,34 @@ impl GadgetSink {
     }
 
     fn release_all(&mut self) {
+        let patience = if self.host.is_away() {
+            Duration::ZERO
+        } else {
+            PATIENCE_OTHER
+        };
         for p in self.ports.values() {
             if let Some(h) = &p.hidg {
                 for r in &p.release {
-                    let _ = h.write_report(r, PATIENCE_OTHER);
+                    let _ = h.write_report(r, patience);
                 }
             }
+        }
+    }
+
+    fn note_write(&mut self, delivered: bool) {
+        if !delivered {
+            self.dropped += 1;
+        }
+        match self.host.on_write(delivered) {
+            Some(HostChange::Lost) => info!(
+                "the USB host is not reading reports (PC off, suspended or unplugged?); \
+                 dropping them until it is back"
+            ),
+            Some(HostChange::Back) => info!(
+                dropped = self.dropped,
+                "the USB host is reading reports again"
+            ),
+            None => {}
         }
     }
 
@@ -225,20 +284,15 @@ impl HidSink for GadgetSink {
         let Some(h) = &port.hidg else {
             return Ok(());
         };
-        let patience = if port.is_mouse_report(report) {
+        let patience = if self.host.is_away() {
+            Duration::ZERO
+        } else if port.is_mouse_report(report) {
             PATIENCE_MOUSE
         } else {
             PATIENCE_OTHER
         };
-        if !h.write_report(report, patience)? {
-            self.dropped += 1;
-            if self.dropped.is_power_of_two() {
-                debug!(
-                    dropped = self.dropped,
-                    "host not polling (suspended or unplugged?)"
-                );
-            }
-        }
+        let delivered = h.write_report(report, patience)?;
+        self.note_write(delivered);
         Ok(())
     }
 
@@ -318,6 +372,19 @@ mod tests {
         assert!(g.join("marker").exists());
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn host_state_logs_transitions_once() {
+        let mut h = HostState::default();
+        assert_eq!(h.on_write(true), None);
+        assert_eq!(h.on_write(false), Some(HostChange::Lost));
+        assert!(h.is_away());
+        for _ in 0..1000 {
+            assert_eq!(h.on_write(false), None);
+        }
+        assert_eq!(h.on_write(true), Some(HostChange::Back));
+        assert!(!h.is_away());
     }
 
     #[test]

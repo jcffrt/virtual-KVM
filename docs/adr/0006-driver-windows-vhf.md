@@ -1,6 +1,6 @@
 # ADR 0006 — Driver Windows: KMDF + Virtual HID Framework, test-signing por build
 
-- Estado: aceptada (2026-10-22). Compilado en CI; pendiente de validar en los PCs.
+- Estado: **aparcada** (2026-10-22). Compilado en CI, nunca validado en un PC. Decisión del usuario: Windows se atiende con el agente USB gadget (ADR 0007); el driver queda como alternativa sin seguimiento. El job de CI pasa a `.github/workflows/windows.yml` (solo con cambios en su código o a mano); el job `linux` mantiene clippy de `agent-windows` cruzado a `x86_64-pc-windows-gnu`.
 
 ## Contexto
 

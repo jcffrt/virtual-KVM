@@ -1,5 +1,7 @@
 # Instalación del agente en Windows
 
+> **Alternativa no recomendada (aparcada).** La vía recomendada para un PC Windows es el **agente USB gadget** ([gadget-instalacion.md](gadget-instalacion.md)): la placa se conecta por cable y Windows ve un receptor Logitech real, sin driver ni modo de prueba. Este driver queda en el repositorio sin seguimiento ni prueba en hardware; su CI solo corre cuando cambia su código (workflow `windows`, también manual).
+
 El agente de Windows crea, con un driver propio (**RawKVM VHF**), una copia virtual exacta del receptor Logitech del hub: mismo descriptor, mismo VID/PID. Windows aplica su propio mapeo de teclas (AltGr, Win…) como si el receptor estuviera enchufado. Diseño: [ADR 0006](adr/0006-driver-windows-vhf.md).
 
 Requisitos: Windows 10 2004 o posterior, o Windows 11, x64. Cuenta de administrador.
