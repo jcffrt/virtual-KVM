@@ -6,6 +6,7 @@ members = [
     "crates/agent-core",
     "crates/agent-linux",
     "crates/agent-macos",
+    "crates/edge-macos",
     "crates/agent-windows",
     "crates/agent-gadget",
 ]

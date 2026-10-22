@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- RawKVM edge helper. Per-user LaunchAgent in the graphical session: it
+     reads and moves the pointer. install-edge.sh replaces __HOME__. -->
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>cc.olitec.rawkvm.edge</string>
+    <key>ProgramArguments</key>
+    <array>
+      <string>/usr/local/bin/rawkvm-edge</string>
+      <string>--config</string>
+      <string>__HOME__/Library/Application Support/rawkvm/edge.toml</string>
+    </array>
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>2</integer>
+    <key>ProcessType</key>
+    <string>Interactive</string>
+    <key>StandardOutPath</key>
+    <string>__HOME__/Library/Logs/rawkvm-edge.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/Library/Logs/rawkvm-edge.log</string>
+  </dict>
+</plist>

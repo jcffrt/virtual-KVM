@@ -1,6 +1,6 @@
 # ADR 0009 — Cambio por borde: helpers de borde, layout en el hub, protocolo v2
 
-- Estado: aceptada (2026-10-22). Pasos 1 (protocolo y hub) y 2 (`agent-core::edge`) implementados y con tests. Los helpers de cada SO, pendientes.
+- Estado: aceptada (2026-10-22). Hechos: pasos 1 (protocolo y hub) y 2 (`agent-core::edge`), y el helper macOS (`crates/edge-macos`). Pendientes: los helpers de Windows y Linux.
 
 ## Contexto
 
@@ -41,6 +41,18 @@ Arquitectura definitiva: el PC Windows recibe por el gadget USB y no ejecuta nad
    - Al entrar, el puntero se coloca a `dead_zone_px` del borde, a la altura `pos_ratio`, y ese borde queda desarmado hasta que el puntero se aleja más que eso.
    - Al desactivarse, el puntero se aparca en el centro de su pantalla.
    - En el Windows el gadget sigue inyectando movimiento relativo: el helper solo coloca el puntero al entrar.
+
+## Helper macOS
+
+- `agent-core::helper::run_helper` hace la sesión común: handshake como `EdgeHelper`, `Screens` al conectar y cada 2 s si cambian, sondeo cada 8 ms solo mientras su agente está activo, y `warp` en `Activate`/`Deactivate`. Cada SO aporta un `EdgePlatform` (pantallas, posición del puntero, warp).
+- macOS (`crates/edge-macos/src/cg.rs`), todo sin permisos TCC:
+  - pantallas con `CGGetActiveDisplayList`/`CGDisplayBounds`, en puntos globales con origen en la esquina superior izquierda de la principal;
+  - escala con `CGDisplayModeGetPixelWidth`;
+  - posición con `CGEventGetLocation` de un evento nulo;
+  - warp con `CGWarpMouseCursorPosition` + `CGAssociateMouseAndMouseCursorPosition(1)` y supresión de eventos locales a 0 (si no, macOS ignora el ratón unos 250 ms tras el warp).
+- Índice de pantalla: la principal 0 y las demás de izquierda a derecha.
+- LaunchAgent por usuario (`LimitLoadToSessionType Aqua`) con configuración propia (`edge.toml`). El instalador la rellena, con sudo, desde la del agente (`--from-agent`), que es solo de root.
+- En este Mac, con `--show`: integrada 1470×956 a 2x en (0, 0) y externa 1720×1440 a 1x en (1470, −251).
 
 ## Alternativas descartadas
 

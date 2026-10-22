@@ -22,6 +22,9 @@ pub struct AgentConfig {
     /// SHA-256 of the hub certificate, pinned on the first successful
     /// connection (trust on first use). Empty: not paired yet.
     pub hub_fingerprint: String,
+    /// Edge helpers only: `node_id` of the agent this helper acts for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub for_node: Option<Uuid>,
 }
 
 impl Default for AgentConfig {
@@ -37,6 +40,7 @@ impl Default for AgentConfig {
             hub: String::new(),
             token: String::new(),
             hub_fingerprint: String::new(),
+            for_node: None,
         }
     }
 }

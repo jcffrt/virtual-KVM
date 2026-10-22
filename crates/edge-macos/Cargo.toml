@@ -1,0 +1,21 @@
+[package]
+name = "rawkvm-edge-macos"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "RawKVM edge helper for macOS: switches machines at screen edges"
+
+[[bin]]
+name = "rawkvm-edge-macos"
+path = "src/main.rs"
+
+[dependencies]
+proto.workspace = true
+agent-core.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true

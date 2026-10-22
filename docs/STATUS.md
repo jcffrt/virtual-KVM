@@ -188,6 +188,19 @@ Layout inicial para `hub.toml` (índices de `nodes.toml`: gadget/Windows = 1, Ma
 - **Despliegue**: hub, gadget y agente macOS deben actualizarse a la vez (orquestador). El agente Linux también, cuando se instale.
 - **Siguiente**: helper macOS (paso 3), pendiente de visto bueno.
 
+## Fase 2, paso 3: helper macOS (2026-10-22, VS Code)
+
+- `agent-core::helper` (`run_helper` + trait `EdgePlatform`). Test e2e: dos agentes y dos helpers contra el hub real con la semilla `[[layout]]`. El borde derecho del primero activa el segundo, que coloca el puntero en su borde izquierdo, y el primero aparca.
+- `crates/edge-macos` (bin `rawkvm-edge-macos`, instalado como `/usr/local/bin/rawkvm-edge`):
+  - CoreGraphics sin permisos;
+  - `--show`;
+  - `--from-agent` (copia hub, token, certificado y `for_node` del agent.toml de root);
+  - `--for-node/--hub/--token/--unpin/--configure-only`.
+- `deploy/macos/install-edge.sh` (sudo; LaunchAgent `cc.olitec.rawkvm.edge` en `gui/<uid>`, log `~/Library/Logs/rawkvm-edge.log`); `uninstall.sh` también lo quita. Documentado en `docs/macos-instalacion.md` §6 y ADR 0009.
+- Pantallas reales de este Mac (`--show`): 0 = integrada 1470×956 @2x en (0,0); 1 = externa 1720×1440 @1x en (1470,−251).
+- Errores fatales (versión, token, certificado): los agentes y el helper registran el error y, si corren como servicio (sin terminal), esperan 60 s antes de salir. El hub registra cada rechazo repetido de un mismo nodo y motivo una vez por minuto.
+- **Pendiente de probar en hardware**: el warp (supresión de eventos con el ratón de Karabiner) y el cambio real Mac → gadget.
+
 ## Convenciones
 
 Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario en castellano, `cargo fmt` y `cargo clippy -D warnings` limpios, un ADR por decisión nueva.

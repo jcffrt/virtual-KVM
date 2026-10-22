@@ -75,6 +75,10 @@ fn free_port() -> u16 {
 }
 
 async fn start_hub() -> TestHub {
+    start_hub_with(Vec::new()).await
+}
+
+async fn start_hub_with(layout: Vec<rawkvm_hub::layout::LinkSpec>) -> TestHub {
     let dir = std::env::temp_dir().join(format!("rawkvm-e2e-{}", Uuid::new_v4()));
     let mut cfg = HubConfig {
         listen: format!("127.0.0.1:{}", free_port()).parse().unwrap(),
@@ -91,6 +95,7 @@ async fn start_hub() -> TestHub {
             hysteresis: Duration::from_millis(150),
             resend: Some(Duration::from_millis(5)),
             hotkey: true,
+            layout,
             ..Default::default()
         },
     ));
@@ -263,4 +268,127 @@ fn sinks_without_settle_time_are_ready_at_once() {
     let mut s = Session::new();
     s.set_devices(vec![hid(0)], &mut sink, Instant::now());
     assert_eq!(sink.events(), [Ev::DestroyAll, Ev::Create(0), Ev::Ready]);
+}
+
+#[derive(Clone)]
+struct FakeScreen {
+    screens: Vec<proto::Screen>,
+    pointer: Arc<Mutex<edge::Point>>,
+    warps: Arc<Mutex<Vec<edge::Point>>>,
+}
+
+impl FakeScreen {
+    fn new(w: u32, h: u32, at: edge::Point) -> Self {
+        Self {
+            screens: vec![proto::Screen {
+                node: Uuid::nil(),
+                index: 0,
+                x: 0,
+                y: 0,
+                w,
+                h,
+                scale: 1.0,
+            }],
+            pointer: Arc::new(Mutex::new(at)),
+            warps: Arc::default(),
+        }
+    }
+}
+
+impl helper::EdgePlatform for FakeScreen {
+    fn screens(&mut self) -> Vec<proto::Screen> {
+        self.screens.clone()
+    }
+    fn pointer(&mut self) -> Option<edge::Point> {
+        Some(*self.pointer.lock().unwrap())
+    }
+    fn warp(&mut self, to: edge::Point) {
+        *self.pointer.lock().unwrap() = to;
+        self.warps.lock().unwrap().push(to);
+    }
+}
+
+/// Two agents, each with an edge helper, and the `[[layout]]` seed
+/// `from = 1, edge = "right", to = 2`: the pointer on the right edge of
+/// the first machine moves the input to the second, which places its
+/// pointer on its left edge.
+#[tokio::test]
+async fn edge_helpers_switch_through_the_real_hub() {
+    // The sinks are not Send: run everything on one thread.
+    tokio::task::LocalSet::new()
+        .run_until(edge_helpers_body())
+        .await;
+}
+
+async fn edge_helpers_body() {
+    let seed: rawkvm_hub::config::HubConfig =
+        toml::from_str("[[layout]]\nfrom = 1\nedge = \"right\"\nto = 2\n").unwrap();
+    let hub = start_hub_with(seed.layout).await;
+    let opts = |path: &PathBuf| AgentOptions {
+        config_path: path.clone(),
+        os: Os::MacOs,
+    };
+    let agent = |sink: RecSink, path: PathBuf| {
+        tokio::task::spawn_local(async move {
+            let mut sink = sink;
+            run(opts(&path), &mut sink).await
+        })
+    };
+    let helper_for = |agent_path: &PathBuf, platform: FakeScreen| {
+        let path = agent_config(&hub, &hub.cfg.token, &hub.fingerprint);
+        let mut cfg = AgentConfig::load_or_init(&path).unwrap();
+        cfg.for_node = Some(AgentConfig::load_or_init(agent_path).unwrap().node_id);
+        cfg.save(&path).unwrap();
+        tokio::task::spawn_local(async move {
+            let mut p = platform;
+            helper::run_helper(opts(&path), &mut p).await
+        })
+    };
+
+    let (a_path, b_path) = (
+        agent_config(&hub, &hub.cfg.token, &hub.fingerprint),
+        agent_config(&hub, &hub.cfg.token, &hub.fingerprint),
+    );
+    let (a_id, b_id) = (
+        AgentConfig::load_or_init(&a_path).unwrap().node_id,
+        AgentConfig::load_or_init(&b_path).unwrap().node_id,
+    );
+    let (sa, sb) = (RecSink::default(), RecSink::default());
+    let mut tasks = vec![agent(sa.clone(), a_path.clone())];
+    wait_for(&sa, |e| e.contains(&Ev::Activate)).await; // index 1, active
+    tasks.push(agent(sb.clone(), b_path.clone()));
+    wait_for(&sb, |e| e.contains(&Ev::Create(0))).await; // index 2
+
+    // Machine A's pointer is away from the edge; B's anywhere.
+    let pa = FakeScreen::new(1920, 1080, edge::Point { x: 500, y: 270 });
+    let pb = FakeScreen::new(2560, 1440, edge::Point { x: 1000, y: 1000 });
+    tasks.push(helper_for(&a_path, pa.clone()));
+    tasks.push(helper_for(&b_path, pb.clone()));
+
+    // Give the hub the screens of both, then touch A's right edge.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(hub.router.active(), Some(a_id));
+    *pa.pointer.lock().unwrap() = edge::Point { x: 1919, y: 270 };
+    for _ in 0..200 {
+        if hub.router.active() == Some(b_id) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(hub.router.active(), Some(b_id));
+    wait_for(&sb, |e| e.contains(&Ev::Activate)).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    // B entered at its left edge, a quarter of the way down; A parked.
+    assert_eq!(
+        pb.warps.lock().unwrap().last(),
+        Some(&edge::Point { x: 2, y: 360 })
+    );
+    assert_eq!(
+        pa.warps.lock().unwrap().last(),
+        Some(&edge::Point { x: 960, y: 540 })
+    );
+    for t in tasks {
+        t.abort();
+    }
+    let _ = std::fs::remove_dir_all(&hub.dir);
 }

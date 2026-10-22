@@ -995,6 +995,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "rawkvm-edge-macos"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "rawkvm-agent-core",
+ "rawkvm-proto",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "rawkvm-hub"
 version = "0.1.0"
 dependencies = [

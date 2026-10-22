@@ -198,7 +198,7 @@ pub struct HubStatus {
 }
 
 /// Why the hub rejected a node.
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RejectReason {
     BadToken,
     VersionMismatch,

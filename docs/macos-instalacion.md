@@ -62,8 +62,40 @@ Conecta al hub con la configuración del usuario y registra los informes que env
 - `Karabiner driver version mismatch`: el `.pkg` y la extensión activa son de versiones distintas; reinstalar el `.pkg` y repetir `activate`.
 - `KeyboardReady` no llega a `true` tras actualizar Karabiner: cambió el protocolo de cliente (hoy 7); hay que actualizar `crates/agent-macos/src/karabiner.rs`.
 
-## 6. Desinstalar
+## 6. Cambio de equipo por el borde (helper)
+
+El agente es un servicio del sistema y no ve el puntero. El **helper de borde** (`rawkvm-edge`) corre en tu sesión, vigila el puntero unas 120 veces por segundo y, al tocar un borde enlazado en el layout del hub, pasa la entrada al otro equipo. Al volver a este Mac coloca el puntero en el borde de entrada; al salir lo aparca en el centro de la pantalla. **No pide permisos** (ni Monitorización de entrada ni Accesibilidad). Diseño: [ADR 0009](adr/0009-borde-helpers-y-layout.md).
+
+Con el agente ya instalado y emparejado (paso 2):
+
+```sh
+cargo build --release -p rawkvm-edge-macos
+sudo deploy/macos/install-edge.sh
+```
+
+El instalador:
+- Copia el binario a `/usr/local/bin/rawkvm-edge` con firma ad hoc.
+- Crea `~/Library/Application Support/rawkvm/edge.toml` (0600, tuyo) con el hub, el token y el certificado del agente, y su `node_id` como `for_node`.
+- Instala el LaunchAgent `~/Library/LaunchAgents/cc.olitec.rawkvm.edge.plist`.
+
+Log: `tail -f ~/Library/Logs/rawkvm-edge.log`. Debe mostrar `edge helper connected`, una línea `screen` por pantalla y `layout links=1`. Al llegar al borde: `edge reached`, y en el hub `switched`.
+
+Diagnóstico sin hub:
+
+```sh
+rawkvm-edge --show
+```
+
+Lista las pantallas tal como las ve el helper (índice, origen y tamaño en puntos, escala) y luego la posición del puntero, la pantalla en la que está y el borde que toca.
+
+- **Índices de pantalla**: la principal es la 0; las demás van de izquierda a derecha.
+- **Layout**: lo decide el hub. Con `[[layout]] from = 2, edge = "right", to = 1`, el borde derecho de la pantalla más a la derecha lleva al Windows. Ver `rawkvm-hub --dump-layout` en la Pi.
+- **Volver al Mac**: mientras no exista el helper de Windows, se vuelve con **Ctrl, Ctrl, 2**. Con el atajo el puntero no se mueve: aparece donde quedó aparcado.
+
+## 7. Desinstalar
 
 ```sh
 sudo deploy/macos/uninstall.sh
 ```
+
+Quita el agente y, si lo ejecuta el mismo usuario, el helper de borde. Las configuraciones se conservan.

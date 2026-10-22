@@ -2,7 +2,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
@@ -11,6 +11,7 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tracing::{debug, info, warn};
+use uuid::Uuid;
 
 use crate::config::{self, HubConfig};
 use crate::router::{Hello, Link, Router};
@@ -126,6 +127,34 @@ async fn reject(
     Ok(())
 }
 
+/// Rate limit for rejection logs: a node rejected for good (old version,
+/// wrong token) reconnects every few seconds under launchd or systemd.
+#[derive(Default)]
+struct Rejections(std::collections::HashMap<(Uuid, RejectReason), Instant>);
+
+const REJECT_LOG_EVERY: Duration = Duration::from_secs(60);
+
+impl Rejections {
+    fn should_log(&mut self, node: Uuid, reason: RejectReason, now: Instant) -> bool {
+        self.0
+            .retain(|_, t| now.duration_since(*t) < REJECT_LOG_EVERY);
+        match self.0.entry((node, reason)) {
+            std::collections::hash_map::Entry::Occupied(_) => false,
+            std::collections::hash_map::Entry::Vacant(v) => {
+                v.insert(now);
+                true
+            }
+        }
+    }
+}
+
+fn rejections() -> std::sync::MutexGuard<'static, Rejections> {
+    static R: std::sync::OnceLock<std::sync::Mutex<Rejections>> = std::sync::OnceLock::new();
+    R.get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
 async fn handle(
     incoming: quinn::Incoming,
     router: Arc<Router>,
@@ -153,14 +182,20 @@ async fn handle(
         anyhow::bail!("first message was not Hello");
     };
     if proto_ver != PROTO_VERSION {
-        warn!(
-            node = %node_id,
-            name = %node_name,
-            "rejected: the node speaks protocol {proto_ver}, this hub {PROTO_VERSION}; update it"
-        );
+        if rejections().should_log(node_id, RejectReason::VersionMismatch, Instant::now()) {
+            warn!(
+                node = %node_id,
+                name = %node_name,
+                "rejected: the node speaks protocol {proto_ver}, this hub {PROTO_VERSION}; update it \
+                 (repeats from this node are not logged for a minute)"
+            );
+        }
         return reject(&conn, &mut send, RejectReason::VersionMismatch).await;
     }
     if !proto::token_eq(&presented, &token) {
+        if rejections().should_log(node_id, RejectReason::BadToken, Instant::now()) {
+            warn!(node = %node_id, name = %node_name, "rejected: wrong pairing token");
+        }
         return reject(&conn, &mut send, RejectReason::BadToken).await;
     }
 
@@ -230,4 +265,21 @@ pub fn advertise(cfg: &HubConfig, fingerprint: &str) -> Result<mdns_sd::ServiceD
     daemon.register(info)?;
     info!("advertising {} as {:?}", proto::SERVICE_TYPE, cfg.name);
     Ok(daemon)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repeated_rejections_are_logged_once_a_minute() {
+        let mut r = Rejections::default();
+        let (n, t) = (Uuid::new_v4(), Instant::now());
+        let v = RejectReason::VersionMismatch;
+        assert!(r.should_log(n, v, t));
+        assert!(!r.should_log(n, v, t + Duration::from_secs(2)));
+        assert!(r.should_log(n, RejectReason::BadToken, t));
+        assert!(r.should_log(Uuid::new_v4(), v, t));
+        assert!(r.should_log(n, v, t + Duration::from_secs(61)));
+    }
 }

@@ -6,6 +6,7 @@ pub mod client;
 pub mod config;
 pub mod discovery;
 pub mod edge;
+pub mod helper;
 
 use std::collections::HashMap;
 use std::net::{SocketAddr, ToSocketAddrs};
@@ -69,6 +70,26 @@ const BACKOFF_MAX: Duration = Duration::from_secs(10);
 const PING_EVERY: Duration = Duration::from_secs(1);
 const STATS_EVERY: Duration = Duration::from_secs(10);
 
+/// How long a service waits after a fatal error before exiting.
+const FATAL_PAUSE: Duration = Duration::from_secs(60);
+
+/// Log a fatal error once and, when running as a service (no terminal),
+/// wait before exiting: launchd and systemd restart the process at once,
+/// and retrying cannot fix a bad token, a changed certificate or a
+/// protocol mismatch.
+pub(crate) async fn fatal_pause(e: anyhow::Error) -> anyhow::Error {
+    use std::io::IsTerminal;
+    tracing::error!("{e:#}");
+    if !cfg!(test) && !std::io::stderr().is_terminal() {
+        tracing::error!(
+            "waiting {} s before exiting, so the service is not restarted in a loop",
+            FATAL_PAUSE.as_secs()
+        );
+        tokio::time::sleep(FATAL_PAUSE).await;
+    }
+    e
+}
+
 /// Run the agent until a fatal error: connect, serve, reconnect.
 pub async fn run(opts: AgentOptions, sink: &mut dyn HidSink) -> Result<()> {
     let mut backoff = BACKOFF_MIN;
@@ -82,7 +103,7 @@ pub async fn run(opts: AgentOptions, sink: &mut dyn HidSink) -> Result<()> {
         };
         sink.destroy_all();
         match end {
-            End::Fatal(e) => return Err(e),
+            End::Fatal(e) => return Err(fatal_pause(e).await),
             End::Retry(e) => warn!("{e:#}"),
         }
         if started.elapsed() > BACKOFF_MAX {
@@ -240,12 +261,21 @@ async fn session(
     }
 }
 
-async fn session_inner(
+/// An accepted session: the connection and its control stream.
+struct Accepted {
+    conn: quinn::Connection,
+    send: quinn::SendStream,
+    recv: quinn::RecvStream,
+}
+
+/// Connect, present `kind` in `Hello`, and pin the certificate once the hub
+/// accepted us.
+async fn handshake(
     opts: &AgentOptions,
     cfg: &mut AgentConfig,
     addr: SocketAddr,
-    sink: &mut dyn HidSink,
-) -> Result<(), End> {
+    kind: NodeKind,
+) -> Result<Accepted, End> {
     let (connected, observed) = client::connect(addr, &cfg.hub_fingerprint).await;
     let connected = match connected {
         Ok(c) => c,
@@ -270,7 +300,7 @@ async fn session_inner(
             node_id: cfg.node_id,
             node_name: cfg.node_name.clone(),
             os: opts.os,
-            kind: NodeKind::Agent,
+            kind,
             token: cfg.token_bytes().map_err(End::Fatal)?,
         },
     )
@@ -316,7 +346,20 @@ async fn session_inner(
             info!(fingerprint = %cfg.hub_fingerprint, "hub certificate pinned");
         }
     }
+    Ok(Accepted { conn, send, recv })
+}
 
+async fn session_inner(
+    opts: &AgentOptions,
+    cfg: &mut AgentConfig,
+    addr: SocketAddr,
+    sink: &mut dyn HidSink,
+) -> Result<(), End> {
+    let Accepted {
+        conn,
+        mut send,
+        mut recv,
+    } = handshake(opts, cfg, addr, NodeKind::Agent).await?;
     let mut s = Session::new();
     let mut ping = tokio::time::interval(PING_EVERY);
     let mut stats = tokio::time::interval(STATS_EVERY);
