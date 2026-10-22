@@ -231,7 +231,14 @@ Layout inicial para `hub.toml` (índices de `nodes.toml`: gadget/Windows = 1, Ma
 ## Fase 2, paso 3: helper macOS en hardware (2026-10-22 22:15)
 
 - `rawkvm-edge` instalado como LaunchAgent del usuario (`cc.olitec.rawkvm.edge`), configurado por `--from-agent` con el node_id del agente macOS. Conecta al hub como `EdgeHelper` (índice 0), reporta las dos pantallas reales y el hub las registra. Sin permisos TCC.
-- **Bloqueo**: `layout links=0`. La semilla `2 right → 1` no se resuelve porque el nodo 1 (gadget/Windows) no reporta pantallas. Pedido a VS Code: resolver enlaces hacia nodos sin pantallas con una pantalla provisional (el destino no necesita colocar el puntero). Hasta entonces no se puede probar el salto por el borde.
+- **Resuelto con d69e767** (enlace de ida con pantalla provisional) y **primer salto por borde validado (2026-10-22 22:24)**: el helper detectó el borde derecho de la externa en (3189, 384), pos_ratio 0,44, el hub conmutó al gadget/Windows, el Mac quedó inactivo con el puntero aparcado en el centro de la externa; vuelta con Ctrl,Ctrl,2. Confirmado por el usuario ("ahora sí pasa"). Siguiente: helper de Windows (2dc5694, CI verde) para el enlace de vuelta.
+- ~~Bloqueo~~ (histórico): `layout links=0`. La semilla `2 right → 1` no se resuelve porque el nodo 1 (gadget/Windows) no reporta pantallas. Pedido a VS Code: resolver enlaces hacia nodos sin pantallas con una pantalla provisional (el destino no necesita colocar el puntero). Hasta entonces no se puede probar el salto por el borde.
+
+## Fase 2: ida y vuelta Mac ↔ Windows por el borde, validada (2026-10-22 22:33)
+
+- Helper de Windows (`2dc5694`, sin driver ni administrador) instalado por el usuario con `install-edge.ps1`: nodo "GAMER (edge)" registrado como EdgeHelper del gadget, **2 pantallas reportadas** (el PC Windows tiene dos monitores; la regla de pantalla más exterior eligió la izquierda sin configurar nada). El hub pasó a `layout screens=4 links=2` automáticamente.
+- Tres cambios consecutivos por borde en 7 s: Windows→Mac (entrada por el borde derecho de la externa, pos 0,61, puntero colocado en (3187, 627)), Mac→Windows (0,55), Windows→Mac (0,66). Sin atajo. Sin teclas pegadas reportadas.
+- **Criterio de aceptación de la Fase 2 cumplido para Mac ↔ Windows**: llevar el puntero al borde cambia de equipo y aparece a la altura correcta. Pendientes de la Fase 2: Ubuntu (GNOME) cuando haya máquina, widget Tauri (descubrimiento, layout gráfico editable, estado), y afinado (rebotes, esquinas, opción "empujar") según uso real.
 
 ## Convenciones
 

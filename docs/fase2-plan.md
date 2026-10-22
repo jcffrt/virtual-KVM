@@ -1,6 +1,6 @@
 # Fase 2: cambio de equipo por el borde de pantalla
 
-Plan del 2026-10-22, adaptado a la arquitectura definitiva (STATUS.md) y **aprobado por el usuario**. Pasos 1 y 2 hechos (ADR 0009). Las respuestas a las preguntas están en STATUS.md. Cambios respecto al borrador: el layout se escribe como `[[layout]]` (no `[[layout.link]]`); un layout del widget se persiste en `layout.toml` y manda; `SwitchTo`/`Activate` llevan `screen`; la esquina se configura como `corner_pct`.
+Plan del 2026-10-22, adaptado a la arquitectura definitiva (STATUS.md) y **aprobado por el usuario**. **Pasos 1 a 4 hechos y validados en hardware**: ida y vuelta Mac ↔ Windows por el borde, criterio de la fase para esos dos equipos (STATUS, «Fase 2: ida y vuelta»; ADR 0009). Las respuestas a las preguntas están en STATUS.md. Cambios respecto al borrador: el layout se escribe como `[[layout]]` (no `[[layout.link]]`); un layout del widget se persiste en `layout.toml` y manda; `SwitchTo`/`Activate` llevan `screen`; la esquina se configura como `corner_pct`.
 
 ## Topología
 
@@ -77,14 +77,14 @@ Lienzo de monitores que sustituye el `[[layout.link]]` manual y envía `Layout` 
 
 ## Orden y estimación (en sesiones de trabajo)
 
-| # | Paso | Estimación | Se puede probar con |
-|---|---|---|---|
-| 1 | proto v2 + hub (helpers, layout en hub.toml) | 1 | tests del router |
-| 2 | `agent-core::edge` | 1 | tests de tabla |
-| 3 | helper macOS | 1 | Mac + atajo para volver |
-| 4 | helper Windows | 1–2 | ida y vuelta Mac ↔ Windows: **criterio de la fase** |
-| 5 | extensión GNOME | 2 | cuando haya Ubuntu |
-| 6 | widget Tauri | 2–3 | — |
+| # | Paso | Estimación | Se puede probar con | Estado |
+|---|---|---|---|---|
+| 1 | proto v2 + hub (helpers, layout en hub.toml) | 1 | tests del router | hecho (0015faa) |
+| 2 | `agent-core::edge` | 1 | tests de tabla | hecho (0015faa) |
+| 3 | helper macOS | 1 | Mac + atajo para volver | hecho (a0d80e4), validado |
+| 4 | helper Windows | 1–2 | ida y vuelta Mac ↔ Windows: **criterio de la fase** | hecho (2dc5694, d69e767), **validado**: Windows → Mac → Windows → Mac con el puntero a la altura correcta |
+| 5 | extensión GNOME | 2 | cuando haya Ubuntu | pendiente |
+| 6 | widget Tauri | 2–3 | — | plan en `docs/widget-plan.md` |
 
 Los pasos 1 a 4 dan el cambio por borde entre Mac y Windows sin widget.
 
