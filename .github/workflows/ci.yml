@@ -83,7 +83,7 @@ jobs:
           name: rawkvm-agent-gadget-${{ matrix.arch }}
           path: package/
 
- windows-2022 ships the WDK
+  # Driver + agent package for Windows. windows-2022 ships the WDK
   # (10.0.26100, KMDF, vhfkm.lib, Inf2Cat, signtool); windows-2025 does not.
   windows:
     runs-on: windows-2022
