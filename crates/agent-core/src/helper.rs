@@ -105,9 +105,13 @@ async fn session(
                         info!(links = mine, ?options, "layout");
                         sw.set_layout(&edges, options);
                     }
-                    Control::Activate { screen, enter_edge, pos_ratio } => {
-                        let to = sw.activate(screen, enter_edge, pos_ratio);
-                        info!(?screen, ?enter_edge, ?pos_ratio, ?to, "active");
+                    Control::Activate { entry } => {
+                        let to = sw.activate(
+                            entry.map(|e| e.screen),
+                            entry.map(|e| e.edge),
+                            entry.map(|e| e.pos_ratio),
+                        );
+                        info!(?entry, ?to, "active");
                         if let Some(p) = to {
                             platform.warp(p);
                         }
@@ -135,9 +139,11 @@ async fn session(
                     info!(?p, target = %s.target, screen = s.screen, edge = ?s.enter_edge, pos = s.pos_ratio, "edge reached");
                     wire::write_frame(&mut send, &Control::SwitchTo {
                         target: s.target,
-                        screen: s.screen,
-                        enter_edge: s.enter_edge,
-                        pos_ratio: s.pos_ratio,
+                        entry: Some(proto::Entry {
+                            screen: s.screen,
+                            edge: s.enter_edge,
+                            pos_ratio: s.pos_ratio,
+                        }),
                     }).await?;
                 }
             }

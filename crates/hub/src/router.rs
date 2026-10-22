@@ -14,7 +14,8 @@ use bytes::Bytes;
 use proto::datagram::{Datagram, FLAG_RELEASE_ALL};
 use proto::descriptor::{DescriptorInfo, USAGE_MOUSE, USAGE_PAGE_GENERIC_DESKTOP};
 use proto::{
-    Control, Edge, EdgeOptions, HidDevice, HubStatus, NodeInfo, NodeKind, Os, RejectReason, Screen,
+    Control, EdgeOptions, HidDevice, HubSettings, HubStatus, NodeInfo, NodeKind, Os, RejectReason,
+    Screen,
 };
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, info, warn};
@@ -46,6 +47,8 @@ pub struct Options {
     /// Edge links from the hub config (`[[layout]]`).
     pub layout: Vec<LinkSpec>,
     pub edge: EdgeOptions,
+    /// Hub build, reported in `HubStatus`.
+    pub version: String,
 }
 
 impl Default for Options {
@@ -56,17 +59,12 @@ impl Default for Options {
             hotkey: true,
             layout: Vec::new(),
             edge: EdgeOptions::default(),
+            version: String::new(),
         }
     }
 }
 
-/// Where the pointer appears on the new active node.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Entry {
-    pub screen: u8,
-    pub edge: Edge,
-    pub pos_ratio: f32,
-}
+pub use proto::Entry;
 
 /// The identity part of `Control::Hello`.
 #[derive(Debug, Clone)]
@@ -177,6 +175,9 @@ struct State {
     /// Screens of each agent (reported by the agent or its edge helper).
     screens: BTreeMap<Uuid, Vec<Screen>>,
     hotkey: Hotkey,
+    /// Hysteresis and hotkey switch, from the config or `settings.toml`.
+    settings: HubSettings,
+    settings_path: Option<std::path::PathBuf>,
     next_generation: u64,
 }
 
@@ -192,13 +193,20 @@ pub struct Router {
 impl Router {
     /// Must be called inside a tokio runtime if `opts.resend` is set.
     pub fn new(hub_id: Uuid, hub_name: String, opts: Options) -> Self {
+        let settings = HubSettings {
+            hysteresis_ms: opts.hysteresis.as_millis().min(u32::MAX as u128) as u32,
+            hotkey: opts.hotkey,
+        };
         Self {
             hub_id,
             hub_name,
             runtime: tokio::runtime::Handle::try_current().ok(),
             opts,
             started: Instant::now(),
-            state: Mutex::new(State::default()),
+            state: Mutex::new(State {
+                settings,
+                ..Default::default()
+            }),
         }
     }
 
@@ -344,6 +352,7 @@ impl Router {
             node.send(layout.clone());
         }
         if node.hello.kind == NodeKind::Widget {
+            node.send(Control::Settings(st.settings));
             for screens in st.screens.values() {
                 node.send(Control::Screens {
                     screens: screens.clone(),
@@ -366,21 +375,13 @@ impl Router {
             if st.active == Some(of) {
                 // Tell the helper its machine is active; it does not move
                 // the pointer for an Activate without an edge.
-                st.nodes[&id].send(Control::Activate {
-                    screen: None,
-                    enter_edge: None,
-                    pos_ratio: None,
-                });
+                st.nodes[&id].send(Control::Activate { entry: None });
             }
         }
         if is_agent {
             if st.active == Some(id) {
                 // Same machine came back while still active.
-                st.nodes[&id].send(Control::Activate {
-                    screen: None,
-                    enter_edge: None,
-                    pos_ratio: None,
-                });
+                st.nodes[&id].send(Control::Activate { entry: None });
             } else if st.active.is_none() {
                 match st.restore {
                     Some((last, until)) if last != id && Instant::now() < until => {
@@ -460,12 +461,7 @@ impl Router {
         match msg {
             Control::Ping(x) => sender.send(Control::Pong(x)),
             Control::Pong(_) => {}
-            Control::SwitchTo {
-                target,
-                screen,
-                enter_edge,
-                pos_ratio,
-            } => {
+            Control::SwitchTo { target, entry } => {
                 // The machine whose pointer reached the edge.
                 let machine = sender.helps().unwrap_or(from);
                 let allowed = kind == NodeKind::Widget || st.active == Some(machine);
@@ -473,12 +469,13 @@ impl Router {
                     debug!(node = %from, "SwitchTo from an inactive node ignored");
                     return;
                 }
-                let entry = Entry {
-                    screen,
-                    edge: enter_edge,
-                    pos_ratio: pos_ratio.clamp(0.0, 1.0),
-                };
-                self.switch_locked(&mut st, target, Some(entry), false);
+                let entry = entry.map(|e| Entry {
+                    pos_ratio: e.pos_ratio.clamp(0.0, 1.0),
+                    ..e
+                });
+                // A widget's menu switch is deliberate: no hysteresis.
+                let force = kind == NodeKind::Widget;
+                self.switch_locked(&mut st, target, entry, force);
             }
             Control::Screens { mut screens } if kind != NodeKind::Widget => {
                 let machine = sender.helps().unwrap_or(from);
@@ -497,12 +494,19 @@ impl Router {
                 }
                 st.screens.insert(machine, screens);
                 self.update_layout(&mut st);
+                self.broadcast_status(&st);
             }
-            Control::Layout { edges, options, .. } if kind == NodeKind::Widget => {
-                info!(node = %from, links = edges.len(), "layout set by a widget");
+            Control::Layout {
+                edges,
+                options,
+                canvas,
+                ..
+            } if kind == NodeKind::Widget => {
+                info!(node = %from, links = edges.len(), blocks = canvas.len(), "layout set by a widget");
                 let file = LayoutFile {
                     options,
                     link: edges,
+                    canvas,
                 };
                 if let Some(path) = &st.layout_path {
                     if let Err(e) = file.save(path) {
@@ -511,6 +515,22 @@ impl Router {
                 }
                 st.custom_layout = Some(file);
                 self.update_layout(&mut st);
+            }
+            Control::Settings(new) if kind == NodeKind::Widget => {
+                info!(node = %from, ?new, "settings set by a widget");
+                if let Some(path) = &st.settings_path {
+                    if let Err(e) = crate::settings::save(path, &new) {
+                        warn!("{e:#}");
+                    }
+                }
+                st.settings = new;
+                for w in st
+                    .nodes
+                    .values()
+                    .filter(|n| n.hello.kind == NodeKind::Widget)
+                {
+                    w.send(Control::Settings(new));
+                }
             }
             Control::PairingStart { .. } | Control::PairingStop => {
                 sender.send(Control::PairingEvent(proto::PairingEvent::Failed {
@@ -539,6 +559,24 @@ impl Router {
         Ok(self)
     }
 
+    /// Keep widget-set switching settings in `path`
+    /// (`<state_dir>/settings.toml`), loading them now if it exists.
+    pub fn with_settings_file(self, path: std::path::PathBuf) -> Result<Self, anyhow::Error> {
+        {
+            let mut st = self.lock();
+            if let Some(s) = crate::settings::load(&path)? {
+                info!(?s, "using the settings in {}", path.display());
+                st.settings = s;
+            }
+            st.settings_path = Some(path);
+        }
+        Ok(self)
+    }
+
+    pub fn settings(&self) -> HubSettings {
+        self.lock().settings
+    }
+
     /// Re-read `layout.toml` (after `--load-layout`, on SIGHUP) and send the
     /// result. A missing file goes back to the config seed.
     pub fn reload_layout(&self) -> Result<(), anyhow::Error> {
@@ -565,12 +603,12 @@ impl Router {
 
     /// The layout, and the seed links resolved with a placeholder screen.
     fn resolve_layout(&self, st: &State) -> (Option<Control>, Vec<(usize, Uuid)>) {
-        let (edges, options, placeholders) = match &st.custom_layout {
-            Some(l) => (l.link.clone(), l.options, Vec::new()),
+        let (edges, options, canvas, placeholders) = match &st.custom_layout {
+            Some(l) => (l.link.clone(), l.options, l.canvas.clone(), Vec::new()),
             None if self.opts.layout.is_empty() => return (None, Vec::new()),
             None => {
                 let c = layout::compile(&self.opts.layout, |i| st.store.holder(i), &st.screens);
-                (c.links, self.opts.edge, c.placeholders)
+                (c.links, self.opts.edge, Vec::new(), c.placeholders)
             }
         };
         let screens: Vec<Screen> = st.screens.values().flatten().cloned().collect();
@@ -581,6 +619,7 @@ impl Router {
             screens,
             edges,
             options,
+            canvas,
         };
         (Some(layout), placeholders)
     }
@@ -606,6 +645,7 @@ impl Router {
             screens: st.screens.values().flatten().cloned().collect(),
             edges: Vec::new(),
             options: self.opts.edge,
+            canvas: Vec::new(),
         });
         for n in st.nodes.values() {
             n.send(send.clone());
@@ -626,9 +666,9 @@ impl Router {
         }
         let now = Instant::now();
         if !force
-            && st
-                .last_switch
-                .is_some_and(|t| now.duration_since(t) < self.opts.hysteresis)
+            && st.last_switch.is_some_and(|t| {
+                now.duration_since(t) < Duration::from_millis(st.settings.hysteresis_ms as u64)
+            })
         {
             debug!("switch suppressed by hysteresis");
             return false;
@@ -662,11 +702,7 @@ impl Router {
         st.last_switch = Some(now);
         let n = &st.nodes[&target];
         info!(node = %target, name = %n.hello.node_name, index = n.index, ?entry, "switched");
-        let activate = Control::Activate {
-            screen: entry.map(|e| e.screen),
-            enter_edge: entry.map(|e| e.edge),
-            pos_ratio: entry.map(|e| e.pos_ratio),
-        };
+        let activate = Control::Activate { entry };
         for n in st
             .nodes
             .values()
@@ -688,7 +724,7 @@ impl Router {
             return;
         };
 
-        if self.opts.hotkey {
+        if st.settings.hotkey {
             if let Some(kb) = &dev.info.keyboard {
                 if let Some(ks) = kb.decode(dev.info.uses_report_ids, report) {
                     if let Some(index) = st.hotkey.feed(Instant::now(), ks.modifiers, ks.keys) {
@@ -744,6 +780,10 @@ impl Router {
                 kind: n.hello.kind,
                 assigned_index: n.index,
                 rtt_ms: n.link.rtt().map(|d| d.as_secs_f32() * 1000.0),
+                screens: st
+                    .screens
+                    .get(&n.hello.node_id)
+                    .map_or(0, |s| s.len().min(u8::MAX as usize) as u8),
             })
             .collect();
         nodes.sort_by_key(|n| (n.kind == NodeKind::Widget, n.assigned_index));
@@ -753,6 +793,7 @@ impl Router {
             nodes,
             device_count: st.devices.len().min(u8::MAX as usize) as u8,
             uptime_s: self.started.elapsed().as_secs(),
+            version: self.opts.version.clone(),
         }
     }
 
@@ -768,6 +809,7 @@ impl Router {
 mod tests {
     use super::*;
     use proto::descriptor::tests::{BOOT_KEYBOARD, UNIFYING_IFACE1};
+    use proto::Edge;
     use proto::EdgeLink;
     use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 
@@ -877,7 +919,7 @@ mod tests {
         let mut w = join(&r, NodeKind::Widget).unwrap();
         assert_eq!(w.reg.index, 0);
         assert_eq!(r.status().nodes.len(), 3);
-        assert_eq!(w.events(), ["HelloAck", "DeviceList"]);
+        assert_eq!(w.events(), ["HelloAck", "DeviceList", "Settings"]);
     }
 
     #[test]
@@ -911,9 +953,11 @@ mod tests {
             b.id,
             Control::SwitchTo {
                 target: b.id,
-                screen: 0,
-                enter_edge: Edge::Left,
-                pos_ratio: 0.5,
+                entry: Some(Entry {
+                    screen: 0,
+                    edge: Edge::Left,
+                    pos_ratio: 0.5,
+                }),
             },
         );
         assert_eq!(r.active(), Some(a.id));
@@ -923,9 +967,11 @@ mod tests {
             a.id,
             Control::SwitchTo {
                 target: b.id,
-                screen: 0,
-                enter_edge: Edge::Left,
-                pos_ratio: 0.5,
+                entry: Some(Entry {
+                    screen: 0,
+                    edge: Edge::Left,
+                    pos_ratio: 0.5,
+                }),
             },
         );
         assert_eq!(r.active(), Some(a.id));
@@ -935,9 +981,11 @@ mod tests {
             a.id,
             Control::SwitchTo {
                 target: b.id,
-                screen: 0,
-                enter_edge: Edge::Left,
-                pos_ratio: 1.7,
+                entry: Some(Entry {
+                    screen: 0,
+                    edge: Edge::Left,
+                    pos_ratio: 1.7,
+                }),
             },
         );
         assert_eq!(r.active(), Some(b.id));
@@ -951,9 +999,11 @@ mod tests {
         assert_eq!(a.events(), ["Deactivate"]);
         let msgs = b.msgs();
         assert!(msgs.contains(&Control::Activate {
-            screen: Some(0),
-            enter_edge: Some(Edge::Left),
-            pos_ratio: Some(1.0),
+            entry: Some(Entry {
+                screen: 0,
+                edge: Edge::Left,
+                pos_ratio: 1.0,
+            }),
         }));
     }
 
@@ -990,9 +1040,11 @@ mod tests {
             a.id,
             Control::SwitchTo {
                 target: c.id,
-                screen: 0,
-                enter_edge: Edge::Right,
-                pos_ratio: 0.1,
+                entry: Some(Entry {
+                    screen: 0,
+                    edge: Edge::Right,
+                    pos_ratio: 0.1,
+                }),
             },
         );
         assert_eq!(r.active(), Some(c.id));
@@ -1177,9 +1229,11 @@ mod tests {
             win_edge.id,
             Control::SwitchTo {
                 target: win.id,
-                screen: 0,
-                enter_edge: Edge::Left,
-                pos_ratio: 0.5,
+                entry: Some(Entry {
+                    screen: 0,
+                    edge: Edge::Left,
+                    pos_ratio: 0.5,
+                }),
             },
         );
         assert_eq!(r.active(), Some(mac.id));
@@ -1189,16 +1243,20 @@ mod tests {
             mac_edge.id,
             Control::SwitchTo {
                 target: win.id,
-                screen: 0,
-                enter_edge: Edge::Left,
-                pos_ratio: 0.4,
+                entry: Some(Entry {
+                    screen: 0,
+                    edge: Edge::Left,
+                    pos_ratio: 0.4,
+                }),
             },
         );
         assert_eq!(r.active(), Some(win.id));
         let activate = Control::Activate {
-            screen: Some(0),
-            enter_edge: Some(Edge::Left),
-            pos_ratio: Some(0.4),
+            entry: Some(Entry {
+                screen: 0,
+                edge: Edge::Left,
+                pos_ratio: 0.4,
+            }),
         };
         assert!(win.msgs().contains(&activate));
         assert!(win_edge.msgs().contains(&activate));
@@ -1226,9 +1284,11 @@ mod tests {
             orphan.id,
             Control::SwitchTo {
                 target: agents[2].id,
-                screen: 0,
-                enter_edge: Edge::Left,
-                pos_ratio: 0.5,
+                entry: Some(Entry {
+                    screen: 0,
+                    edge: Edge::Left,
+                    pos_ratio: 0.5,
+                }),
             },
         );
         assert_eq!(r.active(), Some(agents[1].id));
@@ -1240,6 +1300,7 @@ mod tests {
                 screens,
                 edges,
                 options,
+                ..
             } => Some((screens.clone(), edges.clone(), *options)),
             _ => None,
         })
@@ -1361,6 +1422,7 @@ mod tests {
                     screens: vec![],
                     edges: vec![link.clone()],
                     options: EdgeOptions::default(),
+                    canvas: vec![],
                 },
             );
             // Applied at once, without a restart.
@@ -1376,6 +1438,108 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         r.reload_layout().unwrap();
         assert_eq!(r.current_layout(&r.lock()), None);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn v3_widget_settings_menu_switch_canvas_and_status() {
+        let dir = store_dir();
+        let r = Router::new(
+            Uuid::new_v4(),
+            "hub".into(),
+            Options {
+                version: "0.1.0 (test)".into(),
+                ..Default::default()
+            },
+        )
+        .with_layout_file(LayoutFile::path_in(&dir))
+        .unwrap()
+        .with_settings_file(crate::settings::path_in(&dir))
+        .unwrap();
+        let a = join(&r, NodeKind::Agent).unwrap();
+        let mut b = join(&r, NodeKind::Agent).unwrap();
+        let mut b_edge = helper(&r, b.id);
+        let mut w = join(&r, NodeKind::Widget).unwrap();
+        w.msgs();
+
+        // Settings: applied, persisted, echoed to widgets.
+        let new = HubSettings {
+            hysteresis_ms: 5000,
+            hotkey: false,
+        };
+        r.on_control(w.id, Control::Settings(new));
+        assert_eq!(r.settings(), new);
+        assert_eq!(
+            crate::settings::load(&crate::settings::path_in(&dir)).unwrap(),
+            Some(new)
+        );
+        assert!(w.msgs().contains(&Control::Settings(new)));
+        // An agent cannot change them.
+        r.on_control(a.id, Control::Settings(HubSettings::default()));
+        assert_eq!(r.settings(), new);
+
+        // Menu switch from the widget: no entry, no hysteresis (5 s now).
+        r.on_control(
+            w.id,
+            Control::SwitchTo {
+                target: b.id,
+                entry: None,
+            },
+        );
+        assert_eq!(r.active(), Some(b.id));
+        assert!(b.msgs().contains(&Control::Activate { entry: None }));
+        assert!(b_edge.msgs().contains(&Control::Activate { entry: None }));
+        // An agent's edge switch now waits for the longer hysteresis.
+        r.on_control(
+            b_edge.id,
+            Control::SwitchTo {
+                target: a.id,
+                entry: Some(Entry {
+                    screen: 0,
+                    edge: Edge::Left,
+                    pos_ratio: 0.5,
+                }),
+            },
+        );
+        assert_eq!(r.active(), Some(b.id));
+
+        // Screens count per node and the hub version in the status.
+        r.on_control(
+            b_edge.id,
+            Control::Screens {
+                screens: vec![scr(0, 0, 0, 1920, 1080)],
+            },
+        );
+        let st = r.status();
+        assert_eq!(st.version, "0.1.0 (test)");
+        let count = |id| st.nodes.iter().find(|n| n.node_id == id).unwrap().screens;
+        assert_eq!((count(a.id), count(b.id)), (0, 1));
+
+        // Canvas: persisted with the layout and relayed.
+        let canvas = vec![proto::Placement {
+            node: b.id,
+            x: 3190.0,
+            y: 0.0,
+            scale: Some(1.25),
+        }];
+        r.on_control(
+            w.id,
+            Control::Layout {
+                screens: vec![],
+                edges: vec![],
+                options: EdgeOptions::default(),
+                canvas: canvas.clone(),
+            },
+        );
+        let saved = LayoutFile::load(&LayoutFile::path_in(&dir))
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.canvas, canvas);
+        let got = w.msgs().into_iter().rev().find_map(|m| match m {
+            Control::Layout { canvas, .. } => Some(canvas),
+            _ => None,
+        });
+        assert_eq!(got, Some(canvas));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1424,6 +1588,7 @@ mod tests {
                 screens: vec![screen],
                 edges: vec![],
                 options: EdgeOptions::default(),
+                canvas: vec![],
             },
         );
         let mut late = join(&r, NodeKind::Agent).unwrap();

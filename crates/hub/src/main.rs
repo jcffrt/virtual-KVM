@@ -146,10 +146,12 @@ async fn serve(args: Args) -> Result<()> {
                 hotkey: cfg.switching.hotkey,
                 layout: cfg.layout.clone(),
                 edge: cfg.edge,
+                version: VERSION.to_string(),
             },
         )
         .with_store(store, RESTORE_GRACE)
-        .with_layout_file(LayoutFile::path_in(&cfg.state_dir))?,
+        .with_layout_file(LayoutFile::path_in(&cfg.state_dir))?
+        .with_settings_file(rawkvm_hub::settings::path_in(&cfg.state_dir))?,
     );
     #[cfg(unix)]
     {

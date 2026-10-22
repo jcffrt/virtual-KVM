@@ -256,6 +256,24 @@ Decisiones del usuario/orquestador sobre `docs/widget-plan.md`: (1) protocolo v3
 - `proto::Placement` añadido. Aún no viaja en ningún mensaje: no cambia el protocolo.
 - Propuesta de protocolo v3 en `docs/widget-plan.md`, pendiente de revisión del orquestador antes de tocar los agentes.
 
+## Widget, paso 2: protocolo v3 (2026-10-22, VS Code)
+
+- `PROTO_VERSION = 3`:
+  - `proto::Entry`, con `SwitchTo { target, entry: Option<Entry> }` y `Activate { entry: Option<Entry> }`;
+  - `Layout.canvas`;
+  - `HubStatus.version`, `NodeInfo.screens`;
+  - `Control::Settings(HubSettings)`;
+  - `Screen::scale` = unidades nativas por unidad lógica: el helper macOS manda 1.0.
+- Hub:
+  - `layout.toml` guarda también el lienzo;
+  - `settings.toml` (`settings.rs`) manda sobre `[switching]`; la histéresis y el atajo se leen del estado;
+  - el `SwitchTo` de un widget no respeta la histéresis;
+  - widgets reciben `Settings` al conectar;
+  - `Status` tras cada `Screens`.
+- `agent-core`: helper y agentes adaptados (el `HidSink` no cambia). `WidgetState` lleva `canvas` y `settings`.
+- Docs: `protocol.md` (v3, sección «Pantallas y unidades»), ADR 0010.
+- Redespliegue conjunto pendiente: hub y gadget en la Pi, agente y helper del Mac, `.exe` del helper Windows (artefacto `rawkvm-edge-windows`).
+
 ## Convenciones
 
 Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario en castellano, `cargo fmt` y `cargo clippy -D warnings` limpios, un ADR por decisión nueva.

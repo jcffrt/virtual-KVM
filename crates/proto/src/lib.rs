@@ -28,7 +28,10 @@ use uuid::Uuid;
 /// * 1: phase 0/1.
 /// * 2: `NodeKind::EdgeHelper`; `screen` in `SwitchTo` and `Activate`;
 ///   `options` in `Layout`.
-pub const PROTO_VERSION: u16 = 2;
+/// * 3: optional [`Entry`] in `SwitchTo` / `Activate`; `canvas` in
+///   `Layout`; `version` in `HubStatus`, `screens` in `NodeInfo`;
+///   `Settings`; `Screen::scale` is native units per logical unit.
+pub const PROTO_VERSION: u16 = 3;
 
 /// DNS-SD service type the hub advertises on the LAN.
 pub const SERVICE_TYPE: &str = "_rawkvm._udp.local.";
@@ -114,6 +117,12 @@ impl Edge {
 }
 
 /// One monitor of a node, positioned inside that node's own virtual desktop.
+///
+/// `x`, `y`, `w`, `h` are always in the units in which that node's edge
+/// helper reads and places the pointer (macOS: points; Windows: physical
+/// pixels, per-monitor DPI aware), so the helper never converts. `scale`
+/// is native units per logical unit and only serves to draw the widget's
+/// canvas (the widget divides): 1.0 on macOS, DPI / 96 on Windows.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Screen {
     pub node: Uuid,
@@ -123,8 +132,37 @@ pub struct Screen {
     pub y: i32,
     pub w: u32,
     pub h: u32,
-    /// Logical scale factor (DPI scaling), informational.
+    /// Native units per logical unit (canvas drawing only).
     pub scale: f32,
+}
+
+/// Where the pointer appears on the node being activated: `pos_ratio`
+/// (0.0..=1.0, top / left end first) along `edge` of `screen`.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
+pub struct Entry {
+    pub screen: u8,
+    pub edge: Edge,
+    pub pos_ratio: f32,
+}
+
+impl Default for HubSettings {
+    fn default() -> Self {
+        Self {
+            hysteresis_ms: 150,
+            hotkey: true,
+        }
+    }
+}
+
+/// Switching settings a widget can change at run time; the hub keeps them
+/// in `<state_dir>/settings.toml`, which overrides `[switching]` of
+/// `hub.toml`.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HubSettings {
+    /// Minimum time between two edge switches.
+    pub hysteresis_ms: u32,
+    /// Emergency hotkey Ctrl, Ctrl, 1..4.
+    pub hotkey: bool,
 }
 
 /// Where the widget's monitor canvas puts one node's block of screens, in
@@ -198,6 +236,9 @@ pub struct NodeInfo {
     pub kind: NodeKind,
     pub assigned_index: u8,
     pub rtt_ms: Option<f32>,
+    /// Screens the hub knows for this node (reported by it or its edge
+    /// helper). 0 for an agent: no edge helper yet.
+    pub screens: u8,
 }
 
 /// Hub status broadcast to widgets (and agents) on change.
@@ -208,6 +249,8 @@ pub struct HubStatus {
     pub nodes: Vec<NodeInfo>,
     pub device_count: u8,
     pub uptime_s: u64,
+    /// Hub build, e.g. "0.1.0 (d69e767)".
+    pub version: String,
 }
 
 /// Why the hub rejected a node.
@@ -251,28 +294,27 @@ pub enum Control {
         screens: Vec<Screen>,
     },
     /// hub -> nodes (from the hub config or a widget); widget -> hub.
-    /// Every known screen and every edge link, both directions listed.
+    /// Every known screen and every edge link, both directions listed, and
+    /// the widget canvas (empty while the hub uses its config seed).
     Layout {
         screens: Vec<Screen>,
         edges: Vec<EdgeLink>,
         options: EdgeOptions,
+        canvas: Vec<Placement>,
     },
-    /// agent or edge helper -> hub. The pointer reached a linked edge.
-    /// `screen`, `enter_edge` and `pos_ratio` say where it appears on
-    /// `target`; `pos_ratio` is already mapped through the link's ranges.
+    /// agent, edge helper or widget -> hub. Make `target` active. With an
+    /// `entry` (an edge was reached; `pos_ratio` already mapped through the
+    /// link's ranges) the target's helper places the pointer there;
+    /// without one (widget menu) it stays where it is.
     SwitchTo {
         target: Uuid,
-        screen: u8,
-        enter_edge: Edge,
-        pos_ratio: f32,
+        entry: Option<Entry>,
     },
     /// hub -> agent and its edge helpers. This node now receives input.
-    /// With an edge, the helper places the pointer on that edge of `screen`
-    /// at `pos_ratio`; without one (hotkey, fallback) it leaves it alone.
+    /// With an entry the helper places the pointer; without one (hotkey,
+    /// fallback, widget menu) it leaves it alone.
     Activate {
-        screen: Option<u8>,
-        enter_edge: Option<Edge>,
-        pos_ratio: Option<f32>,
+        entry: Option<Entry>,
     },
     /// hub -> agent. This node no longer receives input. A "release all"
     /// datagram for every device precedes this message.
@@ -291,6 +333,8 @@ pub enum Control {
     /// Either direction. The payload is echoed back in `Pong`.
     Ping(u64),
     Pong(u64),
+    /// hub -> widgets (on connect and on change); widget -> hub (change).
+    Settings(HubSettings),
 }
 
 impl Control {
@@ -312,6 +356,7 @@ impl Control {
             Control::Status(_) => "Status",
             Control::Ping(_) => "Ping",
             Control::Pong(_) => "Pong",
+            Control::Settings(_) => "Settings",
         }
     }
 }
@@ -409,10 +454,17 @@ mod tests {
                 }],
             },
             Control::Activate {
-                screen: Some(0),
-                enter_edge: Some(Edge::Left),
-                pos_ratio: Some(0.25),
+                entry: Some(Entry {
+                    screen: 0,
+                    edge: Edge::Left,
+                    pos_ratio: 0.25,
+                }),
             },
+            Control::Activate { entry: None },
+            Control::Settings(HubSettings {
+                hysteresis_ms: 150,
+                hotkey: true,
+            }),
             Control::Hello {
                 proto_ver: PROTO_VERSION,
                 node_id: Uuid::new_v4(),
@@ -425,14 +477,22 @@ mod tests {
             },
             Control::SwitchTo {
                 target: Uuid::new_v4(),
-                screen: 1,
-                enter_edge: Edge::Left,
-                pos_ratio: 0.5,
+                entry: Some(Entry {
+                    screen: 1,
+                    edge: Edge::Left,
+                    pos_ratio: 0.5,
+                }),
             },
             Control::Layout {
                 screens: vec![],
                 edges: vec![],
                 options: EdgeOptions::default(),
+                canvas: vec![Placement {
+                    node: Uuid::new_v4(),
+                    x: 3190.0,
+                    y: 0.0,
+                    scale: Some(1.25),
+                }],
             },
             Control::Deactivate,
             Control::Ping(42),
@@ -442,6 +502,7 @@ mod tests {
                 nodes: vec![],
                 device_count: 3,
                 uptime_s: 10,
+                version: "0.1.0 (test)".into(),
             }),
         ];
         for m in msgs {

@@ -1,4 +1,4 @@
-# Protocolo RawKVM (versión 2)
+# Protocolo RawKVM (versión 3)
 
 Fuente de verdad: `crates/proto`. Este documento lo resume.
 
@@ -15,7 +15,7 @@ mDNS / DNS‑SD, servicio `_rawkvm._udp.local.`, instancia = nombre del hub, hos
 
 | Clave | Valor |
 |---|---|
-| `ver` | versión de protocolo (`2`) |
+| `ver` | versión de protocolo (`3`) |
 | `name` | nombre del hub |
 | `fp` | huella SHA‑256 del certificado |
 | `id` | UUID del hub |
@@ -41,7 +41,7 @@ hub  -> todos Status(HubStatus)       (en cada cambio)
 - `assigned_index` 1..4 para agentes (dígito del atajo de emergencia; se conserva al reconectar mientras viva el hub), 0 para widgets. Un quinto agente recibe `Reject { TooManyNodes }`.
 - `Reject { BadToken | VersionMismatch }` es definitivo: el agente se detiene. `TooManyNodes` se reintenta.
 - `kind`: `Agent`, `Widget` o `EdgeHelper { for_node }` (v2). Un helper vigila el puntero en nombre del agente `for_node`, que no puede hacerlo (gadget USB, daemon root fuera de la sesión gráfica). No recibe índice ni informes; sus `Screens` cuentan como del agente, puede enviar `SwitchTo` mientras ese agente es el activo, y recibe sus `Activate`/`Deactivate`.
-- **Versiones**: hub y nodos deben tener la misma `PROTO_VERSION`; si no, `Reject { VersionMismatch }` y el nodo se detiene con un mensaje que pide actualizar. `Hello` y las variantes hasta `Reject` no cambian nunca de forma, para que un nodo de otra versión siempre reciba ese rechazo (test `handshake_stays_decodable_across_versions`). Historia: v1 fases 0/1; v2 añade `EdgeHelper`, `screen` en `SwitchTo`/`Activate` y `options` en `Layout`.
+- **Versiones**: hub y nodos deben tener la misma `PROTO_VERSION`; si no, `Reject { VersionMismatch }` y el nodo se detiene con un mensaje que pide actualizar. `Hello` y las variantes hasta `Reject` no cambian nunca de forma, para que un nodo de otra versión siempre reciba ese rechazo (test `handshake_stays_decodable_across_versions`). Historia: v1, fases 0 y 1; v2 añade `EdgeHelper`, `screen` en `SwitchTo`/`Activate` y `options` en `Layout`; v3 (widget) añade `Entry` opcional, `canvas` en `Layout`, `Settings`, `version` en `HubStatus` y `screens` en `NodeInfo`, y fija el significado de `Screen::scale`.
 - Si el mismo `node_id` se reconecta, la conexión nueva sustituye a la vieja.
 
 Mensajes en régimen:
@@ -49,11 +49,12 @@ Mensajes en régimen:
 | Mensaje | Dirección | Efecto |
 |---|---|---|
 | `Ping(t)` / `Pong(t)` | ambos | eco; el agente envía `Ping` cada 1 s con microsegundos desde el inicio de sesión y calcula el RTT (EWMA 0.2) |
-| `SwitchTo { target, screen, enter_edge, pos_ratio }` | agente activo, su helper o widget → hub | cambia el destino; `screen`/`enter_edge`/`pos_ratio` dicen dónde aparece el puntero en `target` (`pos_ratio` ya traducido por los rangos del enlace) |
+| `SwitchTo { target, entry: Option<Entry> }` | agente activo, su helper o widget → hub | cambia el destino. `Entry { screen, edge, pos_ratio }` dice dónde aparece el puntero en `target` (`pos_ratio` ya traducido por los rangos del enlace). Sin `entry` (menú del widget) el destino conserva su puntero. El de un widget no respeta la histéresis |
 | `Screens` | agente o helper → hub → widgets | monitores de la máquina (el hub reescribe `node` con el agente) |
-| `Layout { screens, edges, options }` | hub → nodos; widget → hub | enlaces de bordes en vigor (ver Layout) |
+| `Layout { screens, edges, options, canvas }` | hub → nodos; widget → hub | enlaces de bordes en vigor y lienzo del widget (ver Layout) |
+| `Settings(HubSettings { hysteresis_ms, hotkey })` | hub → widgets (al conectar y al cambiar); widget → hub | ajustes de conmutación; el hub los aplica y guarda en `/var/lib/rawkvm/settings.toml`, que manda sobre `[switching]` de `hub.toml` |
 | `DeviceList` | hub → nodos | al conectar y cuando cambia el conjunto de dispositivos |
-| `Activate { screen, enter_edge, pos_ratio }` / `Deactivate` | hub → agente y sus helpers | este agente empieza / deja de recibir. Sin `enter_edge` (atajo, caída del activo) el helper no mueve el puntero |
+| `Activate { entry: Option<Entry> }` / `Deactivate` | hub → agente y sus helpers | este agente empieza / deja de recibir. Sin `entry` (atajo, caída del activo, menú del widget) el helper no mueve el puntero |
 | `PairingStart` / `PairingStop` | widget → hub | fase 3; hoy responde `PairingEvent(Failed)` |
 
 ## Datagramas (informes HID)
@@ -75,13 +76,20 @@ Mensajes en régimen:
 1. El agente activo (o un widget) envía `SwitchTo`. Un agente inactivo no puede robar la entrada.
 2. Histéresis: se ignora un `SwitchTo` a menos de `hysteresis_ms` (150 ms) del cambio anterior. El atajo y la caída del agente activo no la respetan.
 3. El hub envía al origen un datagrama `RELEASE_ALL` por cada informe de entrada de páginas estándar (las colecciones vendor ≥ 0xFF00, como HID++ o el ID 8 de página 0xFFBC, se omiten), luego `Deactivate`. Al recibir `Deactivate` el agente **también** sintetiza localmente esos informes, porque los datagramas pueden perderse.
-4. El destino y sus helpers reciben `Activate { screen, enter_edge, pos_ratio }` (`pos_ratio` acotado a 0..1); los helpers del origen, `Deactivate`.
+4. El destino y sus helpers reciben `Activate { entry }` (`pos_ratio` acotado a 0..1); los helpers del origen, `Deactivate`.
 5. Si el agente activo se desconecta, pasa a ser activo el último agente que lo fue y sigue conectado (o el de índice menor).
+
+## Pantallas y unidades
+
+- `Screen { node, index, x, y, w, h, scale }`: `x`, `y`, `w`, `h` van **siempre en las unidades en que el helper lee y coloca el puntero**: puntos en macOS; píxeles físicos en Windows, que es consciente del DPI por monitor. El helper nunca convierte.
+- `scale` = unidades nativas por unidad lógica: 1.0 en macOS, DPI/96 en Windows. Solo sirve para dibujar el lienzo del widget, que divide por ella. El usuario puede corregirla por nodo (`Placement::scale`).
+- `index` 0 es la pantalla principal; las demás van de izquierda a derecha.
+- `HubStatus.nodes[].screens`: número de pantallas que el hub conoce de cada nodo. Un agente con 0 no tiene helper de borde.
 
 ## Layout (bordes)
 
-- El hub envía `Layout { screens, edges, options }` al conectar cada nodo y cada vez que cambia: `screens` son los monitores que han reportado agentes y helpers (datos vivos), `edges` los `EdgeLink` en vigor en **los dos sentidos**, `options` = `EdgeOptions { push_ms, corner_pct, dead_zone_px }`.
-- Fuente de los enlaces, por prioridad: (1) el último `Layout` de un widget, que el hub guarda en `/var/lib/rawkvm/layout.toml` y aplica al instante; (2) ese fichero al arrancar; (3) la semilla `[[layout]]` de `hub.toml`, por índice de agente, resuelta contra los `Screens` recibidos. Si el destino de un enlace no ha reportado pantallas, la ida se resuelve con `to_screen` (0 por defecto) y la vuelta espera a sus pantallas. Los helpers no guardan layout propio.
+- El hub envía `Layout { screens, edges, options }` al conectar cada nodo y cada vez que cambia: `screens` son los monitores que han reportado agentes y helpers (datos vivos), `edges` los `EdgeLink` en vigor en **los dos sentidos**, `options` = `EdgeOptions { push_ms, corner_pct, dead_zone_px }`, `canvas` = `Vec<Placement { node, x, y, scale }>`: posición de cada bloque de pantallas en el lienzo del widget, en unidades lógicas. Va vacío con la semilla; los helpers lo ignoran.
+- Fuente de los enlaces, por prioridad: (1) el último `Layout` de un widget, que el hub guarda en `/var/lib/rawkvm/layout.toml` (enlaces, opciones y lienzo) y aplica al instante; (2) ese fichero al arrancar; (3) la semilla `[[layout]]` de `hub.toml`, por índice de agente, resuelta contra los `Screens` recibidos. Si el destino de un enlace no ha reportado pantallas, la ida se resuelve con `to_screen` (0 por defecto) y la vuelta espera a sus pantallas. Los helpers no guardan layout propio.
 - CLI: `rawkvm-hub --dump-layout` imprime el layout de `layout.toml` (o la semilla); `rawkvm-hub --load-layout <fichero>` lo valida e instala, y `systemctl reload rawkvm-hub` (SIGHUP) lo aplica sin reiniciar. Borrar `layout.toml` y recargar vuelve a la semilla.
 - Reglas de detección del lado del helper: `agent-core::edge` (ADR 0009).
 

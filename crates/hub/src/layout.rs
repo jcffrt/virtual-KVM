@@ -30,7 +30,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use proto::{Edge, EdgeLink, EdgeOptions, Screen};
+use proto::{Edge, EdgeLink, EdgeOptions, Placement, Screen};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -38,14 +38,15 @@ use crate::config;
 
 pub const FILE: &str = "layout.toml";
 
-/// The persisted layout: resolved links (node ids and screen indices) and
-/// the edge options that came with them. Screens are not stored: they are
-/// live data from the helpers.
+/// The persisted layout: resolved links (node ids and screen indices),
+/// the edge options and the widget canvas that came with them. Screens are
+/// not stored: they are live data from the helpers.
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct LayoutFile {
     pub options: EdgeOptions,
     pub link: Vec<EdgeLink>,
+    pub canvas: Vec<Placement>,
 }
 
 impl LayoutFile {
@@ -382,6 +383,12 @@ mod tests {
                 to_screen: 0,
                 to_edge: Edge::Left,
                 to_range: (0.25, 0.75),
+            }],
+            canvas: vec![Placement {
+                node: Uuid::new_v4(),
+                x: 3190.0,
+                y: 0.0,
+                scale: None,
             }],
         };
         f.save(&path).unwrap();

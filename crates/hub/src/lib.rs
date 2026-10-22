@@ -13,3 +13,4 @@ pub mod nodes;
 pub mod receiver;
 pub mod router;
 pub mod server;
+pub mod settings;

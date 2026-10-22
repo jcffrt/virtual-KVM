@@ -190,7 +190,7 @@ impl agent_core::helper::EdgePlatform for MacScreens {
 #[cfg(target_os = "macos")]
 fn show() -> Result<()> {
     let displays = cg::displays();
-    println!("displays (index, id, origin, size in points, scale):");
+    println!("displays (index, id, origin, size in points, Retina factor):");
     for d in &displays {
         let s = &d.screen;
         println!(
@@ -201,7 +201,7 @@ fn show() -> Result<()> {
             s.y,
             s.w,
             s.h,
-            s.scale,
+            d.backing_scale,
             if d.main { "  main" } else { "" }
         );
     }

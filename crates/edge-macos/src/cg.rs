@@ -70,6 +70,8 @@ extern "C" {
 pub struct Display {
     pub id: u32,
     pub main: bool,
+    /// Device pixels per point (2 on Retina); informational, `--show` only.
+    pub backing_scale: f32,
     pub screen: Screen,
 }
 
@@ -101,6 +103,11 @@ pub fn displays() -> Vec<Display> {
         .map(|(i, (id, r, pixels))| Display {
             id,
             main: id == main,
+            backing_scale: if r.size.width > 0.0 {
+                (pixels as f64 / r.size.width) as f32
+            } else {
+                1.0
+            },
             screen: Screen {
                 node: Uuid::nil(),
                 index: i as u8,
@@ -108,11 +115,9 @@ pub fn displays() -> Vec<Display> {
                 y: r.origin.y.round() as i32,
                 w: r.size.width.round().max(1.0) as u32,
                 h: r.size.height.round().max(1.0) as u32,
-                scale: if r.size.width > 0.0 {
-                    (pixels as f64 / r.size.width) as f32
-                } else {
-                    1.0
-                },
+                // Coordinates are already points: one native unit per
+                // logical unit (proto v3).
+                scale: 1.0,
             },
         })
         .collect()

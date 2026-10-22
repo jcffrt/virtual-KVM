@@ -9,7 +9,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
-use proto::{wire, Control, EdgeLink, EdgeOptions, HidDevice, HubStatus, NodeKind, Screen};
+use proto::{
+    wire, Control, EdgeLink, EdgeOptions, HidDevice, HubSettings, HubStatus, NodeKind, Placement,
+    Screen,
+};
 use serde::Serialize;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tracing::{debug, info, warn};
@@ -33,6 +36,10 @@ pub struct WidgetState {
     /// The layout in force (both directions).
     pub edges: Vec<EdgeLink>,
     pub options: EdgeOptions,
+    /// The canvas saved with the layout; empty while the hub uses its
+    /// config seed (the widget then proposes `canvas::initial`).
+    pub canvas: Vec<Placement>,
+    pub settings: Option<HubSettings>,
     pub devices: Vec<HidDevice>,
     pub rtt_ms: Option<f64>,
 }
@@ -52,6 +59,7 @@ impl WidgetState {
                 screens,
                 edges,
                 options,
+                canvas,
             } => {
                 let mut by_node: BTreeMap<Uuid, Vec<Screen>> = BTreeMap::new();
                 for s in screens {
@@ -63,7 +71,9 @@ impl WidgetState {
                 }
                 self.edges = edges.clone();
                 self.options = *options;
+                self.canvas = canvas.clone();
             }
+            Control::Settings(s) => self.settings = Some(*s),
             Control::DeviceList { devices } => self.devices = devices.clone(),
             _ => {}
         }
@@ -265,6 +275,7 @@ mod tests {
             screens: vec![screen(a, 0), screen(a, 1), screen(b, 0)],
             edges: vec![link.clone()],
             options: EdgeOptions::default(),
+            canvas: vec![],
         }));
         assert_eq!(st.screens.len(), 2);
         assert_eq!(st.screens[&a].len(), 2);
@@ -275,6 +286,7 @@ mod tests {
             screens: vec![],
             edges: vec![],
             options: EdgeOptions::default(),
+            canvas: vec![],
         }));
         assert_eq!(st.screens.len(), 2);
         assert!(st.edges.is_empty());

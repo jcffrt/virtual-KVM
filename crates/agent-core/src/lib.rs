@@ -372,7 +372,8 @@ async fn session_inner(
                 let Some(msg) = frame? else { return Ok(()) };
                 match msg {
                     Control::DeviceList { devices } => s.set_devices(devices, sink, Instant::now()),
-                    Control::Activate { enter_edge, pos_ratio, .. } => {
+                    Control::Activate { entry } => {
+                        let (enter_edge, pos_ratio) = (entry.map(|e| e.edge), entry.map(|e| e.pos_ratio));
                         info!("active");
                         s.active = true;
                         sink.activate(enter_edge, pos_ratio);

@@ -466,6 +466,11 @@ async fn widget_body() {
                 && st.status.as_ref().is_some_and(|s| s.active == Some(a_id))
                 && st.devices.len() == 1
                 && st.rtt_ms.is_some()
+                && st.settings == Some(proto::HubSettings::default())
+                && st
+                    .status
+                    .as_ref()
+                    .is_some_and(|s| s.nodes.iter().any(|n| n.node_id == a_id && n.screens == 1))
         }),
     )
     .await;
@@ -486,6 +491,7 @@ async fn widget_body() {
         screens: vec![],
         edges: vec![link.clone()],
         options: proto::EdgeOptions::default(),
+        canvas: vec![],
     })
     .unwrap();
     let want = link.clone();
