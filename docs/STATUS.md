@@ -84,6 +84,14 @@
 - ~10 min de uso: 7.654 informes, 0 perdidos; RTT 4–10 ms habitual, pico 24 ms, 30–80 ms solo en los primeros 30 s tras arrancar.
 - Revisión del orquestador: protocolo y structs contrastados byte a byte con pqrs 8.6.0; sin hallazgos.
 
+## Fase 1 — Windows (2026-10-22)
+
+- `drivers/windows-vhf`: driver KMDF + VHF (`rawkvm_vhf.c`, `RawKvmVhf.inf`, `.vcxproj`), interfaz `rawkvm_ioctl.h` sobre `\\.\RawKvmVhf`, `sign-test.ps1`. Base: sample HIDInjector de Windows-IoT-Samples (`vhidmini2` no usa VHF). Diseño y firma: ADR 0006.
+- `crates/agent-windows` (bin `rawkvm-agent-windows`, se distribuye como `rawkvm-agent.exe`): codificación de IOCTLs, `VhfSink` (reabre el driver y recrea los dispositivos si falla, release-all antes de DESTROY), servicio Windows `RawKvmAgent` (LocalSystem), `driver-install` (crea `Root\RawKvmVhf` con SetupAPI, como devcon), `configure`, `run`. Config y log en `%ProgramData%\rawkvm`.
+- `deploy/windows/install.ps1`, `uninstall.ps1`; guía `docs/windows-instalacion.md` (viaja en el zip como `LEEME.md`).
+- CI: job `windows` en `windows-2022` (trae el WDK; `windows-2025` no), compila agente (MSVC) y driver, firma con un certificado nuevo por build y publica el artefacto **rawkvm-windows**.
+- Verificado: tests del crate (9) en macOS/Linux, clippy para `x86_64-pc-windows-gnu` con zig, el C del driver compila y enlaza en CI. **Pendiente: prueba en los dos PCs Windows por el usuario** (test-signing + reinicio, Secure Boot desactivado).
+
 ## Convenciones
 
 Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario en castellano, `cargo fmt` y `cargo clippy -D warnings` limpios, un ADR por decisión nueva.
