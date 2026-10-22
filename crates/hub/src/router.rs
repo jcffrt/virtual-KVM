@@ -14,13 +14,14 @@ use bytes::Bytes;
 use proto::datagram::{Datagram, FLAG_RELEASE_ALL};
 use proto::descriptor::{DescriptorInfo, USAGE_MOUSE, USAGE_PAGE_GENERIC_DESKTOP};
 use proto::{
-    Control, Edge, EdgeLink, HidDevice, HubStatus, NodeInfo, NodeKind, Os, RejectReason, Screen,
+    Control, Edge, EdgeOptions, HidDevice, HubStatus, NodeInfo, NodeKind, Os, RejectReason, Screen,
 };
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::hotkey::Hotkey;
+use crate::layout::{self, LayoutFile, LinkSpec};
 use crate::nodes::NodeStore;
 
 /// Agents get indices 1..=MAX_AGENTS (the emergency hotkey digits).
@@ -42,6 +43,29 @@ pub struct Options {
     /// Delay of the redundant copy of non-mouse reports.
     pub resend: Option<Duration>,
     pub hotkey: bool,
+    /// Edge links from the hub config (`[[layout]]`).
+    pub layout: Vec<LinkSpec>,
+    pub edge: EdgeOptions,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            hysteresis: Duration::from_millis(150),
+            resend: None,
+            hotkey: true,
+            layout: Vec::new(),
+            edge: EdgeOptions::default(),
+        }
+    }
+}
+
+/// Where the pointer appears on the new active node.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Entry {
+    pub screen: u8,
+    pub edge: Edge,
+    pub pos_ratio: f32,
 }
 
 /// The identity part of `Control::Hello`.
@@ -98,6 +122,14 @@ struct Node {
 }
 
 impl Node {
+    /// The agent this node is an edge helper for.
+    fn helps(&self) -> Option<Uuid> {
+        match self.hello.kind {
+            NodeKind::EdgeHelper { for_node } => Some(for_node),
+            _ => None,
+        }
+    }
+
     fn send(&self, msg: Control) {
         // The receiver only disappears when the connection is going away.
         let _ = self.ctl.send(msg);
@@ -135,7 +167,14 @@ struct State {
     /// Agents in the order they were last active (most recent last).
     history: Vec<Uuid>,
     last_switch: Option<Instant>,
-    layout: Option<(Vec<Screen>, Vec<EdgeLink>)>,
+    /// Layout set by a widget (or loaded from `layout.toml`); replaces the
+    /// config's `[[layout]]` seed.
+    custom_layout: Option<LayoutFile>,
+    /// Where `custom_layout` is persisted; `None` in tests and replays.
+    layout_path: Option<std::path::PathBuf>,
+    /// Last layout sent, to send it to new nodes and only on change.
+    layout_sent: Option<Control>,
+    /// Screens of each agent (reported by the agent or its edge helper).
     screens: BTreeMap<Uuid, Vec<Screen>>,
     hotkey: Hotkey,
     next_generation: u64,
@@ -188,7 +227,7 @@ impl Router {
         match Self::fallback(&st) {
             Some(next) => {
                 info!(node = %next, "last active agent did not come back; activating another");
-                self.switch_locked(&mut st, next, None, None, true);
+                self.switch_locked(&mut st, next, None, true);
                 self.broadcast_status(&st);
             }
             None => debug!("last active agent did not come back; no agent connected"),
@@ -280,7 +319,7 @@ impl Router {
             info!(node = %id, "node reconnected; replacing the old connection");
         }
         let index = match hello.kind {
-            NodeKind::Widget => 0,
+            NodeKind::Widget | NodeKind::EdgeHelper { .. } => 0,
             NodeKind::Agent => Self::assign_index(&mut st, id, &hello.node_name)?,
         };
         st.next_generation += 1;
@@ -301,13 +340,10 @@ impl Router {
         node.send(Control::DeviceList {
             devices: Self::device_list(&st),
         });
-        if let Some((screens, edges)) = &st.layout {
-            node.send(Control::Layout {
-                screens: screens.clone(),
-                edges: edges.clone(),
-            });
+        if let Some(layout) = &st.layout_sent {
+            node.send(layout.clone());
         }
-        if !node.is_agent() {
+        if node.hello.kind == NodeKind::Widget {
             for screens in st.screens.values() {
                 node.send(Control::Screens {
                     screens: screens.clone(),
@@ -323,12 +359,25 @@ impl Router {
             "node registered"
         );
         let is_agent = node.is_agent();
+        let helps = node.helps();
         st.nodes.insert(id, node);
 
+        if let Some(of) = helps {
+            if st.active == Some(of) {
+                // Tell the helper its machine is active; it does not move
+                // the pointer for an Activate without an edge.
+                st.nodes[&id].send(Control::Activate {
+                    screen: None,
+                    enter_edge: None,
+                    pos_ratio: None,
+                });
+            }
+        }
         if is_agent {
             if st.active == Some(id) {
                 // Same machine came back while still active.
                 st.nodes[&id].send(Control::Activate {
+                    screen: None,
                     enter_edge: None,
                     pos_ratio: None,
                 });
@@ -338,11 +387,13 @@ impl Router {
                         info!(node = %id, "not activated: waiting for the last active agent")
                     }
                     _ => {
-                        self.switch_locked(&mut st, id, None, None, true);
+                        self.switch_locked(&mut st, id, None, true);
                     }
                 }
             }
         }
+        // A new agent index may complete a configured link.
+        self.update_layout(&mut st);
         self.broadcast_status(&st);
         Ok(Registration { generation, index })
     }
@@ -390,7 +441,7 @@ impl Router {
             match Self::fallback(&st) {
                 Some(next) => {
                     info!(node = %next, "active node lost; falling back");
-                    self.switch_locked(&mut st, next, None, None, true);
+                    self.switch_locked(&mut st, next, None, true);
                 }
                 None => info!("active node lost; no agent left"),
             }
@@ -411,41 +462,55 @@ impl Router {
             Control::Pong(_) => {}
             Control::SwitchTo {
                 target,
+                screen,
                 enter_edge,
                 pos_ratio,
             } => {
-                let allowed = kind == NodeKind::Widget || st.active == Some(from);
+                // The machine whose pointer reached the edge.
+                let machine = sender.helps().unwrap_or(from);
+                let allowed = kind == NodeKind::Widget || st.active == Some(machine);
                 if !allowed {
-                    debug!(node = %from, "SwitchTo from an inactive agent ignored");
+                    debug!(node = %from, "SwitchTo from an inactive node ignored");
                     return;
                 }
-                let pos = pos_ratio.clamp(0.0, 1.0);
-                self.switch_locked(&mut st, target, Some(enter_edge), Some(pos), false);
+                let entry = Entry {
+                    screen,
+                    edge: enter_edge,
+                    pos_ratio: pos_ratio.clamp(0.0, 1.0),
+                };
+                self.switch_locked(&mut st, target, Some(entry), false);
             }
-            Control::Screens { mut screens } if kind == NodeKind::Agent => {
+            Control::Screens { mut screens } if kind != NodeKind::Widget => {
+                let machine = sender.helps().unwrap_or(from);
                 for s in &mut screens {
-                    s.node = from;
+                    s.node = machine;
                 }
-                for w in st.nodes.values().filter(|n| !n.is_agent()) {
+                info!(node = %machine, screens = screens.len(), "screens reported");
+                for w in st
+                    .nodes
+                    .values()
+                    .filter(|n| n.hello.kind == NodeKind::Widget)
+                {
                     w.send(Control::Screens {
                         screens: screens.clone(),
                     });
                 }
-                st.screens.insert(from, screens);
+                st.screens.insert(machine, screens);
+                self.update_layout(&mut st);
             }
-            Control::Layout { screens, edges } if kind == NodeKind::Widget => {
-                info!(
-                    screens = screens.len(),
-                    edges = edges.len(),
-                    "layout updated"
-                );
-                for n in st.nodes.values().filter(|n| n.hello.node_id != from) {
-                    n.send(Control::Layout {
-                        screens: screens.clone(),
-                        edges: edges.clone(),
-                    });
+            Control::Layout { edges, options, .. } if kind == NodeKind::Widget => {
+                info!(node = %from, links = edges.len(), "layout set by a widget");
+                let file = LayoutFile {
+                    options,
+                    link: edges,
+                };
+                if let Some(path) = &st.layout_path {
+                    if let Err(e) = file.save(path) {
+                        warn!("{e:#}");
+                    }
                 }
-                st.layout = Some((screens, edges));
+                st.custom_layout = Some(file);
+                self.update_layout(&mut st);
             }
             Control::PairingStart { .. } | Control::PairingStop => {
                 sender.send(Control::PairingEvent(proto::PairingEvent::Failed {
@@ -456,13 +521,90 @@ impl Router {
         }
     }
 
+    /// Keep the layout in `path` (`<state_dir>/layout.toml`), loading it
+    /// now if it exists.
+    pub fn with_layout_file(self, path: std::path::PathBuf) -> Result<Self, anyhow::Error> {
+        {
+            let mut st = self.lock();
+            st.custom_layout = LayoutFile::load(&path)?;
+            if let Some(l) = &st.custom_layout {
+                info!(
+                    links = l.link.len(),
+                    "using the layout in {}",
+                    path.display()
+                );
+            }
+            st.layout_path = Some(path);
+        }
+        Ok(self)
+    }
+
+    /// Re-read `layout.toml` (after `--load-layout`, on SIGHUP) and send the
+    /// result. A missing file goes back to the config seed.
+    pub fn reload_layout(&self) -> Result<(), anyhow::Error> {
+        let mut st = self.lock();
+        if let Some(path) = st.layout_path.clone() {
+            st.custom_layout = LayoutFile::load(&path)?;
+            info!(
+                custom = st.custom_layout.is_some(),
+                "layout reloaded from {}",
+                path.display()
+            );
+        }
+        self.update_layout(&mut st);
+        Ok(())
+    }
+
+    /// The layout nodes should have: the custom one, else the config seed
+    /// resolved against the screens known so far. Screens are always the
+    /// live ones.
+    fn current_layout(&self, st: &State) -> Option<Control> {
+        let (edges, options) = match &st.custom_layout {
+            Some(l) => (l.link.clone(), l.options),
+            None if self.opts.layout.is_empty() => return None,
+            None => (
+                layout::compile(&self.opts.layout, |i| st.store.holder(i), &st.screens),
+                self.opts.edge,
+            ),
+        };
+        let screens: Vec<Screen> = st.screens.values().flatten().cloned().collect();
+        if screens.is_empty() && edges.is_empty() {
+            return None;
+        }
+        Some(Control::Layout {
+            screens,
+            edges,
+            options,
+        })
+    }
+
+    /// Send the layout to every node if it changed.
+    fn update_layout(&self, st: &mut State) {
+        let layout = self.current_layout(st);
+        if layout == st.layout_sent {
+            return;
+        }
+        if let Some(Control::Layout { screens, edges, .. }) = &layout {
+            info!(screens = screens.len(), links = edges.len(), "layout");
+        }
+        // Going back to no layout still tells the nodes to drop their links.
+        let send = layout.clone().unwrap_or_else(|| Control::Layout {
+            screens: st.screens.values().flatten().cloned().collect(),
+            edges: Vec::new(),
+            options: self.opts.edge,
+        });
+        for n in st.nodes.values() {
+            n.send(send.clone());
+        }
+        st.layout_sent = layout;
+    }
+
     /// Make `target` the active agent. `force` bypasses the hysteresis.
     fn switch_locked(
         &self,
         st: &mut State,
         target: Uuid,
-        enter_edge: Option<Edge>,
-        pos_ratio: Option<f32>,
+        entry: Option<Entry>,
         force: bool,
     ) -> bool {
         if st.active == Some(target) {
@@ -494,6 +636,9 @@ impl Router {
                 }
                 n.send(Control::Deactivate);
             }
+            for h in st.nodes.values().filter(|n| n.helps() == Some(old)) {
+                h.send(Control::Deactivate);
+            }
         }
         st.active = Some(target);
         st.restore = None;
@@ -502,11 +647,19 @@ impl Router {
         st.history.push(target);
         st.last_switch = Some(now);
         let n = &st.nodes[&target];
-        info!(node = %target, name = %n.hello.node_name, index = n.index, "switched");
-        n.send(Control::Activate {
-            enter_edge,
-            pos_ratio,
-        });
+        info!(node = %target, name = %n.hello.node_name, index = n.index, ?entry, "switched");
+        let activate = Control::Activate {
+            screen: entry.map(|e| e.screen),
+            enter_edge: entry.map(|e| e.edge),
+            pos_ratio: entry.map(|e| e.pos_ratio),
+        };
+        for n in st
+            .nodes
+            .values()
+            .filter(|n| n.hello.node_id == target || n.helps() == Some(target))
+        {
+            n.send(activate.clone());
+        }
         self.broadcast_status(st);
         true
     }
@@ -533,7 +686,7 @@ impl Router {
                         match target {
                             Some(t) => {
                                 info!(index, "emergency hotkey");
-                                self.switch_locked(st, t, None, None, true);
+                                self.switch_locked(st, t, None, true);
                             }
                             None => info!(index, "emergency hotkey: no agent with that index"),
                         }
@@ -601,6 +754,7 @@ impl Router {
 mod tests {
     use super::*;
     use proto::descriptor::tests::{BOOT_KEYBOARD, UNIFYING_IFACE1};
+    use proto::EdgeLink;
     use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 
     #[derive(Default)]
@@ -655,15 +809,7 @@ mod tests {
     }
 
     fn router() -> Router {
-        Router::new(
-            Uuid::new_v4(),
-            "hub".into(),
-            Options {
-                hysteresis: Duration::from_millis(150),
-                resend: None,
-                hotkey: true,
-            },
-        )
+        Router::new(Uuid::new_v4(), "hub".into(), Options::default())
     }
 
     fn device(id: u8, desc: &[u8]) -> HidDevice {
@@ -751,6 +897,7 @@ mod tests {
             b.id,
             Control::SwitchTo {
                 target: b.id,
+                screen: 0,
                 enter_edge: Edge::Left,
                 pos_ratio: 0.5,
             },
@@ -762,6 +909,7 @@ mod tests {
             a.id,
             Control::SwitchTo {
                 target: b.id,
+                screen: 0,
                 enter_edge: Edge::Left,
                 pos_ratio: 0.5,
             },
@@ -773,6 +921,7 @@ mod tests {
             a.id,
             Control::SwitchTo {
                 target: b.id,
+                screen: 0,
                 enter_edge: Edge::Left,
                 pos_ratio: 1.7,
             },
@@ -788,6 +937,7 @@ mod tests {
         assert_eq!(a.events(), ["Deactivate"]);
         let msgs = b.msgs();
         assert!(msgs.contains(&Control::Activate {
+            screen: Some(0),
             enter_edge: Some(Edge::Left),
             pos_ratio: Some(1.0),
         }));
@@ -826,6 +976,7 @@ mod tests {
             a.id,
             Control::SwitchTo {
                 target: c.id,
+                screen: 0,
                 enter_edge: Edge::Right,
                 pos_ratio: 0.1,
             },
@@ -857,7 +1008,7 @@ mod tests {
 
     fn force_switch(r: &Router, to: Uuid) {
         let mut st = r.lock();
-        assert!(r.switch_locked(&mut st, to, None, None, true));
+        assert!(r.switch_locked(&mut st, to, None, true));
     }
 
     fn store_dir() -> std::path::PathBuf {
@@ -973,6 +1124,244 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    fn helper(r: &Router, of: Uuid) -> TestNode {
+        join(r, NodeKind::EdgeHelper { for_node: of }).unwrap()
+    }
+
+    fn scr(index: u8, x: i32, y: i32, w: u32, h: u32) -> Screen {
+        Screen {
+            node: Uuid::nil(),
+            index,
+            x,
+            y,
+            w,
+            h,
+            scale: 1.0,
+        }
+    }
+
+    #[test]
+    fn edge_helper_switches_for_its_machine() {
+        let r = router();
+        let mut win = join(&r, NodeKind::Agent).unwrap(); // gadget, index 1
+        let mut mac = join(&r, NodeKind::Agent).unwrap();
+        let mut mac_edge = helper(&r, mac.id);
+        let mut win_edge = helper(&r, win.id);
+        assert_eq!((mac_edge.reg.index, win_edge.reg.index), (0, 0));
+        // win was first, so it is active and its helper was told.
+        assert!(win_edge.events().contains(&"Activate"));
+        assert!(!mac_edge.events().contains(&"Activate"));
+        force_switch(&r, mac.id);
+        assert!(mac_edge.events().contains(&"Activate"));
+        assert!(win_edge.events().contains(&"Deactivate"));
+        win.msgs();
+        mac.msgs();
+
+        // The Windows helper cannot switch while the Mac is active.
+        r.lock().last_switch = None;
+        r.on_control(
+            win_edge.id,
+            Control::SwitchTo {
+                target: win.id,
+                screen: 0,
+                enter_edge: Edge::Left,
+                pos_ratio: 0.5,
+            },
+        );
+        assert_eq!(r.active(), Some(mac.id));
+
+        // The Mac's helper can.
+        r.on_control(
+            mac_edge.id,
+            Control::SwitchTo {
+                target: win.id,
+                screen: 0,
+                enter_edge: Edge::Left,
+                pos_ratio: 0.4,
+            },
+        );
+        assert_eq!(r.active(), Some(win.id));
+        let activate = Control::Activate {
+            screen: Some(0),
+            enter_edge: Some(Edge::Left),
+            pos_ratio: Some(0.4),
+        };
+        assert!(win.msgs().contains(&activate));
+        assert!(win_edge.msgs().contains(&activate));
+        assert!(mac.events().contains(&"Deactivate"));
+        assert!(mac_edge.events().contains(&"Deactivate"));
+    }
+
+    #[test]
+    fn edge_helpers_are_not_agents() {
+        let r = router();
+        r.add_device(device(0, BOOT_KEYBOARD));
+        let orphan = helper(&r, Uuid::new_v4()); // its agent never connected
+        assert_eq!(r.active(), None);
+        let agents: Vec<_> = (0..4).map(|_| join(&r, NodeKind::Agent).unwrap()).collect();
+        assert_eq!(agents[3].reg.index, 4);
+        // Ctrl, Ctrl, 0 is not a digit; the hotkey never targets a helper.
+        for _ in 0..2 {
+            r.on_report(0, &key_report(0x01, 0));
+            r.on_report(0, &key_report(0, 0));
+        }
+        r.on_report(0, &key_report(0, 0x1F));
+        assert_eq!(r.active(), Some(agents[1].id));
+        assert!(orphan.link.take().is_empty(), "helpers get no reports");
+        r.on_control(
+            orphan.id,
+            Control::SwitchTo {
+                target: agents[2].id,
+                screen: 0,
+                enter_edge: Edge::Left,
+                pos_ratio: 0.5,
+            },
+        );
+        assert_eq!(r.active(), Some(agents[1].id));
+    }
+
+    fn layout_of(msgs: &[Control]) -> Option<(Vec<Screen>, Vec<EdgeLink>, EdgeOptions)> {
+        msgs.iter().rev().find_map(|m| match m {
+            Control::Layout {
+                screens,
+                edges,
+                options,
+            } => Some((screens.clone(), edges.clone(), *options)),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn config_layout_resolves_when_screens_arrive() {
+        let r = Router::new(
+            Uuid::new_v4(),
+            "hub".into(),
+            Options {
+                layout: toml::from_str::<crate::config::HubConfig>(
+                    "[[layout]]\nfrom = 2\nedge = \"right\"\nto = 1\n",
+                )
+                .unwrap()
+                .layout,
+                edge: EdgeOptions {
+                    push_ms: 80,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let mut win = join(&r, NodeKind::Agent).unwrap();
+        let mac = join(&r, NodeKind::Agent).unwrap();
+        let mut mac_edge = helper(&r, mac.id);
+        let win_edge = helper(&r, win.id);
+        assert_eq!(layout_of(&win.msgs()), None, "no screens yet");
+
+        r.on_control(
+            mac_edge.id,
+            Control::Screens {
+                screens: vec![scr(0, 0, 0, 1512, 982), scr(1, 1512, -229, 2560, 1440)],
+            },
+        );
+        assert_eq!(
+            layout_of(&win.msgs()).map(|l| l.1.len()),
+            Some(0),
+            "Windows has not reported its screen"
+        );
+        r.on_control(
+            win_edge.id,
+            Control::Screens {
+                screens: vec![scr(0, 0, 0, 1920, 1080)],
+            },
+        );
+        let (screens, edges, options) = layout_of(&mac_edge.msgs()).unwrap();
+        assert_eq!(screens.len(), 3);
+        assert!(screens.iter().filter(|s| s.node == mac.id).count() == 2);
+        assert_eq!(options.push_ms, 80);
+        let fwd = edges.iter().find(|l| l.from_node == mac.id).unwrap();
+        assert_eq!(
+            (fwd.from_screen, fwd.to_node, fwd.to_edge),
+            (1, win.id, Edge::Left)
+        );
+        assert!(edges
+            .iter()
+            .any(|l| l.from_node == win.id && l.to_node == mac.id));
+
+        // Same screens again: nothing is re-sent.
+        r.on_control(
+            win_edge.id,
+            Control::Screens {
+                screens: vec![scr(0, 0, 0, 1920, 1080)],
+            },
+        );
+        assert_eq!(layout_of(&mac_edge.msgs()), None);
+        // A node connecting later gets it right away.
+        let mut late = join(&r, NodeKind::Widget).unwrap();
+        assert_eq!(layout_of(&late.msgs()).map(|l| l.1.len()), Some(2));
+    }
+
+    #[test]
+    fn widget_layout_is_persisted_and_wins_over_the_seed() {
+        let dir = store_dir();
+        let path = LayoutFile::path_in(&dir);
+        let seeded = || {
+            Router::new(
+                Uuid::new_v4(),
+                "hub".into(),
+                Options {
+                    layout: vec![crate::layout::LinkSpec {
+                        from: 2,
+                        edge: Edge::Right,
+                        to: 1,
+                        from_screen: None,
+                        to_screen: None,
+                        from_range: (0.0, 1.0),
+                        to_range: (0.0, 1.0),
+                        oneway: false,
+                    }],
+                    ..Default::default()
+                },
+            )
+            .with_layout_file(path.clone())
+            .unwrap()
+        };
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        let link = EdgeLink {
+            from_node: a,
+            from_screen: 0,
+            from_edge: Edge::Top,
+            from_range: (0.0, 1.0),
+            to_node: b,
+            to_screen: 0,
+            to_edge: Edge::Bottom,
+            to_range: (0.0, 1.0),
+        };
+        {
+            let r = seeded();
+            let w = join(&r, NodeKind::Widget).unwrap();
+            let mut n = join(&r, NodeKind::Agent).unwrap();
+            r.on_control(
+                w.id,
+                Control::Layout {
+                    screens: vec![],
+                    edges: vec![link.clone()],
+                    options: EdgeOptions::default(),
+                },
+            );
+            // Applied at once, without a restart.
+            assert_eq!(layout_of(&n.msgs()).unwrap().1, std::slice::from_ref(&link));
+        }
+        // After a restart the saved layout is used, not the seed.
+        let r = seeded();
+        let mut n = join(&r, NodeKind::Agent).unwrap();
+        assert_eq!(layout_of(&n.msgs()).unwrap().1, [link]);
+
+        // Deleting the file and reloading goes back to the seed (which
+        // resolves to nothing yet: no screens).
+        std::fs::remove_file(&path).unwrap();
+        r.reload_layout().unwrap();
+        assert_eq!(r.current_layout(&r.lock()), None);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn fifth_agent_is_rejected() {
         let r = router();
@@ -1017,6 +1406,7 @@ mod tests {
             Control::Layout {
                 screens: vec![screen],
                 edges: vec![],
+                options: EdgeOptions::default(),
             },
         );
         let mut late = join(&r, NodeKind::Agent).unwrap();

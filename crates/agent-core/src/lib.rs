@@ -5,6 +5,7 @@
 pub mod client;
 pub mod config;
 pub mod discovery;
+pub mod edge;
 
 use std::collections::HashMap;
 use std::net::{SocketAddr, ToSocketAddrs};
@@ -287,7 +288,10 @@ async fn session_inner(
             return Err(End::Fatal(match reason {
                 RejectReason::BadToken => anyhow!("the hub rejected the pairing token"),
                 RejectReason::VersionMismatch => {
-                    anyhow!("protocol version mismatch (agent speaks {PROTO_VERSION})")
+                    anyhow!(
+                        "the hub speaks another protocol version (this agent speaks {PROTO_VERSION}); \
+                         update the hub and every agent to the same release"
+                    )
                 }
                 // Another machine may leave; keep trying.
                 RejectReason::TooManyNodes => {
@@ -323,8 +327,8 @@ async fn session_inner(
                 let Some(msg) = frame? else { return Ok(()) };
                 match msg {
                     Control::DeviceList { devices } => s.set_devices(devices, sink, Instant::now()),
-                    Control::Activate { enter_edge, pos_ratio } => {
-                        info!(?enter_edge, ?pos_ratio, "active");
+                    Control::Activate { enter_edge, pos_ratio, .. } => {
+                        info!("active");
                         s.active = true;
                         sink.activate(enter_edge, pos_ratio);
                     }

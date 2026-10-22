@@ -148,7 +148,7 @@
 | Ubuntu | Agente Linux (uhid) por Wi‑Fi | uhid (pendiente de validar cuando haya máquina) |
 
 - **Descartados**: la Raspberry Pi 3 como hub, y el driver VHF + agente Windows (quedan en el repo como alternativa, sin seguimiento; el job de CI `windows` debería pasar a manual para no costar 8 min por push).
-- **Riesgo de alimentación**: el USB‑C OTG de la Orange Pi es también su entrada de alimentación. Conectado al Windows, el hub se apaga o reinicia con el PC (suspensión, apagado, BIOS con ErP) y todos los agentes pierden el hub. Soluciones: alimentar la placa por los pines 5V/GND del conector de 40 pines con una fuente propia (el OTG sigue funcionando solo para datos), o asegurarse de que el PC mantiene 5 V en USB en S3/S5. Pendiente de decidir por el usuario.
+- **Riesgo de alimentación**: el USB‑C OTG de la Orange Pi es también su entrada de alimentación. Conectado al Windows, el hub se apaga o reinicia con el PC (suspensión, apagado, BIOS con ErP) y todos los agentes pierden el hub. Soluciones: alimentar la placa por los pines 5V/GND del conector de 40 pines con una fuente propia (el OTG sigue funcionando solo para datos), o asegurarse de que el PC mantiene 5 V en USB en S3/S5. **Decisión del usuario: el PC Windows alimenta la Orange Pi por el cable USB; el hub se apaga y arranca con el PC.** Consecuencias ya cubiertas por el diseño: los agentes reconectan solos con backoff y el hub restaura el último activo; el receptor se reinicia con la placa (sale de DJ por sí mismo) y la blacklist está en el initramfs.
 - **Fase 2 con este esquema**: el PC Windows no ejecuta ningún agente, así que no puede detectar el borde de pantalla por sí solo. Hace falta un *helper* de usuario en Windows sin driver (solo hook de ratón + QUIC al hub) que envíe `SwitchTo` en nombre del nodo gadget; el código de `agent-windows` (servicio, config, cliente) se puede reutilizar sin la parte del driver. En Mac el helper de borde va en sesión de usuario junto al daemon; en Linux la extensión GNOME.
 
 ## Ajustes a la arquitectura definitiva (2026-10-22, VS Code)
@@ -157,6 +157,36 @@
 - Docs: driver VHF marcado como alternativa aparcada (`windows-instalacion.md`, ADR 0006); en `gadget-instalacion.md`, el gadget como vía recomendada para Windows, alimentación por el conector de 40 pines y nota sobre Logitech Options+/G HUB.
 - Gadget: `--udc-wait <s>` (60 por defecto; sustituye al `ExecStartPre` de la unit) y `HostState`: si el PC deja de leer (ESHUTDOWN o EAGAIN agotado), se registra una vez, se escribe sin esperar y se avisa al volver.
 - `docs/fase2-plan.md`: plan de Fase 2 para revisar con el usuario (sin implementar).
+
+## Fase 2: respuestas del usuario (2026-10-22) y arranque
+
+1. **Disposición física, de izquierda a derecha**: Mac pantalla integrada → Mac monitor externo → PC Windows → Ubuntu. Dos monitores en el Mac, uno en Windows, uno en Linux.
+2. El PC Windows está en la misma LAN que la Orange Pi.
+3. **Cambio inmediato** al tocar el borde; si da problemas, pasar a "empujar".
+4. Acepta un `.exe` sin firmar en Windows que arranque al iniciar sesión.
+
+Layout inicial para `hub.toml` (índices de `nodes.toml`: gadget/Windows = 1, Mac = 2; Linux cuando exista): borde derecho del monitor externo del Mac ↔ borde izquierdo del Windows; borde derecho del Windows ↔ borde izquierdo del Linux. Orden de implementación aprobado: protocolo y hub, lógica de borde, helper macOS, helper Windows; después GNOME y widget.
+- **Requisito del usuario (2026-10-22)**: el widget debe permitir cambiar la posición relativa de monitores y PCs en cualquier momento. El layout escrito a mano en `hub.toml` es solo arranque: el hub debe tratar el `Layout` recibido del widget como fuente de verdad, persistirlo (p. ej. `state_dir/layout.toml`), reenviarlo a todos los helpers al instante y preferirlo sobre `hub.toml` en el siguiente arranque. Los helpers no deben cachear nada que no venga del hub.
+
+## Fase 2, pasos 1 y 2: protocolo v2, layout en el hub, lógica de borde (2026-10-22, VS Code)
+
+- **Protocolo v2** (`PROTO_VERSION = 2`):
+  - `NodeKind::EdgeHelper { for_node }`.
+  - `SwitchTo { target, screen, enter_edge, pos_ratio }`, `Activate { screen, enter_edge, pos_ratio }` y `Layout { screens, edges, options: EdgeOptions }`.
+  - `Hello` y `Reject` están congelados: un nodo v1 recibe `VersionMismatch` y se detiene con un mensaje claro. Hay test con los bytes de un `Hello` v1.
+- **Hub, helpers**: los helpers no tienen índice; `Screens` y `SwitchTo` cuentan por su agente, y reciben `Activate`/`Deactivate`.
+- **Hub, layout** (`layout.rs`):
+  - Semilla `[[layout]]` en `hub.toml` por índice. La regla de pantalla por defecto es la más exterior en la dirección del borde.
+  - El layout de un widget se persiste en `/var/lib/rawkvm/layout.toml`, se aplica al instante y gana a la semilla en los arranques siguientes.
+  - CLI `--dump-layout` / `--load-layout <f>`; `ExecReload` (SIGHUP) recarga sin reiniciar.
+  - Opciones `[edge] push_ms = 0, corner_pct = 3, dead_zone_px = 2`.
+- **`agent-core::edge::EdgeSwitcher`**:
+  - Detección en el último píxel, con exclusión de esquinas y umbral `push_ms`.
+  - Un `SwitchTo` por contacto, zona muerta al entrar y aparcado en el centro.
+  - Tests de tabla con el escritorio del usuario (geometrías inventadas y marcadas).
+- **Docs**: `protocol.md` (v2, Layout) y ADR 0009.
+- **Despliegue**: hub, gadget y agente macOS deben actualizarse a la vez (orquestador). El agente Linux también, cuando se instale.
+- **Siguiente**: helper macOS (paso 3), pendiente de visto bueno.
 
 ## Convenciones
 

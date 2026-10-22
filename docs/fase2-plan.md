@@ -1,6 +1,6 @@
-# Fase 2: cambio de equipo por el borde de pantalla (plan para revisar)
+# Fase 2: cambio de equipo por el borde de pantalla
 
-Borrador del 2026-10-22, adaptado a la arquitectura definitiva (STATUS.md). **No hay nada implementado todavía.** Las preguntas abiertas están al final.
+Plan del 2026-10-22, adaptado a la arquitectura definitiva (STATUS.md) y **aprobado por el usuario**. Pasos 1 y 2 hechos (ADR 0009). Las respuestas a las preguntas están en STATUS.md. Cambios respecto al borrador: el layout se escribe como `[[layout]]` (no `[[layout.link]]`); un layout del widget se persiste en `layout.toml` y manda; `SwitchTo`/`Activate` llevan `screen`; la esquina se configura como `corner_pct`.
 
 ## Topología
 

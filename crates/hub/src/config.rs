@@ -32,6 +32,12 @@ pub struct HubConfig {
     pub mdns: bool,
     pub receiver: ReceiverMatch,
     pub switching: Switching,
+    /// Edge switching tuning (`push_ms`, `corner`, `dead_zone_px`).
+    pub edge: proto::EdgeOptions,
+    /// Edge links between agents, by agent index (`[[layout]]`, see
+    /// `layout.rs`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub layout: Vec<crate::layout::LinkSpec>,
 }
 
 /// Which hidraw nodes are forwarded. See ADR 0003.
@@ -91,6 +97,8 @@ impl Default for HubConfig {
             mdns: true,
             receiver: ReceiverMatch::default(),
             switching: Switching::default(),
+            edge: proto::EdgeOptions::default(),
+            layout: Vec::new(),
         }
     }
 }

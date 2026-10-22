@@ -153,6 +153,11 @@ async fn handle(
         anyhow::bail!("first message was not Hello");
     };
     if proto_ver != PROTO_VERSION {
+        warn!(
+            node = %node_id,
+            name = %node_name,
+            "rejected: the node speaks protocol {proto_ver}, this hub {PROTO_VERSION}; update it"
+        );
         return reject(&conn, &mut send, RejectReason::VersionMismatch).await;
     }
     if !proto::token_eq(&presented, &token) {

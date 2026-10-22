@@ -91,6 +91,7 @@ async fn start_hub() -> TestHub {
             hysteresis: Duration::from_millis(150),
             resend: Some(Duration::from_millis(5)),
             hotkey: true,
+            ..Default::default()
         },
     ));
     router.add_device(HidDevice {

@@ -19,7 +19,16 @@ use uuid::Uuid;
 
 /// Protocol version carried in [`Control::Hello`]. Bump on any incompatible
 /// change to the messages or to the datagram header.
-pub const PROTO_VERSION: u16 = 1;
+///
+/// The handshake must stay decodable across versions so that a mismatch
+/// ends in a clear `Reject { VersionMismatch }`: never reorder or change the
+/// fields of `Hello` or the variants before `Reject`, and only append new
+/// [`NodeKind`] variants.
+///
+/// * 1: phase 0/1.
+/// * 2: `NodeKind::EdgeHelper`; `screen` in `SwitchTo` and `Activate`;
+///   `options` in `Layout`.
+pub const PROTO_VERSION: u16 = 2;
 
 /// DNS-SD service type the hub advertises on the LAN.
 pub const SERVICE_TYPE: &str = "_rawkvm._udp.local.";
@@ -52,6 +61,14 @@ pub enum Os {
 pub enum NodeKind {
     Agent,
     Widget,
+    /// Watches the pointer and switches at screen edges for the machine of
+    /// agent `for_node`, which cannot do it itself (a USB gadget, a root
+    /// daemon outside the graphical session). Its `Screens` count as that
+    /// node's, it may send `SwitchTo` while that node is active, and it gets
+    /// that node's `Activate` / `Deactivate`.
+    EdgeHelper {
+        for_node: Uuid,
+    },
 }
 
 /// A HID interface exposed by the receiver, described exactly as the kernel
@@ -76,6 +93,7 @@ pub struct HidDevice {
 
 /// Screen edge, in the coordinate system of the node that owns the screen.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
 pub enum Edge {
     Left,
     Right,
@@ -121,6 +139,31 @@ pub struct EdgeLink {
     pub to_screen: u8,
     pub to_edge: Edge,
     pub to_range: (f32, f32),
+}
+
+/// Edge switching tuning, set in the hub config and sent with `Layout`.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
+#[serde(default)]
+pub struct EdgeOptions {
+    /// The pointer must stay on the edge this long before switching.
+    /// 0 switches on contact.
+    pub push_ms: u16,
+    /// Percentage of each end of an edge that never switches (window close
+    /// buttons, hot corners).
+    pub corner_pct: u8,
+    /// Distance from the edge at which the pointer enters, and that it must
+    /// leave behind before that edge can switch back.
+    pub dead_zone_px: u16,
+}
+
+impl Default for EdgeOptions {
+    fn default() -> Self {
+        Self {
+            push_ms: 0,
+            corner_pct: 3,
+            dead_zone_px: 2,
+        }
+    }
 }
 
 /// Progress of a Unifying pairing session (phase 3).
@@ -194,20 +237,27 @@ pub enum Control {
     Screens {
         screens: Vec<Screen>,
     },
-    /// widget -> hub -> agents. Full layout.
+    /// hub -> nodes (from the hub config or a widget); widget -> hub.
+    /// Every known screen and every edge link, both directions listed.
     Layout {
         screens: Vec<Screen>,
         edges: Vec<EdgeLink>,
+        options: EdgeOptions,
     },
-    /// agent -> hub. The pointer reached a linked edge.
+    /// agent or edge helper -> hub. The pointer reached a linked edge.
+    /// `screen`, `enter_edge` and `pos_ratio` say where it appears on
+    /// `target`; `pos_ratio` is already mapped through the link's ranges.
     SwitchTo {
         target: Uuid,
+        screen: u8,
         enter_edge: Edge,
         pos_ratio: f32,
     },
-    /// hub -> agent. This node now receives input. `enter_edge` is the edge of
-    /// the destination screen the pointer should appear on.
+    /// hub -> agent and its edge helpers. This node now receives input.
+    /// With an edge, the helper places the pointer on that edge of `screen`
+    /// at `pos_ratio`; without one (hotkey, fallback) it leaves it alone.
     Activate {
+        screen: Option<u8>,
         enter_edge: Option<Edge>,
         pos_ratio: Option<f32>,
     },
@@ -346,8 +396,30 @@ mod tests {
                 }],
             },
             Control::Activate {
+                screen: Some(0),
                 enter_edge: Some(Edge::Left),
                 pos_ratio: Some(0.25),
+            },
+            Control::Hello {
+                proto_ver: PROTO_VERSION,
+                node_id: Uuid::new_v4(),
+                node_name: "mac-edge".into(),
+                os: Os::MacOs,
+                kind: NodeKind::EdgeHelper {
+                    for_node: Uuid::new_v4(),
+                },
+                token: [7u8; TOKEN_LEN],
+            },
+            Control::SwitchTo {
+                target: Uuid::new_v4(),
+                screen: 1,
+                enter_edge: Edge::Left,
+                pos_ratio: 0.5,
+            },
+            Control::Layout {
+                screens: vec![],
+                edges: vec![],
+                options: EdgeOptions::default(),
             },
             Control::Deactivate,
             Control::Ping(42),
@@ -364,6 +436,36 @@ mod tests {
             let back = wire::decode(&bytes).unwrap();
             assert_eq!(m, back);
         }
+    }
+
+    /// A version 1 agent's `Hello`, byte for byte, must still decode so the
+    /// hub can answer `Reject { VersionMismatch }`, and that `Reject` must
+    /// be what a version 1 agent decodes.
+    #[test]
+    fn handshake_stays_decodable_across_versions() {
+        let id = Uuid::from_u128(0x0123_4567_89ab_cdef_0123_4567_89ab_cdef);
+        // postcard of v1 Hello { proto_ver: 1, node_id, "pc", Linux, Agent, [7; 32] }.
+        let mut v1 = vec![0u8, 1]; // variant 0, varint 1
+        v1.push(16);
+        v1.extend_from_slice(id.as_bytes());
+        v1.extend_from_slice(&[2, b'p', b'c', 2, 0]);
+        v1.extend_from_slice(&[7; TOKEN_LEN]);
+        let Control::Hello {
+            proto_ver,
+            node_id,
+            kind,
+            ..
+        } = postcard::from_bytes(&v1).unwrap()
+        else {
+            panic!("not a Hello");
+        };
+        assert_eq!((proto_ver, node_id, kind), (1, id, NodeKind::Agent));
+
+        let reject = postcard::to_allocvec(&Control::Reject {
+            reason: RejectReason::VersionMismatch,
+        })
+        .unwrap();
+        assert_eq!(reject, [2, 1]); // v1: variant 2 (Reject), reason 1
     }
 
     #[test]

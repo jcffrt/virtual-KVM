@@ -1,7 +1,7 @@
 //! RawKVM hub: reads raw HID reports from the Logitech receiver and forwards
 //! them, uninterpreted, to the active agent over QUIC.
 
-use rawkvm_hub::{config, hidrec, nodes, router, server};
+use rawkvm_hub::{config, hidrec, layout, nodes, router, server};
 #[cfg(target_os = "linux")]
 use rawkvm_hub::{devices, hidraw};
 
@@ -14,6 +14,7 @@ use clap::Parser;
 use tracing::{info, warn};
 
 use config::HubConfig;
+use layout::LayoutFile;
 use nodes::NodeStore;
 use router::{Options, Router, RESTORE_GRACE};
 
@@ -59,6 +60,17 @@ struct Args {
     /// hub first, or it writes its own copy back.
     #[arg(long, value_name = "UUID|INDEX")]
     forget_node: Option<String>,
+
+    /// Print the layout in effect at start-up (<state_dir>/layout.toml, or
+    /// the [[layout]] seed of the config) and exit.
+    #[arg(long)]
+    dump_layout: bool,
+
+    /// Validate a layout file (the format --dump-layout prints) and install
+    /// it as <state_dir>/layout.toml, then exit. A running hub applies it
+    /// on `systemctl reload rawkvm-hub` (SIGHUP).
+    #[arg(long, value_name = "FILE")]
+    load_layout: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
@@ -80,6 +92,9 @@ fn main() -> Result<()> {
     }
     if args.list_nodes || args.forget_node.is_some() {
         return manage_nodes(&args);
+    }
+    if args.dump_layout || args.load_layout.is_some() {
+        return manage_layout(&args);
     }
     if args.show_token {
         let (cfg, _) = HubConfig::load_or_init(&args.config)?;
@@ -118,10 +133,26 @@ async fn serve(args: Args) -> Result<()> {
                 resend: (cfg.switching.resend_ms > 0)
                     .then(|| Duration::from_millis(cfg.switching.resend_ms)),
                 hotkey: cfg.switching.hotkey,
+                layout: cfg.layout.clone(),
+                edge: cfg.edge,
             },
         )
-        .with_store(store, RESTORE_GRACE),
+        .with_store(store, RESTORE_GRACE)
+        .with_layout_file(LayoutFile::path_in(&cfg.state_dir))?,
     );
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let router = router.clone();
+        let mut hup = signal(SignalKind::hangup())?;
+        tokio::spawn(async move {
+            while hup.recv().await.is_some() {
+                if let Err(e) = router.reload_layout() {
+                    warn!("{e:#}");
+                }
+            }
+        });
+    }
     {
         let router = router.clone();
         tokio::spawn(async move {
@@ -189,6 +220,49 @@ fn manage_nodes(args: &Args) -> Result<()> {
             ""
         };
         println!("{}  {}  {}{mark}", e.index, e.id, e.name);
+    }
+    Ok(())
+}
+
+fn manage_layout(args: &Args) -> Result<()> {
+    let cfg = HubConfig::load_or_default(&args.config)?;
+    let path = LayoutFile::path_in(&cfg.state_dir);
+    if let Some(src) = &args.load_layout {
+        let text = std::fs::read_to_string(src)?;
+        let file: LayoutFile =
+            toml::from_str(&text).map_err(|e| anyhow::anyhow!("{}: {e}", src.display()))?;
+        file.save(&path)?;
+        println!(
+            "installed {} links in {}; apply with `sudo systemctl reload rawkvm-hub`",
+            file.link.len(),
+            path.display()
+        );
+        return Ok(());
+    }
+    match LayoutFile::load(&path)? {
+        Some(file) => print!("{}", file.to_text()?),
+        None if cfg.layout.is_empty() => println!(
+            "# no layout ({} absent, no [[layout]] in the config)",
+            path.display()
+        ),
+        None => {
+            println!(
+                "# no {}; the hub uses the [[layout]] seed of {}, resolved\n\
+                 # against the screens the helpers report (needs a running hub):",
+                path.display(),
+                args.config.display()
+            );
+            #[derive(serde::Serialize)]
+            struct Seed<'a> {
+                layout: &'a [layout::LinkSpec],
+            }
+            print!(
+                "{}",
+                toml::to_string_pretty(&Seed {
+                    layout: &cfg.layout
+                })?
+            );
+        }
     }
     Ok(())
 }
