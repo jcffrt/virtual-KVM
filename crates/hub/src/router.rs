@@ -558,31 +558,45 @@ impl Router {
     /// The layout nodes should have: the custom one, else the config seed
     /// resolved against the screens known so far. Screens are always the
     /// live ones.
+    #[cfg(test)]
     fn current_layout(&self, st: &State) -> Option<Control> {
-        let (edges, options) = match &st.custom_layout {
-            Some(l) => (l.link.clone(), l.options),
-            None if self.opts.layout.is_empty() => return None,
-            None => (
-                layout::compile(&self.opts.layout, |i| st.store.holder(i), &st.screens),
-                self.opts.edge,
-            ),
+        self.resolve_layout(st).0
+    }
+
+    /// The layout, and the seed links resolved with a placeholder screen.
+    fn resolve_layout(&self, st: &State) -> (Option<Control>, Vec<(usize, Uuid)>) {
+        let (edges, options, placeholders) = match &st.custom_layout {
+            Some(l) => (l.link.clone(), l.options, Vec::new()),
+            None if self.opts.layout.is_empty() => return (None, Vec::new()),
+            None => {
+                let c = layout::compile(&self.opts.layout, |i| st.store.holder(i), &st.screens);
+                (c.links, self.opts.edge, c.placeholders)
+            }
         };
         let screens: Vec<Screen> = st.screens.values().flatten().cloned().collect();
         if screens.is_empty() && edges.is_empty() {
-            return None;
+            return (None, placeholders);
         }
-        Some(Control::Layout {
+        let layout = Control::Layout {
             screens,
             edges,
             options,
-        })
+        };
+        (Some(layout), placeholders)
     }
 
     /// Send the layout to every node if it changed.
     fn update_layout(&self, st: &mut State) {
-        let layout = self.current_layout(st);
+        let (layout, placeholders) = self.resolve_layout(st);
         if layout == st.layout_sent {
             return;
+        }
+        for (n, node) in placeholders {
+            info!(
+                "layout: link {} resolved with a placeholder screen for node {node} \
+                 (no screens reported; one way only until its edge helper connects)",
+                n + 1
+            );
         }
         if let Some(Control::Layout { screens, edges, .. }) = &layout {
             info!(screens = screens.len(), links = edges.len(), "layout");
@@ -1261,10 +1275,13 @@ mod tests {
                 screens: vec![scr(0, 0, 0, 1512, 982), scr(1, 1512, -229, 2560, 1440)],
             },
         );
+        // Windows has no helper yet: the Mac -> Windows link resolves one way
+        // with a placeholder screen, so switching to the gadget works.
+        let (_, edges, _) = layout_of(&win.msgs()).unwrap();
+        assert_eq!(edges.len(), 1);
         assert_eq!(
-            layout_of(&win.msgs()).map(|l| l.1.len()),
-            Some(0),
-            "Windows has not reported its screen"
+            (edges[0].from_node, edges[0].to_node, edges[0].to_screen),
+            (mac.id, win.id, 0)
         );
         r.on_control(
             win_edge.id,

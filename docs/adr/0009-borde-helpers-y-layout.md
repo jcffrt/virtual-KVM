@@ -29,6 +29,7 @@ Arquitectura definitiva: el PC Windows recibe por el gadget USB y no ejecuta nad
      ```
      Opcionales: `from_screen`, `to_screen`, `from_range`, `to_range` (fracciones 0..1 del borde) y `oneway`. Cada enlace funciona en los dos sentidos salvo `oneway = true`.
    - **Regla de pantalla por defecto**: sin `from_screen`, el enlace sale de la pantalla del nodo más exterior en la dirección del borde (para `right`, la de borde derecho más a la derecha). Sin `to_screen`, entra por la pantalla del destino más exterior en el lado opuesto (para `right`, su pantalla más a la izquierda). Los empates se resuelven por menor índice. Con el Mac, `right` elige la externa sin configurar nada.
+   - **Destino sin pantallas** (por ejemplo el PC del gadget antes de tener helper): el enlace de ida se resuelve igualmente con `to_screen` (0 por defecto), y el log del hub dice `resolved with a placeholder screen`. El cambio funciona y nadie coloca el puntero en el destino. El enlace de vuelta aparece cuando el destino reporta sus pantallas. Sin pantallas del origen no hay enlace.
    - Un `Layout` de un widget es la fuente de verdad desde ese momento. Se persiste en `<state_dir>/layout.toml`, se reenvía a todos al instante y en el siguiente arranque tiene prioridad sobre `hub.toml`. `--load-layout` más `systemctl reload` (SIGHUP) permite probarlo antes de que exista el widget.
    - Los helpers no guardan layout: aplican el último `Layout` recibido.
 4. **Opciones** (`[edge]` en `hub.toml`, o en el layout del widget):

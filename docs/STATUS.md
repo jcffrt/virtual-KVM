@@ -228,6 +228,11 @@ Layout inicial para `hub.toml` (índices de `nodes.toml`: gadget/Windows = 1, Ma
 - Docs: `docs/windows-borde.md` y ADR 0009 (sección Helper Windows).
 - Verificado: clippy con `x86_64-pc-windows-gnu` y el `.exe` compilado (PE32+ GUI). **No probado en Windows.**
 
+## Fase 2, paso 3: helper macOS en hardware (2026-10-22 22:15)
+
+- `rawkvm-edge` instalado como LaunchAgent del usuario (`cc.olitec.rawkvm.edge`), configurado por `--from-agent` con el node_id del agente macOS. Conecta al hub como `EdgeHelper` (índice 0), reporta las dos pantallas reales y el hub las registra. Sin permisos TCC.
+- **Bloqueo**: `layout links=0`. La semilla `2 right → 1` no se resuelve porque el nodo 1 (gadget/Windows) no reporta pantallas. Pedido a VS Code: resolver enlaces hacia nodos sin pantallas con una pantalla provisional (el destino no necesita colocar el puntero). Hasta entonces no se puede probar el salto por el borde.
+
 ## Convenciones
 
 Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario en castellano, `cargo fmt` y `cargo clippy -D warnings` limpios, un ADR por decisión nueva.

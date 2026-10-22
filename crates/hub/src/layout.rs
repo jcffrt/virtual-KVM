@@ -15,6 +15,12 @@
 //! screen). Ties go to the lowest screen index. Every link also works
 //! backwards unless `oneway = true`.
 //!
+//! A target that has reported no screens (no edge helper yet, like a USB
+//! gadget PC before its helper is installed) still gets the forward link,
+//! entering its screen `to_screen` (default 0): switching to it works, only
+//! nobody places its pointer. The backward link needs the target's screens
+//! and appears when they are reported.
+//!
 //! The config links are only the seed. A layout sent by a widget (or
 //! loaded with `rawkvm-hub --load-layout`) is kept in
 //! `<state_dir>/layout.toml` and wins from then on, also after restarts.
@@ -124,29 +130,42 @@ fn pick(screens: &[Screen], wanted: Option<u8>, edge: Edge) -> Option<u8> {
     }
 }
 
-/// Resolve `specs` against the agents known so far. Links whose nodes or
-/// screens are not known yet (a machine that never connected) are skipped;
-/// call again when screens change.
+/// Result of [`compile`].
+#[derive(Debug, Default, PartialEq)]
+pub struct Compiled {
+    pub links: Vec<EdgeLink>,
+    /// `(spec index, target node)` of links resolved without the target's
+    /// screens (forward direction only).
+    pub placeholders: Vec<(usize, Uuid)>,
+}
+
+/// Resolve `specs` against the agents known so far. Links whose nodes are
+/// unknown (no agent ever had that index) or whose source has not reported
+/// screens are skipped; call again when screens change.
 pub fn compile(
     specs: &[LinkSpec],
     node_of_index: impl Fn(u8) -> Option<Uuid>,
     screens: &BTreeMap<Uuid, Vec<Screen>>,
-) -> Vec<EdgeLink> {
-    let mut out = Vec::new();
-    for spec in specs {
+) -> Compiled {
+    let mut out = Compiled::default();
+    for (n, spec) in specs.iter().enumerate() {
         let (Some(from), Some(to)) = (node_of_index(spec.from), node_of_index(spec.to)) else {
             continue;
         };
-        let (Some(fs), Some(ts)) = (screens.get(&from), screens.get(&to)) else {
+        let Some(fs) = screens.get(&from).filter(|s| !s.is_empty()) else {
             continue;
         };
         let from_edge = spec.edge;
         let to_edge = from_edge.opposite();
-        let (Some(from_screen), Some(to_screen)) = (
-            pick(fs, spec.from_screen, from_edge),
-            pick(ts, spec.to_screen, to_edge),
-        ) else {
+        let Some(from_screen) = pick(fs, spec.from_screen, from_edge) else {
             continue;
+        };
+        let (to_screen, placeholder) = match screens.get(&to).filter(|s| !s.is_empty()) {
+            Some(ts) => match pick(ts, spec.to_screen, to_edge) {
+                Some(i) => (i, false),
+                None => continue,
+            },
+            None => (spec.to_screen.unwrap_or(0), true),
         };
         let link = EdgeLink {
             from_node: from,
@@ -158,8 +177,10 @@ pub fn compile(
             to_edge,
             to_range: spec.to_range,
         };
-        if !spec.oneway {
-            out.push(EdgeLink {
+        if placeholder {
+            out.placeholders.push((n, to));
+        } else if !spec.oneway {
+            out.links.push(EdgeLink {
                 from_node: link.to_node,
                 from_screen: link.to_screen,
                 from_edge: link.to_edge,
@@ -170,7 +191,7 @@ pub fn compile(
                 to_range: link.from_range,
             });
         }
-        out.push(link);
+        out.links.push(link);
     }
     out
 }
@@ -229,8 +250,16 @@ mod tests {
             spec(2, Edge::Right, 1),
             spec(1, Edge::Right, 3), // Ubuntu, later
         ];
-        let links = compile(&specs, index, &screens);
-        assert_eq!(links.len(), 2, "the Ubuntu link waits for its screens");
+        let c = compile(&specs, index, &screens);
+        let links = c.links;
+        // Windows -> Ubuntu resolves one way with a placeholder screen.
+        assert_eq!(links.len(), 3);
+        assert_eq!(c.placeholders, [(1, linux)]);
+        let to_ubuntu = links.iter().find(|l| l.to_node == linux).unwrap();
+        assert_eq!(
+            (to_ubuntu.from_node, to_ubuntu.to_screen, to_ubuntu.to_edge),
+            (win, 0, Edge::Left)
+        );
         let fwd = links.iter().find(|l| l.from_node == mac).unwrap();
         assert_eq!(
             (
@@ -250,7 +279,52 @@ mod tests {
 
         // Once Ubuntu reports its screen, its link appears too.
         screens.insert(linux, vec![screen(linux, 0, 0, 0, 1920, 1080)]);
-        assert_eq!(compile(&specs, index, &screens).len(), 4);
+        let c = compile(&specs, index, &screens);
+        assert_eq!((c.links.len(), c.placeholders.len()), (4, 0));
+    }
+
+    /// The deployment of 2026-10-22: the Mac has its helper, the Windows PC
+    /// behind the gadget does not yet.
+    #[test]
+    fn target_without_screens_gets_a_one_way_link() {
+        let (mac, gadget) = (Uuid::new_v4(), Uuid::new_v4());
+        let mut screens = BTreeMap::new();
+        screens.insert(
+            mac,
+            vec![
+                screen(mac, 0, 0, 0, 1470, 956),
+                screen(mac, 1, 1470, -251, 1720, 1440),
+            ],
+        );
+        let index = |i| {
+            [None, Some(gadget), Some(mac)]
+                .get(i as usize)
+                .copied()
+                .flatten()
+        };
+        let specs = [spec(2, Edge::Right, 1)];
+        let c = compile(&specs, index, &screens);
+        assert_eq!(c.placeholders, [(0, gadget)]);
+        assert_eq!(c.links.len(), 1);
+        let l = &c.links[0];
+        assert_eq!(
+            (
+                l.from_node,
+                l.from_screen,
+                l.from_edge,
+                l.to_node,
+                l.to_screen,
+                l.to_edge
+            ),
+            (mac, 1, Edge::Right, gadget, 0, Edge::Left)
+        );
+        // The Windows helper reports its monitor: both directions.
+        screens.insert(gadget, vec![screen(gadget, 0, 0, 0, 1920, 1080)]);
+        let c = compile(&specs, index, &screens);
+        assert_eq!((c.links.len(), c.placeholders.len()), (2, 0));
+        // Nothing at all while the source has no screens either.
+        screens.remove(&mac);
+        assert_eq!(compile(&specs, index, &screens).links.len(), 0);
     }
 
     #[test]
@@ -267,12 +341,12 @@ mod tests {
         s.from_screen = Some(0);
         s.from_range = (0.5, 1.0);
         s.oneway = true;
-        let links = compile(&[s.clone()], index, &screens);
+        let links = compile(&[s.clone()], index, &screens).links;
         assert_eq!(links.len(), 1);
         assert_eq!((links[0].from_screen, links[0].from_range), (0, (0.5, 1.0)));
         // A screen index that does not exist skips the link.
         s.from_screen = Some(7);
-        assert!(compile(&[s], index, &screens).is_empty());
+        assert!(compile(&[s], index, &screens).links.is_empty());
     }
 
     #[test]
