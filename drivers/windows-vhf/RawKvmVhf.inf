@@ -1,0 +1,68 @@
+; RawKVM VHF driver: root-enumerated HID source with vhf.sys as lower filter.
+; Based on microsoft/Windows-IoT-Samples HIDInjector. stampinf fills
+; $ARCH$, $KMDFVERSION$ and DriverVer at build time.
+
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = System
+ClassGuid   = {4d36e97d-e325-11ce-bfc1-08002be10318}
+Provider    = %Provider%
+CatalogFile = RawKvmVhf.cat
+DriverVer   =
+PnpLockdown = 1
+
+[Manufacturer]
+%Manufacturer% = RawKvm, NT$ARCH$.10.0...19041
+
+[RawKvm.NT$ARCH$.10.0...19041]
+%DeviceDesc% = RawKvmVhf_Install, Root\RawKvmVhf
+
+; The Root\RawKvmVhf device is created by `rawkvm-agent driver-install`
+; (SetupAPI, like devcon install): pnputil does not create root devices.
+
+[RawKvmVhf_Install.NT]
+CopyFiles = RawKvmVhf_CopyFiles
+
+[RawKvmVhf_Install.NT.HW]
+AddReg = RawKvmVhf_HwAddReg
+
+[RawKvmVhf_HwAddReg]
+; VHF must sit below the HID source driver.
+HKR,,"LowerFilters",0x00010000,"vhf"
+; Only SYSTEM (the agent service) and Administrators may open \\.\RawKvmVhf.
+HKR,,"Security",,"D:P(A;;GA;;;SY)(A;;GA;;;BA)"
+
+[RawKvmVhf_Install.NT.Services]
+AddService = RawKvmVhf, 0x00000002, RawKvmVhf_Service
+
+[RawKvmVhf_Service]
+DisplayName   = %ServiceDesc%
+ServiceType   = 1               ; SERVICE_KERNEL_DRIVER
+StartType     = 3               ; SERVICE_DEMAND_START
+ErrorControl  = 1               ; SERVICE_ERROR_NORMAL
+ServiceBinary = %13%\RawKvmVhf.sys
+
+[RawKvmVhf_Install.NT.Wdf]
+KmdfService = RawKvmVhf, RawKvmVhf_WdfSection
+
+[RawKvmVhf_WdfSection]
+KmdfLibraryVersion = $KMDFVERSION$
+
+[RawKvmVhf_CopyFiles]
+RawKvmVhf.sys
+
+[DestinationDirs]
+DefaultDestDir = 13
+
+[SourceDisksNames]
+1 = %DiskName%
+
+[SourceDisksFiles]
+RawKvmVhf.sys = 1
+
+[Strings]
+Provider     = "RawKVM"
+Manufacturer = "RawKVM"
+DeviceDesc   = "RawKVM virtual HID bus"
+ServiceDesc  = "RawKVM virtual HID driver"
+DiskName     = "RawKVM driver package"

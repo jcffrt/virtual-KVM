@@ -6,6 +6,7 @@ members = [
     "crates/agent-core",
     "crates/agent-linux",
     "crates/agent-macos",
+    "crates/agent-windows",
 ]
 
 [workspace.package]
@@ -40,7 +41,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4", "v5", "serde"] }
 
 [profile.release]
 lto = "thin"

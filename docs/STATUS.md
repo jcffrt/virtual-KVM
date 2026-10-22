@@ -75,6 +75,15 @@
 - **Pendiente**: instalar con `sudo deploy/macos/install.sh` y validar con el daemon real (requiere sudo del usuario): `KeyboardReady`/`PointingReady`, escribir y mover el puntero, Cmd/Option, teclas multimedia.
 - Fase 2 (no empezada): helper de usuario para bordes (CGEventTap) que hable con el daemon por socket local.
 
+## Validación del agente macOS (2026-10-22, sesión VS Code + usuario)
+
+- Instalado con `deploy/macos/install.sh` (sudo del usuario): LaunchDaemons `cc.olitec.rawkvm.agent` y `org.pqrs.service.daemon.Karabiner-VirtualHIDDevice-Daemon`, emparejamiento en `/Library/Application Support/rawkvm/agent.toml`.
+- Log: DriverActivated, DriverConnected (0,6 s), KeyboardReady/PointingReady (~4 s en el primer arranque, ~1 s después); hub `index=1`, teclado virtual 046d:c52b.
+- Confirmado por el usuario con MX Keys y MX Ergo en el canal del Pi: escritura, Cmd+C/V, Option+A → «å», volumen, movimiento, botones, clic derecho y rueda. **Cmd/Option nativos: criterio de la Fase 1 cumplido en macOS.**
+- Sin teclas pegadas al matar el agente (`launchctl kickstart -k`), vuelve en <1 s. Commit 612b4d1 añade limpieza en SIGTERM (SIGINT ya la tenía); **hace falta reinstalar el agente con sudo para tener ese binario**.
+- ~10 min de uso: 7.654 informes, 0 perdidos; RTT 4–10 ms habitual, pico 24 ms, 30–80 ms solo en los primeros 30 s tras arrancar.
+- Revisión del orquestador: protocolo y structs contrastados byte a byte con pqrs 8.6.0; sin hallazgos.
+
 ## Convenciones
 
 Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario en castellano, `cargo fmt` y `cargo clippy -D warnings` limpios, un ADR por decisión nueva.
