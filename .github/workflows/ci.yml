@@ -49,7 +49,41 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
 
-  # Driver + agent package for Windows. windows-2022 ships the WDK
+  gadget:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-unknown-linux-musl
+            arch: aarch64
+          - target: armv7-unknown-linux-musleabihf
+            arch: armv7
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: gadget-${{ matrix.target }}
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: 0.13.0
+      - run: cargo install cargo-zigbuild --locked
+      - run: cargo zigbuild --release --target ${{ matrix.target }} -p rawkvm-agent-gadget
+      - name: Package
+        run: |
+          mkdir -p package
+          cp target/${{ matrix.target }}/release/rawkvm-agent-gadget package/
+          cp deploy/gadget/install.sh deploy/gadget/rawkvm-agent-gadget.service package/
+          cp docs/gadget-instalacion.md package/LEEME.md
+          git rev-parse HEAD > package/COMMIT.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rawkvm-agent-gadget-${{ matrix.arch }}
+          path: package/
+
+ windows-2022 ships the WDK
   # (10.0.26100, KMDF, vhfkm.lib, Inf2Cat, signtool); windows-2025 does not.
   windows:
     runs-on: windows-2022

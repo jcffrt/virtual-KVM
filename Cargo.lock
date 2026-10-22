@@ -937,6 +937,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "rawkvm-agent-gadget"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "libc",
+ "rawkvm-agent-core",
+ "rawkvm-proto",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "rawkvm-agent-linux"
 version = "0.1.0"
 dependencies = [

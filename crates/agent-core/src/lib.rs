@@ -27,6 +27,9 @@ pub trait HidSink {
     fn input(&mut self, dev_id: u8, report: &[u8]) -> Result<()>;
     /// Remove every virtual device.
     fn destroy_all(&mut self);
+    /// Every device of a `DeviceList` has been passed to `create`. Sinks
+    /// that must see the whole set at once (a USB gadget) build it here.
+    fn devices_ready(&mut self) {}
     /// This node now receives input; place the pointer at the entry edge.
     fn activate(&mut self, _enter_edge: Option<Edge>, _pos_ratio: Option<f32>) {}
     /// This node no longer receives input.
@@ -159,6 +162,7 @@ impl Session {
                 DescriptorInfo::parse(&d.report_descriptor).release_reports(),
             );
         }
+        sink.devices_ready();
         self.devices = devices;
     }
 

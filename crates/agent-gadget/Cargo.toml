@@ -1,0 +1,29 @@
+[package]
+name = "rawkvm-agent-gadget"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "RawKVM agent that presents the hub's receiver to a PC as a USB HID gadget"
+
+[lib]
+name = "rawkvm_agent_gadget"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rawkvm-agent-gadget"
+path = "src/main.rs"
+
+[dependencies]
+proto.workspace = true
+agent-core.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+libc.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+proto = { workspace = true, features = ["test-fixtures"] }

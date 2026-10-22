@@ -92,6 +92,28 @@
 - CI: job `windows` en `windows-2022` (trae el WDK; `windows-2025` no), compila agente (MSVC) y driver, firma con un certificado nuevo por build y publica el artefacto **rawkvm-windows**.
 - Verificado: tests del crate (9) en macOS/Linux, clippy para `x86_64-pc-windows-gnu` con zig, el C del driver compila y enlaza en CI. **Pendiente: prueba en los dos PCs Windows por el usuario** (test-signing + reinicio, Secure Boot desactivado).
 
+## Revisión del orquestador: Windows (2026-10-22)
+
+- Verificado en el Mac sobre 87fb803: fmt, clippy -D warnings, 81 tests. CI run 39814129211 en verde (linux, hub-aarch64, macos, windows 7m44s) con artefacto `rawkvm-windows` (driver .sys/.cat firmados, .cer, .inf, rawkvm-agent.exe, install/uninstall.ps1, LEEME.md).
+- Driver revisado: VhfCreate/VhfStart/VhfDelete en cola PASSIVE, `EvtFileCleanup` destruye los VHF del agente caído, WriteReport completa al instante, Get/SetFeature → STATUS_NOT_SUPPORTED, report ID = primer byte solo con `RAWKVM_FLAG_REPORT_IDS`. install.ps1 revisado: comprueba TESTSIGNING por registro, importa el .cer y retira los antiguos, ACL de ProgramData\rawkvm, servicio con reinicio. Sin hallazgos.
+- **Pendiente: prueba en un PC Windows real por el usuario** (`LEEME.md`): test-signing (requiere Secure Boot desactivado; BitLocker pedirá clave de recuperación), reinicio, `install.ps1 -Hub 192.168.1.28 -Token <token>`, Administrador de dispositivos, teclear y usar el trackball, AltGr y tecla Windows nativos, conmutación con el atajo Ctrl,Ctrl,1/2 entre Mac y Windows.
+- Nota menor: el token pasa por la línea de comandos de PowerShell y queda en el historial de PSReadLine del administrador; aceptable para uso personal, documentar o pedirlo interactivamente en una versión futura.
+
+## Nuevo componente: agente gadget USB (decisión del usuario, 2026-10-22)
+
+- **Objetivo**: un agente en una Raspberry Pi (u otra placa con USB OTG) que recibe los informes del hub por Wi‑Fi y los presenta por USB al PC como si fuera el receptor Unifying (ConfigFS HID gadget con los mismos VID/PID y descriptores crudos). El PC no necesita driver ni software: elimina test‑signing en Windows y Karabiner en macOS para ese PC. Cable USB‑A a USB‑A (o a USB‑C) entre la Pi y el PC.
+- **Hardware**: Pi 3 B/B+ **no** sirven (OTG cableado al hub LAN9514; puertos solo host). Sirven Pi 3 A+, Pi Zero / Zero 2 W, Pi 4 (USB‑C), Orange Pi Zero 2W (segundo USB‑C). Pendiente: el usuario confirma qué modelo tiene.
+- La prueba en Windows del driver VHF queda aplazada por el usuario; el gadget puede hacerla innecesaria para PCs con puerto USB libre.
+- Crate previsto: `crates/agent-gadget` (Linux, aarch64 y armv7), reutiliza `agent-core`; HidSink sobre ConfigFS (`/sys/kernel/config/usb_gadget/rawkvm`), un `hid.usbN` por HidDevice, informes a `/dev/hidgN`. Detalles en el brief enviado a la sesión de VS Code.
+
+## Agente gadget USB: implementado (2026-10-22)
+
+- `crates/agent-gadget` (lib + bin `rawkvm-agent-gadget`): `configfs.rs` (árbol del gadget como lista de operaciones, funciones `hid.usb<id>` enlazadas en orden, `report_length` = mayor input + ID: 8/8/32 con los `.nodj.bin`, subclase/protocolo boot 1/1, 1/2, 0/0), `hidg.rs` (`/dev/hidgN` vía `dev` + `/sys/dev/char`, EAGAIN: 8 ms ratón / 50 ms resto y descarte, hilo que drena los OUT del host), `sink.rs` (`GadgetSink`; conserva el gadget si la DeviceList no cambia, release-all en destroy_all, desmontaje al salir y al arrancar). `agent-core` gana `HidSink::devices_ready()`.
+- CLI: `--hub/--token/--unpin`, `--configure-only`, `--udc`, `--no-hidpp` (hosts Linux), `--serial`. Config `/etc/rawkvm/agent.toml`.
+- `deploy/gadget/install.sh` (overlay dwc2 en Pi, modules-load, ConfigFS, servicio), `rawkvm-agent-gadget.service`; `docs/gadget-instalacion.md`; ADR 0007.
+- CI: job `gadget` (aarch64-musl, armv7-musleabihf) con artefactos `rawkvm-agent-gadget-aarch64` / `-armv7`.
+- Verificado en el Mac: 8 tests (ConfigFS simulado en directorio temporal), clippy, cross-build de ambos targets. **Pendiente: prueba en una placa real** (el usuario confirma el modelo).
+
 ## Convenciones
 
 Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario en castellano, `cargo fmt` y `cargo clippy -D warnings` limpios, un ADR por decisión nueva.

@@ -1,0 +1,16 @@
+# RawKVM USB gadget agent. Root: it writes ConfigFS and /dev/hidgN.
+# Add --no-hidpp to ExecStart if the PC on the USB cable runs Linux (ADR 0007).
+[Unit]
+Description=RawKVM USB gadget agent (receiver over USB)
+Wants=network-online.target
+After=network-online.target sys-kernel-config.mount
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/rawkvm-agent-gadget --config /etc/rawkvm/agent.toml
+Restart=always
+RestartSec=2
+Nice=-10
+
+[Install]
+WantedBy=multi-user.target
