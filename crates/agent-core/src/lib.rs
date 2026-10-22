@@ -2,11 +2,13 @@
 //! discovery, the QUIC session and reconnection. Each OS crate provides a
 //! [`HidSink`] that owns the virtual HID devices.
 
+pub mod canvas;
 pub mod client;
 pub mod config;
 pub mod discovery;
 pub mod edge;
 pub mod helper;
+pub mod widget;
 
 use std::collections::HashMap;
 use std::net::{SocketAddr, ToSocketAddrs};

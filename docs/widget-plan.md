@@ -1,6 +1,6 @@
 # Widget (Tauri 2): plan para revisar
 
-Borrador del 2026-10-22. **Sin implementar** hasta que el usuario lo confirme. Base: handoff §9, ADR 0009 (el layout vive en el hub) y la Fase 2 validada entre Mac y Windows.
+Aprobado por el usuario el 2026-10-22, con estas respuestas: v3 sí; primera entrega solo en el Mac; Svelte; cambio rápido desde la bandeja. **Paso 1 hecho** (`agent-core::canvas`, `agent-core::widget`). **Paso 2 (v3) en revisión**: ver «Protocolo v3: propuesta detallada». Base: handoff §9, ADR 0009 (el layout vive en el hub) y la Fase 2 validada entre Mac y Windows.
 
 ## Qué es
 
@@ -60,6 +60,28 @@ No tiene dispositivo virtual ni lógica de entrada.
   4. **Opciones**: `push_ms`, `corner_pct`, `dead_zone_px`; con `SetOptions`, también la histéresis y el atajo; arranque automático.
 - Arranque automático: Login Item en macOS (plugin `autostart` de Tauri) y clave `Run` en Windows.
 - Empaquetado: `.app` firmada ad hoc (`codesign -s -`), en un `.zip` o `.dmg` del CI (job `macos`), y `.exe`/NSIS en Windows más adelante.
+
+## Protocolo v3: propuesta detallada (para revisar antes de tocar los agentes)
+
+Todo lo que el widget necesita del protocolo va junto, para que el redespliegue coordinado sea uno solo: hub y gadget en la Pi, agente y helper del Mac, helper del Windows. `Hello` y `Reject` no cambian: los nodos v2 reciben `VersionMismatch`.
+
+1. **`Layout.canvas: Vec<Placement { node, x, y, scale: Option<f32> }>`**: la disposición del lienzo, con la corrección manual de escala por nodo. El hub la guarda en `layout.toml` (nuevo `[[canvas]]`) junto a los enlaces y la reenvía con cada `Layout`. Con la semilla de `hub.toml` va vacía y el widget propone una con `canvas::initial` a partir de los enlaces en vigor. Los helpers la ignoran.
+2. **`Entry { screen, edge, pos_ratio }` en `proto`**, y `SwitchTo { target, entry: Option<Entry> }`, `Activate { entry: Option<Entry> }`. Sin `entry`, el destino conserva su puntero, como con el atajo. Lo usa el cambio rápido desde la bandeja.
+3. **Significado de `Screen::scale`**: unidades nativas por unidad lógica. En macOS es `1.0`, porque sus coordenadas ya son puntos; hoy el helper manda la escala Retina (2.0), lo que haría la integrada la mitad de grande en el lienzo. En Windows sigue siendo `dpi/96`. Cambia una línea en el helper macOS.
+4. **`HubStatus.version: String`**: la versión y el commit del hub (`0.1.0 (d69e767)`), para la pestaña Hub.
+5. **`Control::Settings(HubSettings { hysteresis_ms, hotkey })`**:
+   - El hub lo envía a los widgets al conectar y cuando cambia.
+   - Un widget lo envía para cambiarlo; el hub lo aplica al momento y lo guarda en `<state_dir>/settings.toml`, que en adelante tiene prioridad sobre `[switching]` de `hub.toml`, igual que `layout.toml` sobre `[[layout]]`.
+   - Las `EdgeOptions` siguen viajando en `Layout`.
+   - Así la pestaña Opciones no necesitará otra versión de protocolo.
+
+Fuera de v3, a propósito: nombres de monitor (no hacen falta para el lienzo), versión de cada nodo (iría en `Hello`, que está congelado) y emparejamiento HID++ (fase 3; sus mensajes ya existen).
+
+Qué cambia en cada componente:
+- hub: `layout.toml` con `canvas`, `settings.toml`, `version` en `Status`, `SwitchTo`/`Activate` con `Entry`;
+- `agent-core`: `edge` y `helper` con `Entry`, `run` sin cambios para los sinks;
+- helper macOS: `scale = 1.0`;
+- helper Windows, gadget, agentes Linux/macOS/Windows: solo recompilar.
 
 ## Orden y estimación (sesiones)
 

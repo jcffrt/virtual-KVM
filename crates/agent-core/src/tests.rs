@@ -392,3 +392,109 @@ async fn edge_helpers_body() {
     }
     let _ = std::fs::remove_dir_all(&hub.dir);
 }
+
+/// A widget sees the live screens and status, sets a layout, and a second
+/// widget connecting later gets that layout from the hub.
+#[tokio::test]
+async fn widget_sees_screens_and_sets_the_layout() {
+    tokio::task::LocalSet::new().run_until(widget_body()).await;
+}
+
+async fn widget_body() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let hub = start_hub().await;
+    let opts = |path: &PathBuf| AgentOptions {
+        config_path: path.clone(),
+        os: Os::MacOs,
+    };
+    let a_path = agent_config(&hub, &hub.cfg.token, &hub.fingerprint);
+    let a_id = AgentConfig::load_or_init(&a_path).unwrap().node_id;
+    let sa = RecSink::default();
+    let mut tasks = Vec::new();
+    {
+        let (sink, path) = (sa.clone(), a_path.clone());
+        tasks.push(tokio::task::spawn_local(async move {
+            let mut s = sink;
+            run(opts(&path), &mut s).await
+        }));
+    }
+    wait_for(&sa, |e| e.contains(&Ev::Activate)).await;
+    let h_path = agent_config(&hub, &hub.cfg.token, &hub.fingerprint);
+    let mut hc = AgentConfig::load_or_init(&h_path).unwrap();
+    hc.for_node = Some(a_id);
+    hc.save(&h_path).unwrap();
+    let pa = FakeScreen::new(1920, 1080, edge::Point { x: 10, y: 10 });
+    {
+        let path = h_path.clone();
+        tasks.push(tokio::task::spawn_local(async move {
+            let mut p = pa;
+            helper::run_helper(opts(&path), &mut p).await
+        }));
+    }
+
+    let start_widget = |tasks: &mut Vec<tokio::task::JoinHandle<anyhow::Result<()>>>| {
+        let path = agent_config(&hub, &hub.cfg.token, "");
+        let changes = Arc::new(AtomicUsize::new(0));
+        let c = changes.clone();
+        let shared = widget::WidgetShared::new(move |_| {
+            c.fetch_add(1, Ordering::SeqCst);
+        });
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let s = shared.clone();
+        tasks.push(tokio::task::spawn_local(async move {
+            widget::run_widget(opts(&path), s, rx).await
+        }));
+        (shared, tx, changes)
+    };
+    let until = |shared: Arc<widget::WidgetShared>,
+                 pred: Box<dyn Fn(&widget::WidgetState) -> bool>| async move {
+        for _ in 0..300 {
+            if pred(&shared.snapshot()) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("timed out: {:#?}", shared.snapshot());
+    };
+
+    let (w1, tx1, changes) = start_widget(&mut tasks);
+    until(
+        w1.clone(),
+        Box::new(move |st| {
+            st.connected.as_ref().is_some_and(|c| c.0 == "test-hub")
+                && st.screens.get(&a_id).is_some_and(|s| s.len() == 1)
+                && st.status.as_ref().is_some_and(|s| s.active == Some(a_id))
+                && st.devices.len() == 1
+                && st.rtt_ms.is_some()
+        }),
+    )
+    .await;
+    assert!(changes.load(Ordering::SeqCst) > 0, "the callback fired");
+
+    let b = Uuid::new_v4();
+    let link = proto::EdgeLink {
+        from_node: a_id,
+        from_screen: 0,
+        from_edge: proto::Edge::Right,
+        from_range: (0.0, 1.0),
+        to_node: b,
+        to_screen: 0,
+        to_edge: proto::Edge::Left,
+        to_range: (0.0, 1.0),
+    };
+    tx1.send(Control::Layout {
+        screens: vec![],
+        edges: vec![link.clone()],
+        options: proto::EdgeOptions::default(),
+    })
+    .unwrap();
+    let want = link.clone();
+    until(w1.clone(), Box::new(move |st| st.edges == [want.clone()])).await;
+
+    let (w2, _tx2, _) = start_widget(&mut tasks);
+    until(w2, Box::new(move |st| st.edges == [link.clone()])).await;
+    for t in tasks {
+        t.abort();
+    }
+    let _ = std::fs::remove_dir_all(&hub.dir);
+}

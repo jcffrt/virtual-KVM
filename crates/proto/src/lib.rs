@@ -127,6 +127,19 @@ pub struct Screen {
     pub scale: f32,
 }
 
+/// Where the widget's monitor canvas puts one node's block of screens, in
+/// logical units (points). Rigid block: the node's screens keep their own
+/// arrangement, multiplied by the node's logical factor.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct Placement {
+    pub node: Uuid,
+    pub x: f64,
+    pub y: f64,
+    /// Manual correction of the node's scale (native units per logical
+    /// unit) when the reported one is wrong. `None`: use the reported one.
+    pub scale: Option<f32>,
+}
+
 /// Link between an edge range of one screen and an edge range of another.
 /// Ranges are expressed as `pos_ratio` intervals (0.0..=1.0 along the edge).
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]

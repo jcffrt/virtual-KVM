@@ -240,6 +240,22 @@ Layout inicial para `hub.toml` (índices de `nodes.toml`: gadget/Windows = 1, Ma
 - Tres cambios consecutivos por borde en 7 s: Windows→Mac (entrada por el borde derecho de la externa, pos 0,61, puntero colocado en (3187, 627)), Mac→Windows (0,55), Windows→Mac (0,66). Sin atajo. Sin teclas pegadas reportadas.
 - **Criterio de aceptación de la Fase 2 cumplido para Mac ↔ Windows**: llevar el puntero al borde cambia de equipo y aparece a la altura correcta. Pendientes de la Fase 2: Ubuntu (GNOME) cuando haya máquina, widget Tauri (descubrimiento, layout gráfico editable, estado), y afinado (rebotes, esquinas, opción "empujar") según uso real.
 
+## Widget Tauri: aprobado (2026-10-22)
+
+Decisiones del usuario/orquestador sobre `docs/widget-plan.md`: (1) protocolo v3 con la disposición del lienzo (`Layout.canvas`) persistida en el hub; (2) primera entrega solo para el Mac, Windows después; (3) Svelte; (4) cambio rápido de equipo desde la bandeja. Orden: agent-core::widget + canvas, proto v3, esqueleto Tauri + pestaña Hub, Monitores, Dispositivos/Opciones, empaquetado + CI. Al pasar a v3 habrá que redesplegar hub, gadget, agente y helpers del Mac y helper del Windows a la vez.
+
+## Widget, paso 1: agent-core::canvas y agent-core::widget (2026-10-22, VS Code)
+
+- `canvas`:
+  - bloques rígidos por nodo en unidades lógicas (un factor por nodo: escala de su principal o corrección manual) y marcador de 1920×1080 para nodos sin pantallas;
+  - `links()`: lados que se tocan entre nodos distintos, con tolerancia de 1 unidad, dan un enlace en cada sentido con los rangos del tramo solapado;
+  - `snap()`: imán a lados y alineado de bordes superiores;
+  - `initial()`: disposición inicial a partir de los enlaces en vigor;
+  - tests con el escritorio real del Mac (Windows inventado y marcado).
+- `widget`: `WidgetState` (estado, pantallas vivas por nodo, layout, dispositivos, RTT) y `run_widget` (sesión `Widget` con reconexión y comandos `Control`). Test e2e contra el hub real: el widget ve pantallas, estado, dispositivos y RTT, envía un `Layout`, y un segundo widget lo recibe.
+- `proto::Placement` añadido. Aún no viaja en ningún mensaje: no cambia el protocolo.
+- Propuesta de protocolo v3 en `docs/widget-plan.md`, pendiente de revisión del orquestador antes de tocar los agentes.
+
 ## Convenciones
 
 Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario en castellano, `cargo fmt` y `cargo clippy -D warnings` limpios, un ADR por decisión nueva.
