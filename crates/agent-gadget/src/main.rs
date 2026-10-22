@@ -11,8 +11,11 @@ use tracing::{info, warn};
 /// Config of the system service.
 const SYSTEM_CONFIG: &str = "/etc/rawkvm/agent.toml";
 
+/// Crate version and git commit of this build.
+const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("RAWKVM_COMMIT"), ")");
+
 #[derive(Parser, Debug)]
-#[command(version, about)]
+#[command(version = VERSION, about)]
 struct Args {
     #[arg(short, long, default_value = SYSTEM_CONFIG)]
     config: PathBuf,
@@ -62,6 +65,11 @@ fn main() -> Result<()> {
         )
         .init();
     let args = Args::parse();
+    info!(
+        version = VERSION,
+        pid = std::process::id(),
+        "rawkvm-agent-gadget starting"
+    );
     if !cfg!(target_os = "linux") {
         anyhow::bail!("the USB gadget agent needs Linux (ConfigFS)");
     }

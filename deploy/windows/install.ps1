@@ -95,3 +95,6 @@ Start-Service $serviceName
 Get-Service $serviceName | Format-Table Name, Status, StartType
 
 Write-Host "Log: $dataDir\agent.log" -ForegroundColor Green
+
+# Flush the files just written to disk.
+try { Write-VolumeCache -DriveLetter $env:SystemDrive[0] } catch { }

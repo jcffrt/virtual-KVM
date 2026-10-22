@@ -70,9 +70,7 @@ impl LayoutFile {
         if let Some(dir) = path.parent() {
             config::ensure_dir(dir)?;
         }
-        let tmp = path.with_extension("toml.tmp");
-        config::write_private(&tmp, self.to_text()?.as_bytes())?;
-        fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))
+        config::write_private(path, self.to_text()?.as_bytes())
     }
 }
 

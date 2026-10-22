@@ -42,3 +42,7 @@ systemctl enable --now rawkvm-hub.service
 sleep 2
 echo "Pairing token:"
 /usr/local/bin/rawkvm-hub --config /etc/rawkvm/hub.toml --show-token
+
+# Flush to disk now: boards fed from a PC lose power abruptly, and the SD
+# card may otherwise keep these writes in its cache for minutes.
+sync

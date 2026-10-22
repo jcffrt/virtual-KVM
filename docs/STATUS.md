@@ -201,6 +201,20 @@ Layout inicial para `hub.toml` (índices de `nodes.toml`: gadget/Windows = 1, Ma
 - Errores fatales (versión, token, certificado): los agentes y el helper registran el error y, si corren como servicio (sin terminal), esperan 60 s antes de salir. El hub registra cada rechazo repetido de un mismo nodo y motivo una vez por minuto.
 - **Pendiente de probar en hardware**: el warp (supresión de eventos con el ratón de Karabiner) y el cambio real Mac → gadget.
 
+## Incidente: apagón de la Orange Pi tras un despliegue (2026-10-22 21:35–21:44)
+
+- La Orange Pi se apagó bruscamente (cambio del cable USB al Windows) poco después de instalar hub v2, unit nueva y la semilla del layout. Al arrancar, la SD había **perdido las escrituras posteriores a las 21:13**: binario del hub corrupto (SEGV incluso con `--version`, hash distinto), `hub.toml` sin la semilla, unit antigua. El hub quedó en bucle de reinicios (15 intentos) y ningún equipo tenía teclado.
+- Resuelto reinstalando hub, gadget, unit y semilla con `sync` explícito y comprobando hashes. `dmesg` no muestra errores de ext4; es escritura diferida sin flush antes del corte.
+- **Medidas**: todos los scripts de despliegue hacen `sync` al final; el orquestador comprueba el hash tras instalar; y tras un despliegue hay que esperar unos segundos antes de cortar la alimentación. Como la Orange Pi se alimenta del PC Windows, cualquier apagado del PC es un corte brusco: valorar `commit=1` en `/etc/fstab` para la raíz, o alimentación por GPIO.
+- Tras el arreglo: hub v2 con semilla de layout, gadget activo (índice 1) enumerado por el Windows y funcionando allí (confirmado por el usuario), agente macOS v2 registrado como índice 2.
+
+## Tras el apagón: escrituras durables y versión en el log (2026-10-22, VS Code)
+
+- `config::write_private` (hub) y `AgentConfig::save` (agentes) escriben a un temporal, hacen `fsync`, renombran y hacen `fsync` del directorio. Lo usan `hub.toml`, `nodes.toml`, `layout.toml`, el certificado y `agent.toml`.
+- Todos los `install.sh` terminan con `sync`; `install.ps1`, con `Write-VolumeCache`.
+- `rawkvm-hub` y `rawkvm-agent-gadget`: `--version` incluye el commit (`build.rs`), y la primera línea del log de cada arranque dice `starting version=… pid=…`.
+- Docs: «Cortes de alimentación y la tarjeta SD» en `gadget-instalacion.md` (Armbian monta con `commit=600`: recomendado `commit=5` o `1`, o alimentar por GPIO) y entrada en problemas conocidos de `fase0-validacion.md`.
+
 ## Convenciones
 
 Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario en castellano, `cargo fmt` y `cargo clippy -D warnings` limpios, un ADR por decisión nueva.

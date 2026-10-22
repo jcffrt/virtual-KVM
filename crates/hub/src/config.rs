@@ -206,9 +206,14 @@ impl HubConfig {
     }
 }
 
-/// Write a file readable only by its owner.
+/// Write a file readable only by its owner, atomically and durably: a
+/// temporary file is written and fsynced, renamed over `path`, and the
+/// directory is fsynced. The hub's board may lose power at any moment
+/// (an OTG port fed by the PC), and the SD card keeps writes in a cache
+/// for a while; without this a power cut can leave an empty or old file.
 pub fn write_private(path: &Path, data: &[u8]) -> Result<()> {
     use std::io::Write;
+    let tmp = path.with_extension("tmp");
     let mut opts = fs::OpenOptions::new();
     opts.write(true).create(true).truncate(true);
     #[cfg(unix)]
@@ -217,9 +222,19 @@ pub fn write_private(path: &Path, data: &[u8]) -> Result<()> {
         opts.mode(0o600);
     }
     let mut f = opts
-        .open(path)
-        .with_context(|| format!("writing {}", path.display()))?;
+        .open(&tmp)
+        .with_context(|| format!("writing {}", tmp.display()))?;
     f.write_all(data)?;
+    f.sync_all()
+        .with_context(|| format!("syncing {}", tmp.display()))?;
+    drop(f);
+    fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
+    #[cfg(unix)]
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        fs::File::open(dir)
+            .and_then(|d| d.sync_all())
+            .with_context(|| format!("syncing {}", dir.display()))?;
+    }
     Ok(())
 }
 

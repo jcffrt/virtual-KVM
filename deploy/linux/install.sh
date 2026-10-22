@@ -20,3 +20,7 @@ systemctl --user daemon-reload
 systemctl --user enable rawkvm-agent.service
 echo "Pair once with: ~/.local/bin/rawkvm-agent --hub <pi-ip> --token <hex>  (Ctrl+C after 'connected')"
 echo "Then: systemctl --user start rawkvm-agent"
+
+# Flush to disk now: boards fed from a PC lose power abruptly, and the SD
+# card may otherwise keep these writes in its cache for minutes.
+sync

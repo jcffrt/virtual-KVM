@@ -98,6 +98,8 @@ impl AgentConfig {
             "# RawKVM agent configuration.\n# Remove `hub_fingerprint` to pair with a different hub.\n\n{}",
             toml::to_string_pretty(self)?
         );
+        // Atomic and durable: the gadget's board may lose power at any time.
+        let tmp = path.with_extension("tmp");
         let mut opts = fs::OpenOptions::new();
         opts.write(true).create(true).truncate(true);
         #[cfg(unix)]
@@ -106,9 +108,17 @@ impl AgentConfig {
             opts.mode(0o600);
         }
         use std::io::Write;
-        opts.open(path)
-            .with_context(|| format!("writing {}", path.display()))?
-            .write_all(text.as_bytes())?;
+        let mut f = opts
+            .open(&tmp)
+            .with_context(|| format!("writing {}", tmp.display()))?;
+        f.write_all(text.as_bytes())?;
+        f.sync_all()?;
+        drop(f);
+        fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
+        #[cfg(unix)]
+        if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+            fs::File::open(dir).and_then(|d| d.sync_all())?;
+        }
         Ok(())
     }
 

@@ -47,3 +47,7 @@ fi
 reload "$agent_label" "$here/$agent_label.plist"
 
 echo "installed; log: tail -f /var/log/rawkvm-agent.log"
+
+# Flush to disk now: boards fed from a PC lose power abruptly, and the SD
+# card may otherwise keep these writes in its cache for minutes.
+sync

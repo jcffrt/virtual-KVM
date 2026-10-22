@@ -59,3 +59,7 @@ if [ -n "$udc" ]; then
 elif [ "$reboot_needed" -eq 0 ]; then
     echo "WARNING: /sys/class/udc is empty: the OTG port is not in peripheral mode (see docs/gadget-instalacion.md)." >&2
 fi
+
+# Flush to disk now: boards fed from a PC lose power abruptly, and the SD
+# card may otherwise keep these writes in its cache for minutes.
+sync

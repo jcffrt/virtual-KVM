@@ -18,8 +18,11 @@ use layout::LayoutFile;
 use nodes::NodeStore;
 use router::{Options, Router, RESTORE_GRACE};
 
+/// Crate version and git commit of this build.
+const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("RAWKVM_COMMIT"), ")");
+
 #[derive(Parser, Debug)]
-#[command(version, about)]
+#[command(version = VERSION, about)]
 struct Args {
     /// Configuration file. Created with a fresh token on first start.
     #[arg(short, long, default_value = config::DEFAULT_CONFIG)]
@@ -109,6 +112,14 @@ fn main() -> Result<()> {
 }
 
 async fn serve(args: Args) -> Result<()> {
+    // First line of every start: which build is running (after a deploy or
+    // a power cut, a stale or corrupt binary shows up here or not at all).
+    info!(
+        version = VERSION,
+        pid = std::process::id(),
+        config = %args.config.display(),
+        "rawkvm-hub starting"
+    );
     let (cfg, created) = HubConfig::load_or_init(&args.config)?;
     if created {
         warn!(

@@ -110,6 +110,8 @@ Esperado: `ctrl down`, `first tap`, `ctrl down`, `second tap, armed`, `digit ind
 
 ## 7. Problemas conocidos
 
+- Tras un corte de luz el hub no arranca, o arranca con una configuración antigua: la SD perdió escrituras recientes. Comprobar `rawkvm-hub --version` (versión y commit) y la primera línea del log (`rawkvm-hub starting`), y reinstalar. Para evitarlo, ver «Cortes de alimentación y la tarjeta SD» en `docs/gadget-instalacion.md` (`commit=` en `/etc/fstab`, `sync` tras desplegar).
+
 - `--list` no muestra nodos `[forward]` y sí `logitech-djreceiver`, o el log del hub dice `is bound to "logitech-djreceiver", not hid-generic; not forwarding it`: la blacklist no está activa. Si pasa tras reiniciar, el initramfs no la lleva: `sudo update-initramfs -u` (comprobar con `lsinitramfs /boot/initrd.img-$(uname -r) | grep rawkvm`) y reiniciar, o repetir `install.sh`. El hub no reenvía interfaces con otro driver (`require_hid_generic = true` en `[receiver]`).
 - El agente dice `the hub certificate is not the pinned one`: se reinstaló el hub y cambió su certificado. Ejecutar `rawkvm-agent --unpin` una vez.
 - `opening /dev/uhid`: falta la regla udev, el módulo `uhid` o pertenecer al grupo `input`.

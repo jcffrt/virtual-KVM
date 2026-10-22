@@ -39,3 +39,7 @@ launchctl bootstrap "gui/$uid" "$plist"
 
 echo "installed; log: tail -f ~/Library/Logs/rawkvm-edge.log"
 echo "diagnostics: rawkvm-edge --show"
+
+# Flush to disk now: boards fed from a PC lose power abruptly, and the SD
+# card may otherwise keep these writes in its cache for minutes.
+sync

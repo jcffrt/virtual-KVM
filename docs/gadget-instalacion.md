@@ -13,6 +13,15 @@ En la Orange Pi Zero 2W (y en la Pi 4 o la Pi Zero 2 W) el puerto OTG es **tambi
 - Alimentar la placa por los pines **5V (2 o 4) y GND (6)** del conector de 40 pines (comprobar en el pinout de la placa) con una fuente propia de 5 V / 2 A; el OTG sigue funcionando para datos. Lo ideal es un cable USB sin la línea de 5 V (o un adaptador "power blocker") para no enfrentar las dos fuentes; muchos PCs lo toleran, pero no es seguro con todos.
 - O comprobar que el PC mantiene 5 V en USB en suspensión y apagado (opción de la BIOS «USB power in S3/S4/S5» y ErP desactivado).
 
+### Cortes de alimentación y la tarjeta SD
+
+Si la placa se alimenta del PC, **cada apagado del PC es un corte brusco**. Linux guarda las escrituras en memoria un tiempo antes de llevarlas a la SD, y Armbian suele montar la raíz con `commit=600` (comprobar con `grep commit /etc/fstab`): hasta **10 minutos**. Un corte poco después de un despliegue ya dejó una vez el binario del hub corrupto y `hub.toml` y la unit en versiones anteriores. Para reducirlo:
+
+- Los instaladores terminan con `sync`. El hub y los agentes escriben sus ficheros (`hub.toml`, `nodes.toml`, `layout.toml`, `agent.toml`) de forma atómica y con `fsync`. Aun así, tras copiar binarios a mano, ejecutar `sync` y **esperar unos segundos** antes de apagar el PC o desenchufar.
+- Bajar el intervalo en `/etc/fstab`: cambiar `commit=600` por `commit=5` (o `commit=1`; más escrituras y más desgaste de la SD) en la línea de `/`. Aplicar con `sudo mount -o remount /`. La opción `sync` hace todo muy lento y no se recomienda.
+- Lo más seguro es alimentar la placa por el conector de 40 pines (ver arriba): entonces no se apaga con el PC.
+- Comprobar qué binario corre: `rawkvm-hub --version` y `rawkvm-agent-gadget --version` muestran la versión y el commit. Lo mismo aparece en la primera línea del log de cada arranque (`rawkvm-hub starting version=…`).
+
 Cuando el PC deja de leer (apagado, suspendido o cable fuera), el agente lo registra una vez («the USB host is not reading reports»), descarta los informes sin esperar y avisa al volver.
 
 ### Logitech Options+ / G HUB en el PC
