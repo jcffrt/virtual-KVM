@@ -478,6 +478,31 @@ impl KeyboardLayout {
             keys: &payload[self.keys_byte..keys_end],
         })
     }
+
+    /// A copy of `report` with Alt and GUI swapped, or `None` if it is not
+    /// a report of this keyboard layout. Modifier bits LeftAlt 0x04 <->
+    /// LeftGUI 0x08 and RightAlt 0x40 <-> RightGUI 0x80; in the key array
+    /// usages 0xE2 <-> 0xE3 and 0xE6 <-> 0xE7. Nothing else changes.
+    ///
+    /// This is the one deliberate deviation from raw forwarding (ADR 0011),
+    /// for a target whose OS expects the other layout.
+    pub fn swap_alt_gui(&self, uses_report_ids: bool, report: &[u8]) -> Option<Vec<u8>> {
+        self.decode(uses_report_ids, report)?;
+        let mut out = report.to_vec();
+        let base = usize::from(uses_report_ids);
+        let m = &mut out[base + self.modifiers_bit / 8];
+        *m = (*m & 0x33) | ((*m & 0x44) << 1) | ((*m & 0x88) >> 1);
+        for k in &mut out[base + self.keys_byte..base + self.keys_byte + self.keys_len] {
+            *k = match *k {
+                0xE2 => 0xE3,
+                0xE3 => 0xE2,
+                0xE6 => 0xE7,
+                0xE7 => 0xE6,
+                other => other,
+            };
+        }
+        Some(out)
+    }
 }
 
 #[cfg(any(test, feature = "test-fixtures"))]

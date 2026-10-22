@@ -296,6 +296,14 @@ Decisiones del usuario/orquestador sobre `docs/widget-plan.md`: (1) protocolo v3
 - Docs: `docs/widget-instalacion.md`.
 - Verificado: `.app` de 9,4 MB; arranca y escribe el log («not paired»). **Sin probar contra el hub** (el emparejamiento lo hace el usuario con el token).
 
+## Intercambio Alt/GUI por agente (2026-10-22, VS Code)
+
+- `[[node_options]] index = N, swap_alt_gui = true` en `hub.toml` (por defecto no).
+- `KeyboardLayout::swap_alt_gui` (proto) intercambia los bits 0x04↔0x08 y 0x40↔0x80 y los usages 0xE2↔0xE3 y 0xE6↔0xE7, solo en informes de la interfaz de teclado.
+- El router lo aplica solo al agente activo con la opción, después del atajo. La copia redundante va igual; el release-all no cambia.
+- Tests con informes boot de 8 B y con el layout DJ de 7 B (K230), y test del router (solo el destino configurado; ratón y release-all intactos).
+- ADR 0011; nota en `gadget-instalacion.md`. **Primer objetivo de la Fase 3**: cambio de perfil por HID++ `HOSTS_INFO` 0x1815 `setHostOsVersion` (anotado en `fase2-plan.md`).
+
 ## Convenciones
 
 Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario en castellano, `cargo fmt` y `cargo clippy -D warnings` limpios, un ADR por decisión nueva.

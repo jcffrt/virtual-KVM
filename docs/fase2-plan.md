@@ -105,3 +105,8 @@ Los pasos 1 a 4 dan el cambio por borde entre Mac y Windows sin widget.
 2. ¿El PC Windows está en la misma LAN que la Orange Pi (cable o Wi-Fi)?
 3. ¿Cambio inmediato al tocar el borde, o hay que «empujar» (unos 100 ms de contacto o dos toques) para evitar cambios accidentales?
 4. ¿Se puede instalar en el Windows un `.exe` sin firmar que arranca al iniciar sesión?
+
+## Después de la Fase 2: primer objetivo de la Fase 3
+
+Cambiar el perfil de sistema operativo del teclado al conmutar, por HID++: feature `HOSTS_INFO` (0x1815), `setHostOsVersion`, como hace Logitech Options. El MX Keys guarda el perfil macOS en el canal del receptor de la Pi, así que Alt y Win salen cruzadas en el Windows. Mientras tanto, el parche provisional es `[[node_options]] swap_alt_gui` (ADR 0011).
+

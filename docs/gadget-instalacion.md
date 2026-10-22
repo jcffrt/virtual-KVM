@@ -26,6 +26,18 @@ Si la placa se alimenta del PC, **cada apagado del PC es un corte brusco**. Linu
 
 Cuando el PC deja de leer (apagado, suspendido o cable fuera), el agente lo registra una vez («the USB host is not reading reports»), descarta los informes sin esperar y avisa al volver.
 
+### Alt y Win cruzadas en Windows (MX Keys)
+
+El MX Keys guarda en el canal del receptor de la Pi el perfil de macOS, así que en el Windows del gadget las teclas Alt y Win salen cambiadas. Mientras no esté el cambio de perfil por HID++ (Fase 3), el hub puede intercambiarlas para ese equipo. En `/etc/rawkvm/hub.toml` de la Pi, con el índice del gadget (`sudo rawkvm-hub --list-nodes`):
+
+```toml
+[[node_options]]
+index = 1
+swap_alt_gui = true
+```
+
+Después, `sudo systemctl restart rawkvm-hub`. Afecta a todos los teclados que entran por el receptor (también el K230) y solo cuando la entrada va a ese equipo. Ver ADR 0011.
+
 ### Logitech Options+ / G HUB en el PC
 
 Si el PC tiene instalados Logitech Options+, Logi Options o G HUB, intentarán hablar HID++ con el «receptor» del gadget y no obtendrán respuesta (el gadget descarta lo que el PC envía). Es inocuo: teclado y ratón funcionan igual, pero esos programas no verán el receptor como gestionable (ni batería, ni emparejar, ni botones configurables). La configuración de los botones se hace en el PC donde esté el receptor real, o no se hace.

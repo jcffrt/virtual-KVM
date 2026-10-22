@@ -135,6 +135,12 @@ async fn serve(args: Args) -> Result<()> {
     );
     let identity = server::load_or_create_identity(&cfg.state_dir)?;
     let store = NodeStore::load(&NodeStore::path_in(&cfg.state_dir))?;
+    for o in cfg.node_options.iter().filter(|o| o.swap_alt_gui) {
+        warn!(
+            index = o.index,
+            "Alt and GUI are swapped in the keyboard reports sent to this agent (ADR 0011)"
+        );
+    }
     let router = Arc::new(
         Router::new(
             cfg.hub_id,
@@ -147,6 +153,7 @@ async fn serve(args: Args) -> Result<()> {
                 layout: cfg.layout.clone(),
                 edge: cfg.edge,
                 version: VERSION.to_string(),
+                node_options: cfg.node_options.clone(),
             },
         )
         .with_store(store, RESTORE_GRACE)

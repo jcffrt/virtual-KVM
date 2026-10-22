@@ -134,3 +134,85 @@ mod decode {
         let _ = d.decode(&[]);
     }
 }
+
+/// Alt <-> GUI swap (ADR 0011) on real keyboard reports: the boot keyboard
+/// of interface 0 (8 B: mods, reserved, 6 keys) and the 7 B DJ layout
+/// (ID 1: mods + 6 keys) of the K230 fixture.
+#[test]
+fn swap_alt_gui_on_real_layouts() {
+    let (Ok(boot), Ok(dj)) = (
+        std::fs::read(fixtures_dir().join("0003-046D-C52B.0007.nodj.bin")),
+        std::fs::read(fixtures_dir().join("0003-046D-400D.0005.bin")),
+    ) else {
+        eprintln!("fixtures missing; skipped");
+        return;
+    };
+    let b = DescriptorInfo::parse(&boot);
+    let kb = b.keyboard.clone().unwrap();
+    let swap = |r: &[u8]| kb.swap_alt_gui(b.uses_report_ids, r).unwrap();
+    // (input, expected): A = 0x04 key
+    let cases: &[([u8; 8], [u8; 8], &str)] = &[
+        (
+            [0x04, 0, 0x04, 0, 0, 0, 0, 0],
+            [0x08, 0, 0x04, 0, 0, 0, 0, 0],
+            "left Alt + A",
+        ),
+        (
+            [0x08, 0, 0x04, 0, 0, 0, 0, 0],
+            [0x04, 0, 0x04, 0, 0, 0, 0, 0],
+            "left GUI + A",
+        ),
+        (
+            [0x0C, 0, 0x06, 0, 0, 0, 0, 0],
+            [0x0C, 0, 0x06, 0, 0, 0, 0, 0],
+            "both left: unchanged",
+        ),
+        (
+            [0x40, 0, 0x04, 0, 0, 0, 0, 0],
+            [0x80, 0, 0x04, 0, 0, 0, 0, 0],
+            "right Alt (AltGr)",
+        ),
+        (
+            [0x80, 0, 0, 0, 0, 0, 0, 0],
+            [0x40, 0, 0, 0, 0, 0, 0, 0],
+            "right GUI",
+        ),
+        (
+            [0x37, 0, 0x04, 0, 0, 0, 0, 0],
+            [0x3B, 0, 0x04, 0, 0, 0, 0, 0],
+            "Ctrl/Shift kept, left Alt moved",
+        ),
+        (
+            [0, 0, 0xE2, 0xE3, 0x04, 0, 0, 0],
+            [0, 0, 0xE3, 0xE2, 0x04, 0, 0, 0],
+            "usages in the array",
+        ),
+        (
+            [0, 0, 0xE6, 0xE7, 0xE0, 0, 0, 0],
+            [0, 0, 0xE7, 0xE6, 0xE0, 0, 0, 0],
+            "right usages; Ctrl kept",
+        ),
+        (
+            [0, 0x04, 0, 0, 0, 0, 0, 0],
+            [0, 0x04, 0, 0, 0, 0, 0, 0],
+            "reserved byte untouched",
+        ),
+        ([0; 8], [0; 8], "release all"),
+    ];
+    for (input, want, why) in cases {
+        assert_eq!(swap(input), want, "{why}");
+    }
+    assert_eq!(kb.swap_alt_gui(false, &[0x04, 0]), None, "too short");
+
+    let d = DescriptorInfo::parse(&dj);
+    let k = d.keyboard.clone().unwrap();
+    assert!(d.uses_report_ids);
+    let r = [0x01, 0x48, 0x04, 0xE3, 0, 0, 0, 0];
+    assert_eq!(
+        k.swap_alt_gui(true, &r).unwrap(),
+        [0x01, 0x84, 0x04, 0xE2, 0, 0, 0, 0],
+        "DJ ID 1: left Alt + right GUI become left GUI + right Alt"
+    );
+    // Consumer report (ID 3) of the same interface: not a keyboard report.
+    assert_eq!(k.swap_alt_gui(true, &[0x03, 0xE9, 0x00, 0x00, 0x00]), None);
+}

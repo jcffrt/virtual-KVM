@@ -38,6 +38,20 @@ pub struct HubConfig {
     /// `layout.rs`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub layout: Vec<crate::layout::LinkSpec>,
+    /// Per-agent options, by agent index (`[[node_options]]`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub node_options: Vec<NodeOptions>,
+}
+
+/// Options for one agent, by its index (stable, see `nodes.toml`).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct NodeOptions {
+    pub index: u8,
+    /// Swap Alt and GUI in the keyboard reports sent to this agent
+    /// (ADR 0011). A deviation from raw forwarding, off by default.
+    #[serde(default)]
+    pub swap_alt_gui: bool,
 }
 
 /// Which hidraw nodes are forwarded. See ADR 0003.
@@ -99,6 +113,7 @@ impl Default for HubConfig {
             switching: Switching::default(),
             edge: proto::EdgeOptions::default(),
             layout: Vec::new(),
+            node_options: Vec::new(),
         }
     }
 }
@@ -259,6 +274,20 @@ mod tests {
         assert!(cfg.receiver.matches(0x046d, 0xc52b));
         assert!(!cfg.receiver.matches(0x046d, 0x1234));
         assert!(!cfg.receiver.matches(0x1234, 0xc52b));
+    }
+
+    #[test]
+    fn node_options() {
+        let c = HubConfig::parse("[[node_options]]\nindex = 1\nswap_alt_gui = true\n").unwrap();
+        assert_eq!(
+            c.node_options,
+            [NodeOptions {
+                index: 1,
+                swap_alt_gui: true
+            }]
+        );
+        assert!(HubConfig::parse("[[node_options]]\nindex = 1\nswap = true\n").is_err());
+        assert!(HubConfig::default().node_options.is_empty());
     }
 
     #[test]

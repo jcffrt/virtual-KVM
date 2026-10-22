@@ -21,6 +21,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+use crate::config::NodeOptions;
 use crate::hotkey::Hotkey;
 use crate::layout::{self, LayoutFile, LinkSpec};
 use crate::nodes::NodeStore;
@@ -49,6 +50,8 @@ pub struct Options {
     pub edge: EdgeOptions,
     /// Hub build, reported in `HubStatus`.
     pub version: String,
+    /// Per-agent options by index (`[[node_options]]`).
+    pub node_options: Vec<NodeOptions>,
 }
 
 impl Default for Options {
@@ -60,6 +63,7 @@ impl Default for Options {
             layout: Vec::new(),
             edge: EdgeOptions::default(),
             version: String::new(),
+            node_options: Vec::new(),
         }
     }
 }
@@ -751,6 +755,17 @@ impl Router {
         let Some(node) = st.active.and_then(|id| st.nodes.get_mut(&id)) else {
             return;
         };
+        // ADR 0011: opt-in Alt <-> GUI swap for this target, on keyboard
+        // reports only, after the hotkey saw the original.
+        let swapped = self
+            .opts
+            .node_options
+            .iter()
+            .any(|o| o.swap_alt_gui && o.index == node.index && node.is_agent())
+            .then_some(dev.info.keyboard.as_ref())
+            .flatten()
+            .and_then(|kb| kb.swap_alt_gui(dev.info.uses_report_ids, report));
+        let report = swapped.as_deref().unwrap_or(report);
         let Some(bytes) = node.datagram(dev_id, 0, report) else {
             warn!(dev_id, len = report.len(), "report too large; dropped");
             return;
@@ -1541,6 +1556,51 @@ mod tests {
         });
         assert_eq!(got, Some(canvas));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn alt_gui_swap_only_for_the_configured_agent() {
+        let r = Router::new(
+            Uuid::new_v4(),
+            "hub".into(),
+            Options {
+                node_options: vec![NodeOptions {
+                    index: 1,
+                    swap_alt_gui: true,
+                }],
+                ..Default::default()
+            },
+        );
+        r.add_device(device(0, BOOT_KEYBOARD));
+        r.add_device(device(1, UNIFYING_IFACE1));
+        let win = join(&r, NodeKind::Agent).unwrap(); // index 1, active
+        let mac = join(&r, NodeKind::Agent).unwrap();
+        let alt_a = [0x04, 0, 0x04, 0, 0, 0, 0, 0];
+        r.on_report(0, &alt_a);
+        r.on_report(0, &[0, 0, 0xE2, 0, 0, 0, 0, 0]);
+        let mouse = [0x02, 0x0C, 0, 0x01, 0x10, 0, 0, 0];
+        r.on_report(1, &mouse);
+        let got: Vec<Vec<u8>> = win.link.take().into_iter().map(|d| d.3).collect();
+        assert_eq!(
+            got,
+            [
+                vec![0x08, 0, 0x04, 0, 0, 0, 0, 0], // left GUI + A
+                vec![0, 0, 0xE3, 0, 0, 0, 0, 0],
+                mouse.to_vec(), // other interfaces untouched
+            ]
+        );
+        // The other agent gets the reports as they are.
+        force_switch(&r, mac.id);
+        let released = win.link.take();
+        // Release-all is not swapped: all zeros for the keyboard.
+        let kb_release: Vec<_> = released.iter().filter(|d| d.0 == 0).collect();
+        assert_eq!(kb_release.len(), 1);
+        assert_eq!(
+            (kb_release[0].1, kb_release[0].3.clone()),
+            (FLAG_RELEASE_ALL, vec![0; 8])
+        );
+        r.on_report(0, &alt_a);
+        assert_eq!(mac.link.take()[0].3, alt_a);
     }
 
     #[test]
