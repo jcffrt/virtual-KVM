@@ -103,8 +103,14 @@ impl GadgetSink {
     fn build(&mut self, spec: GadgetSpec) -> Result<()> {
         self.teardown()?;
         let g = self.gadget_dir();
-        configfs::apply(&configfs::build_ops(&g, &spec))
-            .with_context(|| format!("creating {} (is libcomposite loaded?)", g.display()))?;
+        if let Err(e) = configfs::apply(&configfs::build_ops(&g, &spec)) {
+            let hint = if e.is_missing_support() {
+                " (is libcomposite loaded and ConfigFS mounted?)"
+            } else {
+                ""
+            };
+            return Err(anyhow::Error::new(e).context(format!("creating {}{hint}", g.display())));
+        }
         let udc = match &self.paths.udc {
             Some(u) => u.clone(),
             None => configfs::find_udc(&self.paths.udc_class).ok_or_else(|| {

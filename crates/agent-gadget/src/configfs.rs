@@ -260,18 +260,89 @@ pub fn teardown_ops(gadget: &Path, existing: &Existing) -> Vec<Op> {
     ops
 }
 
-pub fn apply(ops: &[Op]) -> io::Result<()> {
+/// A failed operation, with the original OS error kept for callers.
+#[derive(Debug)]
+pub struct ApplyError {
+    pub op: Op,
+    pub source: io::Error,
+}
+
+impl std::fmt::Display for ApplyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}: {}", self.op, self.source)
+    }
+}
+
+impl std::error::Error for ApplyError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+impl ApplyError {
+    /// ConfigFS or the gadget function module is missing.
+    pub fn is_missing_support(&self) -> bool {
+        self.source.kind() == io::ErrorKind::NotFound
+            || self.source.raw_os_error() == Some(libc::ENODEV)
+    }
+}
+
+/// Filesystem primitives, so tests can mimic ConfigFS on a plain directory.
+pub trait Backend {
+    fn mkdir(&mut self, p: &Path) -> io::Result<()>;
+    fn write(&mut self, p: &Path, data: &[u8]) -> io::Result<()>;
+    fn symlink(&mut self, target: &Path, link: &Path) -> io::Result<()>;
+    fn unlink(&mut self, p: &Path) -> io::Result<()>;
+    fn rmdir(&mut self, p: &Path) -> io::Result<()>;
+}
+
+/// The real filesystem (ConfigFS on the board).
+pub struct RealFs;
+
+impl Backend for RealFs {
+    fn mkdir(&mut self, p: &Path) -> io::Result<()> {
+        fs::create_dir(p)
+    }
+    fn write(&mut self, p: &Path, data: &[u8]) -> io::Result<()> {
+        fs::write(p, data)
+    }
+    fn symlink(&mut self, target: &Path, link: &Path) -> io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
+    fn unlink(&mut self, p: &Path) -> io::Result<()> {
+        fs::remove_file(p)
+    }
+    fn rmdir(&mut self, p: &Path) -> io::Result<()> {
+        fs::remove_dir(p)
+    }
+}
+
+/// Apply operations in order. `Mkdir` of an existing directory succeeds:
+/// ConfigFS creates `strings/`, `configs/` and `functions/` itself (and
+/// `strings/` inside each config), and a crashed run may leave a partial
+/// tree behind.
+pub fn apply_on(ops: &[Op], fs: &mut dyn Backend) -> Result<(), ApplyError> {
     for op in ops {
         let r = match op {
-            Op::Mkdir(p) => fs::create_dir(p),
-            Op::Write(p, data) => fs::write(p, data),
-            Op::Symlink { target, link } => std::os::unix::fs::symlink(target, link),
-            Op::Unlink(p) => fs::remove_file(p),
-            Op::Rmdir(p) => fs::remove_dir(p),
+            Op::Mkdir(p) => match fs.mkdir(p) {
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists && p.is_dir() => Ok(()),
+                r => r,
+            },
+            Op::Write(p, data) => fs.write(p, data),
+            Op::Symlink { target, link } => fs.symlink(target, link),
+            Op::Unlink(p) => fs.unlink(p),
+            Op::Rmdir(p) => fs.rmdir(p),
         };
-        r.map_err(|e| io::Error::new(e.kind(), format!("{op:?}: {e}")))?;
+        r.map_err(|source| ApplyError {
+            op: op.clone(),
+            source,
+        })?;
     }
     Ok(())
+}
+
+pub fn apply(ops: &[Op]) -> Result<(), ApplyError> {
+    apply_on(ops, &mut RealFs)
 }
 
 /// The first USB device controller, e.g. `fe980000.usb` or `3f980000.usb`.
@@ -310,6 +381,53 @@ mod tests {
             device(0, fixture("0003-046D-C52B.0007.nodj.bin")?),
             device(1, fixture("0003-046D-C52B.0008.nodj.bin")?),
         ])
+    }
+
+    /// ConfigFS semantics on a plain directory: `mkdir` of a gadget creates
+    /// `strings/`, `configs/` and `functions/`; `mkdir` of a config creates
+    /// its `strings/`; `rmdir` drops attribute files and default groups.
+    pub(crate) struct SimConfigFs {
+        pub root: PathBuf,
+    }
+
+    impl Backend for SimConfigFs {
+        fn mkdir(&mut self, p: &Path) -> io::Result<()> {
+            fs::create_dir(p)?;
+            let parent = p.parent().unwrap_or(Path::new(""));
+            if parent == self.root {
+                for d in ["strings", "configs", "functions"] {
+                    fs::create_dir(p.join(d))?;
+                }
+            } else if parent.file_name().is_some_and(|n| n == "configs") {
+                fs::create_dir(p.join("strings"))?;
+            }
+            Ok(())
+        }
+        fn write(&mut self, p: &Path, data: &[u8]) -> io::Result<()> {
+            fs::write(p, data)
+        }
+        fn symlink(&mut self, target: &Path, link: &Path) -> io::Result<()> {
+            std::os::unix::fs::symlink(target, link)
+        }
+        fn unlink(&mut self, p: &Path) -> io::Result<()> {
+            fs::remove_file(p)
+        }
+        fn rmdir(&mut self, p: &Path) -> io::Result<()> {
+            // ConfigFS refuses only if user-made subdirectories or links
+            // remain; attributes and default groups go with the directory.
+            for e in fs::read_dir(p)?.flatten() {
+                let ft = e.file_type()?;
+                let name = e.file_name();
+                let default_group = ["strings", "configs", "functions"]
+                    .iter()
+                    .any(|d| name == *d)
+                    && fs::read_dir(e.path())?.next().is_none();
+                if ft.is_symlink() || (ft.is_dir() && !default_group) {
+                    return Err(io::Error::from_raw_os_error(libc::ENOTEMPTY));
+                }
+            }
+            fs::remove_dir_all(p)
+        }
     }
 
     fn opts(expose_hidpp: bool) -> Options {
@@ -360,7 +478,8 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let g = root.join(DEFAULT_NAME);
         let ops = build_ops(&g, &spec);
-        apply(&ops).unwrap();
+        let mut sim = SimConfigFs { root: root.clone() };
+        apply_on(&ops, &mut sim).unwrap();
 
         let read = |p: &str| fs::read_to_string(g.join(p)).unwrap();
         assert_eq!(read("idVendor"), "0x046d\n");
@@ -409,7 +528,50 @@ mod tests {
         let rm_func = pos(&Op::Rmdir(g.join("functions/hid.usb0")));
         assert!(unlink0 < rm_config && rm_config < rm_func);
         assert_eq!(td.last(), Some(&Op::Rmdir(g.clone())));
+        apply_on(&td, &mut sim).unwrap();
+        assert!(!g.exists());
 
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// What the Orange Pi was left with: the gadget directory with its
+    /// default groups and nothing else. Teardown must remove it and a new
+    /// build must succeed on top of the automatic directories.
+    #[test]
+    fn partial_tree_from_a_failed_run_is_cleaned_and_rebuilt() {
+        let Some(devs) = receiver() else { return };
+        let spec = spec_for(&devs, &opts(true)).unwrap();
+        let root = std::env::temp_dir().join(format!("rawkvm-gadget-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let g = root.join(DEFAULT_NAME);
+        let mut sim = SimConfigFs { root: root.clone() };
+        apply_on(&[Op::Mkdir(g.clone())], &mut sim).unwrap();
+        assert!(g.join("strings").is_dir() && g.join("configs").is_dir());
+
+        let td = teardown_ops(&g, &inspect(&g));
+        assert_eq!(td, [Op::Rmdir(g.clone())]);
+        apply_on(&td, &mut sim).unwrap();
+        assert!(!g.exists());
+
+        // Building over the automatic directories (here: without the
+        // teardown) works too.
+        apply_on(&[Op::Mkdir(g.clone())], &mut sim).unwrap();
+        apply_on(&build_ops(&g, &spec), &mut sim).unwrap();
+        assert_eq!(fs::read_to_string(g.join("idVendor")).unwrap(), "0x046d\n");
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn mkdir_over_a_file_is_still_an_error() {
+        let root = std::env::temp_dir().join(format!("rawkvm-gadget-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("x"), "").unwrap();
+        let e = apply(&[Op::Mkdir(root.join("x"))]).unwrap_err();
+        assert_eq!(e.source.kind(), io::ErrorKind::AlreadyExists);
+        assert!(!e.is_missing_support());
+        let e = apply(&[Op::Mkdir(root.join("no/such/dir"))]).unwrap_err();
+        assert!(e.is_missing_support());
         fs::remove_dir_all(root).unwrap();
     }
 
