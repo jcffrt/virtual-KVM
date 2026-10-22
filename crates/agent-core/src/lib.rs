@@ -336,5 +336,22 @@ async fn session_inner(
     }
 }
 
+/// Wait for Ctrl+C or SIGTERM (what launchd and systemd send on stop), so
+/// the agent can release every key before exiting.
+pub async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        if let Ok(mut term) = signal(SignalKind::terminate()) {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = term.recv() => {}
+            }
+            return;
+        }
+    }
+    let _ = tokio::signal::ctrl_c().await;
+}
+
 #[cfg(test)]
 mod tests;

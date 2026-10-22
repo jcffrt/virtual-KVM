@@ -214,7 +214,7 @@ fn main() -> Result<()> {
         .block_on(async {
             tokio::select! {
                 r = agent_core::run(opts, &mut sink) => r,
-                _ = tokio::signal::ctrl_c() => Ok(()),
+                _ = agent_core::shutdown_signal() => Ok(()),
             }
         });
     sink.destroy_all();
