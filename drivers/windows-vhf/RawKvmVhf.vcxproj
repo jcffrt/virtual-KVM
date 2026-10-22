@@ -30,6 +30,14 @@
     <KMDF_VERSION_MAJOR>1</KMDF_VERSION_MAJOR>
     <KMDF_VERSION_MINOR>15</KMDF_VERSION_MINOR>
     <SignMode>Off</SignMode>
+    <!-- Catalog and signing are done by sign-test.ps1. InfVerif runs as a
+         separate CI step: the runner's x86 InfVerif.dll fails to load. The
+         property name differs between WDK versions; unknown ones are ignored. -->
+    <EnableInf2cat>false</EnableInf2cat>
+    <RunInf2Cat>false</RunInf2Cat>
+    <RunInfVerif>false</RunInfVerif>
+    <EnableInfVerif>false</EnableInfVerif>
+    <InfVerifEnabled>false</InfVerifEnabled>
     <SpectreMitigation>false</SpectreMitigation>
     <UseDebugLibraries Condition="'$(Configuration)'=='Debug'">true</UseDebugLibraries>
     <UseDebugLibraries Condition="'$(Configuration)'=='Release'">false</UseDebugLibraries>

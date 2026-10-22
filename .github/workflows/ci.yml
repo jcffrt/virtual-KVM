@@ -69,6 +69,14 @@ jobs:
             -latest -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
           & $msbuild drivers/windows-vhf/RawKvmVhf.vcxproj /p:Configuration=Release /p:Platform=x64 /m /nologo /v:minimal
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: InfVerif
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $iv = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Tools" -Recurse -Filter infverif.exe |
+            Where-Object { $_.Directory.Name -eq 'x64' } | Select-Object -First 1
+          $inf = Get-ChildItem drivers/windows-vhf/build/Release -Recurse -Filter RawKvmVhf.inf | Select-Object -First 1
+          & $iv.FullName /v /w $inf.FullName
       - name: Test-sign driver
         shell: pwsh
         # A fresh certificate per build; its private key dies with the runner.
