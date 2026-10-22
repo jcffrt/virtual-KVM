@@ -21,9 +21,14 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::hotkey::Hotkey;
+use crate::nodes::NodeStore;
 
 /// Agents get indices 1..=MAX_AGENTS (the emergency hotkey digits).
 pub const MAX_AGENTS: u8 = 4;
+
+/// After a hub restart, how long the input waits for the agent that was
+/// active before going to whichever agent connected first.
+pub const RESTORE_GRACE: Duration = Duration::from_secs(10);
 
 /// Unreliable report channel to one node.
 pub trait Link: Send + Sync + 'static {
@@ -120,8 +125,12 @@ impl Node {
 struct State {
     devices: BTreeMap<u8, Device>,
     nodes: HashMap<Uuid, Node>,
-    /// Agent index last assigned to each node id, kept across reconnections.
-    indices: HashMap<Uuid, u8>,
+    /// Agent index of each node id, kept across reconnections and (with a
+    /// path) hub restarts; also the last active agent.
+    store: NodeStore,
+    /// Until this deadline only the agent that was active before the hub
+    /// restarted takes the input when it connects.
+    restore: Option<(Uuid, Instant)>,
     active: Option<Uuid>,
     /// Agents in the order they were last active (most recent last).
     history: Vec<Uuid>,
@@ -152,6 +161,55 @@ impl Router {
             started: Instant::now(),
             state: Mutex::new(State::default()),
         }
+    }
+
+    /// Use (and keep up to date) a persisted [`NodeStore`]. Its last active
+    /// agent gets the input back if it connects within `grace`; call
+    /// [`end_restore`](Self::end_restore) once `grace` has passed.
+    pub fn with_store(self, store: NodeStore, grace: Duration) -> Self {
+        {
+            let mut st = self.lock();
+            st.restore = store.last_active().map(|id| (id, Instant::now() + grace));
+            if let Some((id, _)) = st.restore {
+                info!(node = %id, "waiting up to {:.0} s for the last active agent", grace.as_secs_f32());
+            }
+            st.store = store;
+        }
+        self
+    }
+
+    /// The restore grace is over: if nobody is active, the input goes to a
+    /// connected agent (the lowest index).
+    pub fn end_restore(&self) {
+        let mut st = self.lock();
+        if st.restore.take().is_none() || st.active.is_some() {
+            return;
+        }
+        match Self::fallback(&st) {
+            Some(next) => {
+                info!(node = %next, "last active agent did not come back; activating another");
+                self.switch_locked(&mut st, next, None, None, true);
+                self.broadcast_status(&st);
+            }
+            None => debug!("last active agent did not come back; no agent connected"),
+        }
+    }
+
+    /// The node to activate when nobody is: the most recently active
+    /// connected agent, else the connected agent with the lowest index.
+    fn fallback(st: &State) -> Option<Uuid> {
+        st.history
+            .iter()
+            .rev()
+            .copied()
+            .find(|n| st.nodes.get(n).is_some_and(Node::is_agent))
+            .or_else(|| {
+                st.nodes
+                    .values()
+                    .filter(|n| n.is_agent())
+                    .min_by_key(|n| n.index)
+                    .map(|n| n.hello.node_id)
+            })
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -223,7 +281,7 @@ impl Router {
         }
         let index = match hello.kind {
             NodeKind::Widget => 0,
-            NodeKind::Agent => Self::assign_index(&mut st, id)?,
+            NodeKind::Agent => Self::assign_index(&mut st, id, &hello.node_name)?,
         };
         st.next_generation += 1;
         let generation = st.next_generation;
@@ -275,32 +333,47 @@ impl Router {
                     pos_ratio: None,
                 });
             } else if st.active.is_none() {
-                self.switch_locked(&mut st, id, None, None, true);
+                match st.restore {
+                    Some((last, until)) if last != id && Instant::now() < until => {
+                        info!(node = %id, "not activated: waiting for the last active agent")
+                    }
+                    _ => {
+                        self.switch_locked(&mut st, id, None, None, true);
+                    }
+                }
             }
         }
         self.broadcast_status(&st);
         Ok(Registration { generation, index })
     }
 
-    fn assign_index(st: &mut State, id: Uuid) -> Result<u8, RejectReason> {
+    fn assign_index(st: &mut State, id: Uuid, name: &str) -> Result<u8, RejectReason> {
         let used: Vec<u8> = st
             .nodes
             .values()
             .filter(|n| n.is_agent())
             .map(|n| n.index)
             .collect();
-        let sticky = st.indices.get(&id).copied().filter(|i| !used.contains(i));
-        let index = sticky
-            .or_else(|| {
-                // Prefer an index nobody has held, then any free one.
-                let reserved: Vec<u8> = st.indices.values().copied().collect();
-                (1..=MAX_AGENTS)
-                    .find(|i| !used.contains(i) && !reserved.contains(i))
-                    .or_else(|| (1..=MAX_AGENTS).find(|i| !used.contains(i)))
-            })
-            .ok_or(RejectReason::TooManyNodes)?;
-        st.indices.retain(|_, v| *v != index);
-        st.indices.insert(id, index);
+        let sticky = st.store.index_of(&id).filter(|i| !used.contains(i));
+        let unreserved =
+            || (1..=MAX_AGENTS).find(|&i| !used.contains(&i) && st.store.holder(i).is_none());
+        let index = match sticky.or_else(unreserved) {
+            Some(i) => i,
+            None => {
+                // Every free index is reserved for a disconnected node:
+                // take one rather than refuse the agent.
+                let i = (1..=MAX_AGENTS)
+                    .find(|i| !used.contains(i))
+                    .ok_or(RejectReason::TooManyNodes)?;
+                warn!(
+                    index = i,
+                    from = ?st.store.holder(i),
+                    "every index is reserved; reassigning (release with --forget-node)"
+                );
+                i
+            }
+        };
+        st.store.assign(id, index, name);
         Ok(index)
     }
 
@@ -314,20 +387,7 @@ impl Router {
         info!(node = %id, "node disconnected");
         if st.active == Some(id) {
             st.active = None;
-            let fallback = st
-                .history
-                .iter()
-                .rev()
-                .copied()
-                .find(|n| st.nodes.get(n).is_some_and(Node::is_agent))
-                .or_else(|| {
-                    st.nodes
-                        .values()
-                        .filter(|n| n.is_agent())
-                        .min_by_key(|n| n.index)
-                        .map(|n| n.hello.node_id)
-                });
-            match fallback {
+            match Self::fallback(&st) {
                 Some(next) => {
                     info!(node = %next, "active node lost; falling back");
                     self.switch_locked(&mut st, next, None, None, true);
@@ -436,6 +496,8 @@ impl Router {
             }
         }
         st.active = Some(target);
+        st.restore = None;
+        st.store.set_last_active(target);
         st.history.retain(|n| *n != target);
         st.history.push(target);
         st.last_switch = Some(now);
@@ -791,6 +853,124 @@ mod tests {
         r.unregister(id, first.reg); // late cleanup of the old connection
         assert_eq!(r.active(), Some(id));
         assert_eq!(r.status().nodes.len(), 2);
+    }
+
+    fn force_switch(r: &Router, to: Uuid) {
+        let mut st = r.lock();
+        assert!(r.switch_locked(&mut st, to, None, None, true));
+    }
+
+    fn store_dir() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("rawkvm-router-{}", Uuid::new_v4()))
+    }
+
+    fn router_with(dir: &std::path::Path, grace: Duration) -> Router {
+        let store = NodeStore::load(&NodeStore::path_in(dir)).unwrap();
+        router().with_store(store, grace)
+    }
+
+    #[test]
+    fn indices_and_last_active_survive_a_hub_restart() {
+        let dir = store_dir();
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        {
+            let r = router_with(&dir, RESTORE_GRACE);
+            assert_eq!(join_as(&r, a, NodeKind::Agent).unwrap().reg.index, 1);
+            assert_eq!(join_as(&r, b, NodeKind::Agent).unwrap().reg.index, 2);
+            force_switch(&r, b);
+            assert_eq!(r.active(), Some(b));
+        }
+        // Restart: `a` connects first but `b` was active.
+        let r = router_with(&dir, Duration::from_secs(3600));
+        let mut na = join_as(&r, a, NodeKind::Agent).unwrap();
+        assert_eq!(na.reg.index, 1);
+        assert_eq!(r.active(), None);
+        assert!(!na.events().contains(&"Activate"));
+        let mut nb = join_as(&r, b, NodeKind::Agent).unwrap();
+        assert_eq!(nb.reg.index, 2);
+        assert_eq!(r.active(), Some(b));
+        assert!(nb.events().contains(&"Activate"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn missing_last_active_gives_way_after_the_grace() {
+        let dir = store_dir();
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        {
+            let r = router_with(&dir, RESTORE_GRACE);
+            join_as(&r, b, NodeKind::Agent).unwrap();
+        }
+        let r = router_with(&dir, Duration::from_secs(3600));
+        let mut na = join_as(&r, a, NodeKind::Agent).unwrap();
+        assert_eq!(r.active(), None);
+        r.end_restore();
+        assert_eq!(r.active(), Some(a));
+        assert!(na.events().contains(&"Activate"));
+        // Once over, the grace does not come back.
+        let c = join(&r, NodeKind::Agent).unwrap();
+        r.end_restore();
+        assert_eq!(r.active(), Some(a));
+        drop(c);
+
+        // A zero grace behaves like no store at all.
+        let r = router_with(&dir, Duration::ZERO);
+        join_as(&r, b, NodeKind::Agent).unwrap();
+        assert_eq!(r.active(), Some(b));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn hotkey_during_the_grace_wins() {
+        let dir = store_dir();
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        {
+            let r = router_with(&dir, RESTORE_GRACE);
+            join_as(&r, a, NodeKind::Agent).unwrap();
+            join_as(&r, b, NodeKind::Agent).unwrap();
+            force_switch(&r, b);
+        }
+        let r = router_with(&dir, Duration::from_secs(3600));
+        r.add_device(device(0, BOOT_KEYBOARD));
+        join_as(&r, a, NodeKind::Agent).unwrap();
+        for (m, k) in [(1, 0), (0, 0), (1, 0), (0, 0), (0, 0x1E), (0, 0)] {
+            r.on_report(0, &key_report(m, k));
+        }
+        assert_eq!(r.active(), Some(a));
+        // `b` coming back later does not take the input.
+        join_as(&r, b, NodeKind::Agent).unwrap();
+        assert_eq!(r.active(), Some(a));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn indices_stay_reserved_while_disconnected() {
+        let dir = store_dir();
+        let r = router_with(&dir, RESTORE_GRACE);
+        let a = join(&r, NodeKind::Agent).unwrap();
+        let _b = join(&r, NodeKind::Agent).unwrap();
+        r.unregister(a.id, a.reg);
+        assert_eq!(join(&r, NodeKind::Agent).unwrap().reg.index, 3);
+        assert_eq!(join_as(&r, a.id, NodeKind::Agent).unwrap().reg.index, 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn all_indices_reserved_reassigns_a_disconnected_one() {
+        let dir = store_dir();
+        let r = router_with(&dir, RESTORE_GRACE);
+        let mut kept = Vec::new();
+        for _ in 0..4 {
+            let n = join(&r, NodeKind::Agent).unwrap();
+            if n.reg.index != 3 {
+                r.unregister(n.id, n.reg);
+            } else {
+                kept.push(n);
+            }
+        }
+        // 1, 2 and 4 are reserved for disconnected nodes; 3 is connected.
+        assert_eq!(join(&r, NodeKind::Agent).unwrap().reg.index, 1);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

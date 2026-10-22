@@ -87,6 +87,27 @@ Si `rtt_ms` supera 25 ms con frecuencia, probar 5 GHz, desactivar el ahorro de e
 
 Con un segundo agente conectado (otro PC Linux), pulsar **Ctrl, Ctrl, 2**: la entrada pasa al agente con índice 2 (el índice aparece en el log `connected ... index=N`). El `2` no se escribe en ninguno.
 
+Los índices se conservan entre reinicios del hub (`/var/lib/rawkvm/nodes.toml`). Cada PC mantiene su número aunque esté apagado, y al arrancar el hub la entrada vuelve al último PC activo si conecta en 10 s (ADR 0008).
+
+```sh
+sudo rawkvm-hub --list-nodes            # índice, node_id, nombre, (last active)
+sudo systemctl stop rawkvm-hub
+sudo rawkvm-hub --forget-node 3         # o el UUID; libera el índice
+sudo systemctl start rawkvm-hub
+```
+
+Si el atajo no responde, ver la máquina de estados (no registra qué teclas se pulsan):
+
+```sh
+sudo systemctl edit rawkvm-hub          # añadir:
+# [Service]
+# Environment=RUST_LOG=info,rawkvm_hub::hotkey=debug
+sudo systemctl restart rawkvm-hub
+journalctl -u rawkvm-hub -f | grep hotkey
+```
+
+Esperado: `ctrl down`, `first tap`, `ctrl down`, `second tap, armed`, `digit index=2`, `emergency hotkey`. `not a tap` indica Ctrl mantenido más de 400 ms o pulsado junto con otra tecla. `first tap` dos veces con `since_last_tap_ms` > 500 indica que la segunda pulsación llegó tarde. `armed state expired` indica que el dígito llegó más de 1,5 s después.
+
 ## 7. Problemas conocidos
 
 - `--list` no muestra nodos `[forward]` y sí `logitech-djreceiver`, o el log del hub dice `is bound to "logitech-djreceiver", not hid-generic; not forwarding it`: la blacklist no está activa. Si pasa tras reiniciar, el initramfs no la lleva: `sudo update-initramfs -u` (comprobar con `lsinitramfs /boot/initrd.img-$(uname -r) | grep rawkvm`) y reiniciar, o repetir `install.sh`. El hub no reenvía interfaces con otro driver (`require_hid_generic = true` en `[receiver]`).

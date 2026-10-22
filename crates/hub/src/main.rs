@@ -1,7 +1,7 @@
 //! RawKVM hub: reads raw HID reports from the Logitech receiver and forwards
 //! them, uninterpreted, to the active agent over QUIC.
 
-use rawkvm_hub::{config, hidrec, router, server};
+use rawkvm_hub::{config, hidrec, nodes, router, server};
 #[cfg(target_os = "linux")]
 use rawkvm_hub::{devices, hidraw};
 
@@ -14,7 +14,8 @@ use clap::Parser;
 use tracing::{info, warn};
 
 use config::HubConfig;
-use router::{Options, Router};
+use nodes::NodeStore;
+use router::{Options, Router, RESTORE_GRACE};
 
 #[derive(Parser, Debug)]
 #[command(version, about)]
@@ -49,6 +50,15 @@ struct Args {
     /// Print the pairing token and exit.
     #[arg(long)]
     show_token: bool,
+
+    /// List the agent indices kept in <state_dir>/nodes.toml and exit.
+    #[arg(long)]
+    list_nodes: bool,
+
+    /// Release the index of a node (by UUID or by index) and exit. Stop the
+    /// hub first, or it writes its own copy back.
+    #[arg(long, value_name = "UUID|INDEX")]
+    forget_node: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -67,6 +77,9 @@ fn main() -> Result<()> {
     }
     if args.dump {
         return dump(&args);
+    }
+    if args.list_nodes || args.forget_node.is_some() {
+        return manage_nodes(&args);
     }
     if args.show_token {
         let (cfg, _) = HubConfig::load_or_init(&args.config)?;
@@ -95,16 +108,27 @@ async fn serve(args: Args) -> Result<()> {
         args.config.display()
     );
     let identity = server::load_or_create_identity(&cfg.state_dir)?;
-    let router = Arc::new(Router::new(
-        cfg.hub_id,
-        cfg.name.clone(),
-        Options {
-            hysteresis: Duration::from_millis(cfg.switching.hysteresis_ms),
-            resend: (cfg.switching.resend_ms > 0)
-                .then(|| Duration::from_millis(cfg.switching.resend_ms)),
-            hotkey: cfg.switching.hotkey,
-        },
-    ));
+    let store = NodeStore::load(&NodeStore::path_in(&cfg.state_dir))?;
+    let router = Arc::new(
+        Router::new(
+            cfg.hub_id,
+            cfg.name.clone(),
+            Options {
+                hysteresis: Duration::from_millis(cfg.switching.hysteresis_ms),
+                resend: (cfg.switching.resend_ms > 0)
+                    .then(|| Duration::from_millis(cfg.switching.resend_ms)),
+                hotkey: cfg.switching.hotkey,
+            },
+        )
+        .with_store(store, RESTORE_GRACE),
+    );
+    {
+        let router = router.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(RESTORE_GRACE).await;
+            router.end_restore();
+        });
+    }
 
     match &args.replay {
         Some(path) => {
@@ -139,6 +163,34 @@ async fn serve(args: Args) -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn manage_nodes(args: &Args) -> Result<()> {
+    let cfg = HubConfig::load_or_default(&args.config)?;
+    let path = NodeStore::path_in(&cfg.state_dir);
+    let mut store = NodeStore::load(&path)?;
+    if let Some(key) = &args.forget_node {
+        let id = store
+            .find(key)
+            .ok_or_else(|| anyhow::anyhow!("no node {key:?} in {}", path.display()))?;
+        let e = store.forget(&id).expect("found above");
+        store.try_save(&path)?;
+        println!("released index {} of {} ({:?})", e.index, e.id, e.name);
+        return Ok(());
+    }
+    let last = store.last_active();
+    if store.entries().next().is_none() {
+        println!("no node in {}", path.display());
+    }
+    for e in store.entries() {
+        let mark = if Some(e.id) == last {
+            "  (last active)"
+        } else {
+            ""
+        };
+        println!("{}  {}  {}{mark}", e.index, e.id, e.name);
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]

@@ -8,6 +8,7 @@ pub mod devices;
 pub mod hidraw;
 pub mod hidrec;
 pub mod hotkey;
+pub mod nodes;
 pub mod receiver;
 pub mod router;
 pub mod server;

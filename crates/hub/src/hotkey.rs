@@ -4,8 +4,14 @@
 //! them. A tap is a press and release of Left or Right Ctrl with nothing else
 //! held. Two taps arm the hotkey; the next key decides: a digit 1..4 (main
 //! row or keypad) selects that agent, anything else disarms.
+//!
+//! State changes are logged at debug level (`RUST_LOG=rawkvm_hub::hotkey=debug`)
+//! without key codes, so a failing hotkey can be diagnosed without logging
+//! what is typed.
 
 use std::time::{Duration, Instant};
+
+use tracing::debug;
 
 /// Left Ctrl (bit 0) and Right Ctrl (bit 4) of the modifier byte.
 const CTRL_MASK: u8 = 0x11;
@@ -57,7 +63,13 @@ impl Hotkey {
         let mut pressed = keys.iter().copied().filter(|&k| k != 0);
 
         if let Some(until) = self.armed_until {
-            if now > until || other_mods {
+            if now > until {
+                debug!("hotkey: armed state expired");
+                self.reset();
+                return None;
+            }
+            if other_mods {
+                debug!("hotkey: disarmed by another modifier");
                 self.reset();
                 return None;
             }
@@ -69,7 +81,12 @@ impl Hotkey {
                 None => None, // release of the second tap, or idle report
                 Some(k) => {
                     self.reset();
-                    digit(k)
+                    let d = digit(k);
+                    match d {
+                        Some(i) => debug!(index = i, "hotkey: digit"),
+                        None => debug!("hotkey: disarmed by a non-digit key"),
+                    }
+                    d
                 }
             };
         }
@@ -79,26 +96,42 @@ impl Hotkey {
             (true, None) => {
                 self.ctrl_down_at = Some(now);
                 self.dirty = others;
+                debug!(with_other_keys = others, "hotkey: ctrl down");
             }
             (true, Some(_)) => self.dirty |= others,
             (false, Some(down)) => {
                 self.ctrl_down_at = None;
-                let tap = !self.dirty && !others && now.duration_since(down) <= TAP_MAX;
+                let held = now.duration_since(down);
+                let tap = !self.dirty && !others && held <= TAP_MAX;
                 if !tap {
+                    debug!(
+                        held_ms = held.as_millis() as u64,
+                        with_other_keys = self.dirty || others,
+                        "hotkey: ctrl released, not a tap"
+                    );
                     self.last_tap = None;
-                } else if self
+                } else if let Some(gap) = self
                     .last_tap
-                    .is_some_and(|t| now.duration_since(t) <= DOUBLE_WINDOW)
+                    .map(|t| now.duration_since(t))
+                    .filter(|g| *g <= DOUBLE_WINDOW)
                 {
+                    debug!(gap_ms = gap.as_millis() as u64, "hotkey: second tap, armed");
                     self.last_tap = None;
                     self.armed_until = Some(now + ARMED_FOR);
                 } else {
+                    debug!(
+                        held_ms = held.as_millis() as u64,
+                        since_last_tap_ms = self
+                            .last_tap
+                            .map(|t| now.duration_since(t).as_millis() as u64),
+                        "hotkey: first tap"
+                    );
                     self.last_tap = Some(now);
                 }
             }
             (false, None) => {
-                if others {
-                    self.last_tap = None;
+                if others && self.last_tap.take().is_some() {
+                    debug!("hotkey: tap cancelled by another key");
                 }
             }
         }

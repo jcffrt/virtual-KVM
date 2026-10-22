@@ -121,7 +121,8 @@
 - Orange Pi Zero 2W con hub y gadget a la vez (gadget → `127.0.0.1:4433`), USB‑C de alimentación/OTG conectado al Mac (la placa se alimenta del Mac). Gadget `046d:c52b` enlazado a `musb-hdrc.5.auto` con 3 interfaces, UDC `configured`; macOS enumera "Logitech USB Receiver" (serie = node_id) con teclado, ratón y vendor 0xFF00, como un receptor real.
 - Incidencias resueltas: (1) `mkdir` de los grupos automáticos de ConfigFS (corregido en 8c06b4a); (2) tras el reinicio, `hid_logitech_dj` volvió a cargarse porque el **initramfs de Armbian no tenía la blacklist**: ejecutado `update-initramfs -u` en el Pi; el instalador del hub debe hacerlo (pendiente VS Code); (3) el gadget se reenlaza por cada DeviceList incremental (3 binds en 80 ms): pendiente estabilización de ~500 ms (VS Code).
 - Tras el reinicio el hub reasignó índices: gadget = 1 (activo), Mac/Karabiner = 2. Mejora propuesta: persistir índices y último activo en el state_dir.
-- Pendiente de confirmar por el usuario: escritura y trackball por USB en el Mac, y conmutación Ctrl,Ctrl,2 ↔ Ctrl,Ctrl,1 entre gadget y Karabiner.
+- **Confirmado por el usuario y por los logs (2026-10-22 21:01)**: escritura y trackball por USB en el Mac vía gadget (5.588 informes, 0 perdidos); **atajo de emergencia validado**: Ctrl,Ctrl,2 → Mac/Karabiner y Ctrl,Ctrl,1 → gadget, cuatro pulsaciones reconocidas por el hub ("emergency hotkey index=N" + "switched"), agentes pasando a active/inactive y recibiendo informes en consecuencia, sin teclas pegadas. Con esto el criterio de la Fase 1 "conmutación por atajo de emergencia" queda cumplido (Mac + gadget; Windows pendiente de prueba).
+- 6a7c018 desplegado en la Orange Pi: bind único del gadget 500 ms tras la DeviceList, verificado.
 
 ## Correcciones tras la prueba del gadget (2026-10-22, VS Code)
 
@@ -129,6 +130,12 @@
 - Hub: `[receiver] require_hid_generic = true` (por defecto). En modo A no abre interfaces con otro driver y lo registra como error (una vez por interfaz y driver) con la causa probable (initramfs).
 - `agent-core`: `HidSink::settle_time()` (por defecto cero). `devices_ready()` se llama cuando la DeviceList lleva ese tiempo sin cambios; el gadget usa 500 ms, también al arrancar. ADR 0007, revisión.
 - Pendiente de desplegar en la Orange Pi: binarios aarch64 de hub y gadget.
+
+## Índices persistentes y log del atajo (2026-10-22, VS Code)
+
+- `crates/hub/src/nodes.rs`: `NodeStore` sobre `<state_dir>/nodes.toml` (node_id → índice, nombre, `last_active`). El router lo usa (`Router::with_store`). Índice reservado aunque el nodo esté desconectado, nodo nuevo al primer libre no reservado, último activo restaurado si conecta en 10 s (`RESTORE_GRACE`, `end_restore()`). ADR 0008.
+- CLI del hub: `--list-nodes`, `--forget-node <uuid|índice>` (con el hub parado).
+- `hotkey.rs`: log `debug` de la máquina de estados sin códigos de tecla (`RUST_LOG=info,rawkvm_hub::hotkey=debug`). Documentado en `docs/fase0-validacion.md` §6.
 
 ## Convenciones
 
