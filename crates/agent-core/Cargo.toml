@@ -1,0 +1,30 @@
+[package]
+name = "rawkvm-agent-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Platform independent part of the RawKVM agents"
+
+[lib]
+name = "agent_core"
+path = "src/lib.rs"
+
+[dependencies]
+proto.workspace = true
+anyhow.workspace = true
+dirs.workspace = true
+gethostname.workspace = true
+mdns-sd.workspace = true
+quinn.workspace = true
+rustls.workspace = true
+serde.workspace = true
+tokio.workspace = true
+toml.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+proto = { workspace = true, features = ["test-fixtures"] }
+rawkvm-hub = { path = "../hub" }
+tokio = { workspace = true, features = ["test-util"] }

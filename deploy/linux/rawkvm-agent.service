@@ -1,0 +1,14 @@
+# RawKVM agent, systemd user unit (~/.config/systemd/user/).
+# Needs /dev/uhid writable by the user: see 99-rawkvm-uhid.rules.
+[Unit]
+Description=RawKVM agent (virtual HID devices via uhid)
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/rawkvm-agent
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

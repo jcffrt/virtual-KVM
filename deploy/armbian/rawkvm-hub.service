@@ -1,0 +1,24 @@
+# RawKVM hub. Runs as root: it needs read/write access to /dev/hidraw* and
+# EVIOCGRAB on /dev/input/event* of the receiver (see docs/adr/0003).
+[Unit]
+Description=RawKVM hub (raw HID forwarding)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/rawkvm-hub --config /etc/rawkvm/hub.toml
+Restart=always
+RestartSec=2
+StateDirectory=rawkvm
+ConfigurationDirectory=rawkvm
+# Low latency: input forwarding should not wait behind other work.
+Nice=-10
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/etc/rawkvm /var/lib/rawkvm
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

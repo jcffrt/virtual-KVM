@@ -1,0 +1,47 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/proto",
+    "crates/hub",
+    "crates/agent-core",
+    "crates/agent-linux",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.80"
+repository = "https://github.com/olitec/rawkvm"
+
+[workspace.dependencies]
+proto = { path = "crates/proto", package = "rawkvm-proto" }
+agent-core = { path = "crates/agent-core", package = "rawkvm-agent-core" }
+
+anyhow = "1"
+bytes = "1"
+clap = { version = "4", features = ["derive"] }
+dirs = "6"
+gethostname = "1"
+hex = "0.4"
+libc = "0.2"
+mdns-sd = "0.21"
+nix = { version = "0.30", features = ["ioctl", "fs"] }
+postcard = { version = "1", features = ["alloc"] }
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring", "log"] }
+rand = "0.8"
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "signal"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

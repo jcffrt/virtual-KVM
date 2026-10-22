@@ -1,0 +1,20 @@
+[package]
+name = "rawkvm-agent-linux"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "RawKVM agent for Linux: recreates the hub's HID devices with /dev/uhid"
+
+[[bin]]
+name = "rawkvm-agent"
+path = "src/main.rs"
+
+[dependencies]
+proto.workspace = true
+agent-core.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
