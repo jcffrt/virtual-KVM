@@ -57,6 +57,16 @@
 3. Conocido y aplazado: informes de salida del host (LED Bloq Mayús, HID++ desde el PC) no se reenvían al hub; emparejamiento (`PairingStart`) responde "no implementado".
 4. Añadir un remoto (GitHub) para que corra el CI.
 
+## Despliegue actual (2026-10-22)
+
+- **Hub instalado y en marcha en la Orange Pi** como servicio `rawkvm-hub.service` (binario `/usr/local/bin/rawkvm-hub`, build `cargo zigbuild --release --target aarch64-unknown-linux-musl`). Verificado en el Pi: `--list` muestra las 3 interfaces `[forward]` con `hid-generic`; al arrancar el servicio abre hidraw0/1/2, manda el comando de salida de DJ ("DJ mode switched off"), hace `EVIOCGRAB` de event3..6, anuncia mDNS y escucha en UDP 4433.
+- Config en `/etc/rawkvm/hub.toml` (token de emparejamiento generado ahí, `--show-token` lo imprime); certificado en `/var/lib/rawkvm`, huella `71a6f657…ecac` (también en el TXT mDNS, campo `fp`).
+- Desde el Mac: `dns-sd -L orangepizero2w _rawkvm._udp local.` resuelve `rawkvm-orangepizero2w.local.:4433`. RTT ICMP Wi‑Fi Mac→Pi: media 4,5 ms, máx 8,4 ms (30 pings).
+- **Cambio de orden (decisión del usuario, 2026-10-22)**: no hay Ubuntu disponible, así que la validación del agente Linux queda aplazada. Se sigue con el **agente macOS** (este Mac, macOS 27.0, es el PC3) y después el **agente Windows**. El agente Linux se validará cuando haya un Ubuntu.
+- Preparado en este Mac: `~/Library/Application Support/rawkvm/agent.toml` con `hub = "192.168.1.28:4433"` y el token del hub (0600). El `node_id` se genera en el primer arranque.
+- **Prerrequisito macOS pendiente del usuario**: instalar Karabiner-DriverKit-VirtualHIDDevice (`.pkg` de pqrs-org) y aprobar la extensión del sistema. No está instalado (`/Library/Application Support/org.pqrs/` no existe). Riesgo: comprobar que la versión soporte macOS 27.
+- Aplazado: instalar `rawkvm-agent` en el Ubuntu (`deploy/linux/install.sh`), emparejar con el token, y validar con `evtest` que al teclear en el MX Keys escribe en el Ubuntu; medir RTT y pérdidas con las estadísticas del agente.
+
 ## Convenciones
 
 Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario en castellano, `cargo fmt` y `cargo clippy -D warnings` limpios, un ADR por decisión nueva.

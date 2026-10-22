@@ -57,7 +57,11 @@ pub fn to_hid_device(iface: &RawInterface, id: u8) -> HidDevice {
 /// Device id for `iface`, stable while the hub runs. In `receiver` mode it
 /// is the USB interface number (0 keyboard, 1 mouse, 2 HID++), so agents see
 /// the same ids across hub restarts.
-fn assign_id(ids: &mut HashMap<String, u8>, iface: &RawInterface, mode: MatchMode) -> Option<u8> {
+pub fn assign_id(
+    ids: &mut HashMap<String, u8>,
+    iface: &RawInterface,
+    mode: MatchMode,
+) -> Option<u8> {
     if let Some(&id) = ids.get(&iface.phys) {
         return Some(id);
     }

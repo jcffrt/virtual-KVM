@@ -52,7 +52,10 @@ struct Args {
 }
 
 fn main() -> Result<()> {
+    use std::io::IsTerminal;
     tracing_subscriber::fmt()
+        // No colour codes in journald.
+        .with_ansi(std::io::stdout().is_terminal())
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
@@ -212,10 +215,14 @@ fn dump(args: &Args) -> Result<()> {
         "no hidraw node matches mode {:?}; try --list",
         cfg.receiver.mode
     );
+    // Same ids as the service would assign (interface number in mode A).
+    let mut ids = std::collections::HashMap::new();
     let devs: Vec<_> = ifaces
         .iter()
-        .enumerate()
-        .map(|(n, i)| devices::to_hid_device(i, n as u8))
+        .map(|i| {
+            let id = devices::assign_id(&mut ids, i, cfg.receiver.mode).unwrap_or(u8::MAX);
+            devices::to_hid_device(i, id)
+        })
         .collect();
     let writer = match &args.record {
         Some(p) => Some(Arc::new(Mutex::new(hidrec::Writer::create(p, &devs)?))),
@@ -224,8 +231,8 @@ fn dump(args: &Args) -> Result<()> {
     eprintln!("dumping {} nodes; Ctrl+C to stop", ifaces.len());
     let t0 = Instant::now();
     let mut threads = Vec::new();
-    for (n, iface) in ifaces.into_iter().enumerate() {
-        let id = n as u8;
+    for (iface, dev) in ifaces.into_iter().zip(&devs) {
+        let id = dev.id;
         let file = hidraw::open(&iface.hidraw)?;
         let grabs: Vec<_> = if cfg.receiver.grab_evdev {
             iface

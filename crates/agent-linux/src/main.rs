@@ -92,7 +92,10 @@ impl HidSink for UhidSink {
 }
 
 fn main() -> Result<()> {
+    use std::io::IsTerminal;
     tracing_subscriber::fmt()
+        // No colour codes in journald.
+        .with_ansi(std::io::stdout().is_terminal())
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
