@@ -62,6 +62,10 @@ pub struct ReceiverMatch {
     /// bitfield whenever the receiver is opened, so the paired devices
     /// report on interfaces 0/1 instead of multiplexed DJ reports.
     pub force_normal_mode: bool,
+    /// In `receiver` mode, skip interfaces bound to any driver other than
+    /// `hid-generic`: with `hid-logitech-dj` bound the reports are not the
+    /// receiver's raw ones and the DJ-off command does not help.
+    pub require_hid_generic: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -101,6 +105,7 @@ impl Default for ReceiverMatch {
             pids: vec![0xc52b, 0xc532, 0xc534, 0xc539, 0xc53f, 0xc547, 0xc548],
             grab_evdev: true,
             force_normal_mode: true,
+            require_hid_generic: true,
         }
     }
 }

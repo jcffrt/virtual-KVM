@@ -14,6 +14,14 @@ install -m 0755 "${1:-rawkvm-hub}" /usr/local/bin/rawkvm-hub
 install -m 0644 "$here/modprobe-rawkvm.conf" /etc/modprobe.d/rawkvm.conf
 install -m 0644 "$here/rawkvm-hub.service" /etc/systemd/system/rawkvm-hub.service
 
+# The receiver is probed inside the initramfs on Armbian and on Raspberry
+# Pi OS with an initramfs; it carries its own copy of modprobe.d, so the
+# blacklist only holds after a reboot once the initramfs is regenerated.
+if command -v update-initramfs >/dev/null 2>&1; then
+    echo "regenerating the initramfs so the blacklist applies at boot"
+    update-initramfs -u
+fi
+
 # Unload the DJ drivers now so hid-generic takes the receiver without a
 # reboot, then re-plug every Logitech USB device (VID 046D) so it is
 # probed again. The hub itself switches the receiver out of DJ mode.

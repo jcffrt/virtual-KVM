@@ -70,3 +70,6 @@ Después: pasar la entrada a este agente (**Ctrl, Ctrl, N** o si es el único co
 | `binding to … (is another gadget using it?)` | Otro gadget usa el UDC (`g_ether`/`g_serial` en `modules-load`, o `usb_gadget` de otra herramienta): quitarlo. |
 | `host not polling (suspended or unplugged?)` | El PC duerme, el cable no lleva datos o no está conectado. Los informes se descartan sin bloquear. |
 | El PC Linux reconoce el receptor pero no escribe | Falta `--no-hidpp` (modo DJ). |
+| El gadget sale con menos de 3 interfaces (`bound to … with 1 interfaces`) | El hub no reenvía todo el receptor: en la placa del hub `hid_logitech_dj` se cargó desde el initramfs. Ver «Problemas conocidos» en `docs/fase0-validacion.md` (`update-initramfs -u` y reiniciar). |
+
+El agente espera a que la lista de dispositivos del hub lleve 500 ms sin cambios antes de crear el gadget (el hub anuncia las interfaces una a una al abrirlas), así el PC ve una sola enumeración.

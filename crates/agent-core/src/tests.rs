@@ -16,12 +16,13 @@ enum Ev {
     Create(u8),
     Input(u8, Vec<u8>),
     DestroyAll,
+    Ready,
     Activate,
     Deactivate,
 }
 
 #[derive(Clone, Default)]
-struct RecSink(Arc<Mutex<Vec<Ev>>>);
+struct RecSink(Arc<Mutex<Vec<Ev>>>, Duration);
 
 impl RecSink {
     fn events(&self) -> Vec<Ev> {
@@ -43,6 +44,12 @@ impl HidSink for RecSink {
     }
     fn destroy_all(&mut self) {
         self.0.lock().unwrap().push(Ev::DestroyAll);
+    }
+    fn devices_ready(&mut self) {
+        self.0.lock().unwrap().push(Ev::Ready);
+    }
+    fn settle_time(&self) -> Duration {
+        self.1
     }
     fn activate(&mut self, _: Option<Edge>, _: Option<f32>) {
         self.0.lock().unwrap().push(Ev::Activate);
@@ -206,4 +213,53 @@ async fn changed_certificate_is_fatal() {
         .expect("agent kept retrying");
     assert!(format!("{:#}", r.unwrap_err()).contains("hub_fingerprint"));
     let _ = std::fs::remove_dir_all(&hub.dir);
+}
+
+fn hid(id: u8) -> HidDevice {
+    HidDevice {
+        id,
+        name: "Logitech USB Receiver".into(),
+        vid: 0x046d,
+        pid: 0xc52b,
+        serial: None,
+        interface: id,
+        report_descriptor: BOOT_KEYBOARD.to_vec(),
+        uses_report_ids: false,
+    }
+}
+
+/// The hub announces the receiver's interfaces one by one, ~60 ms apart.
+#[test]
+fn incremental_device_lists_settle_into_one_ready() {
+    let ms = Duration::from_millis;
+    let mut sink = RecSink(Arc::default(), ms(500));
+    let mut s = Session::new();
+    let t0 = Instant::now();
+    s.set_devices(vec![hid(0)], &mut sink, t0);
+    s.set_devices(vec![hid(0), hid(1)], &mut sink, t0 + ms(60));
+    s.poll_ready(&mut sink, t0 + ms(100));
+    s.set_devices(vec![hid(0), hid(1), hid(2)], &mut sink, t0 + ms(120));
+    s.poll_ready(&mut sink, t0 + ms(560)); // 500 ms after the first, not the last
+    assert!(!sink.events().contains(&Ev::Ready));
+    s.poll_ready(&mut sink, t0 + ms(620));
+    s.poll_ready(&mut sink, t0 + ms(900));
+    let ev = sink.events();
+    assert_eq!(ev.iter().filter(|e| **e == Ev::Ready).count(), 1);
+    // Ready comes after the last list's creates.
+    assert_eq!(
+        &ev[ev.len() - 4..],
+        &[Ev::Create(0), Ev::Create(1), Ev::Create(2), Ev::Ready]
+    );
+
+    // A repeated list neither rebuilds nor re-arms the timer.
+    s.set_devices(vec![hid(0), hid(1), hid(2)], &mut sink, t0 + ms(1000));
+    assert!(s.ready_at.is_none());
+}
+
+#[test]
+fn sinks_without_settle_time_are_ready_at_once() {
+    let mut sink = RecSink::default();
+    let mut s = Session::new();
+    s.set_devices(vec![hid(0)], &mut sink, Instant::now());
+    assert_eq!(sink.events(), [Ev::DestroyAll, Ev::Create(0), Ev::Ready]);
 }

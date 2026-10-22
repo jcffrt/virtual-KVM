@@ -26,7 +26,7 @@ scp -r deploy/hub-linux orangepi@192.168.1.28:rawkvm-deploy
 ssh orangepi@192.168.1.28 'sudo sh rawkvm-deploy/install.sh ./rawkvm-hub'
 ```
 
-`install.sh` pone la blacklist de `hid_logitech_dj`/`hid_logitech_hidpp`, descarga esos módulos, resetea el receptor, instala y arranca `rawkvm-hub.service` e imprime el **token de emparejamiento**. Volver a verlo: `sudo rawkvm-hub --show-token`.
+`install.sh` pone la blacklist de `hid_logitech_dj`/`hid_logitech_hidpp`, regenera el initramfs (`update-initramfs -u`, si existe: en Armbian el receptor se enumera dentro del initramfs, que lleva su propia copia de `modprobe.d`), descarga esos módulos, resetea el receptor, instala y arranca `rawkvm-hub.service` e imprime el **token de emparejamiento**. Volver a verlo: `sudo rawkvm-hub --show-token`.
 
 Comprobaciones en el Pi:
 
@@ -89,6 +89,6 @@ Con un segundo agente conectado (otro PC Linux), pulsar **Ctrl, Ctrl, 2**: la en
 
 ## 7. Problemas conocidos
 
-- `--list` no muestra nodos `[forward]` y sí `logitech-djreceiver`: la blacklist no está activa; repetir `install.sh` o reiniciar.
+- `--list` no muestra nodos `[forward]` y sí `logitech-djreceiver`, o el log del hub dice `is bound to "logitech-djreceiver", not hid-generic; not forwarding it`: la blacklist no está activa. Si pasa tras reiniciar, el initramfs no la lleva: `sudo update-initramfs -u` (comprobar con `lsinitramfs /boot/initrd.img-$(uname -r) | grep rawkvm`) y reiniciar, o repetir `install.sh`. El hub no reenvía interfaces con otro driver (`require_hid_generic = true` en `[receiver]`).
 - El agente dice `the hub certificate is not the pinned one`: se reinstaló el hub y cambió su certificado. Ejecutar `rawkvm-agent --unpin` una vez.
 - `opening /dev/uhid`: falta la regla udev, el módulo `uhid` o pertenecer al grupo `input`.

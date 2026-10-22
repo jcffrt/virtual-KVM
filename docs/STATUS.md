@@ -116,6 +116,20 @@
 - CI: job `gadget` (aarch64-musl, armv7-musleabihf) con artefactos `rawkvm-agent-gadget-aarch64` / `-armv7`.
 - Verificado en el Mac: 8 tests (ConfigFS simulado en directorio temporal), clippy, cross-build de ambos targets. **Pendiente: prueba en una placa real** (el usuario confirma el modelo).
 
+## Gadget USB probado en hardware (2026-10-22, orquestador)
+
+- Orange Pi Zero 2W con hub y gadget a la vez (gadget → `127.0.0.1:4433`), USB‑C de alimentación/OTG conectado al Mac (la placa se alimenta del Mac). Gadget `046d:c52b` enlazado a `musb-hdrc.5.auto` con 3 interfaces, UDC `configured`; macOS enumera "Logitech USB Receiver" (serie = node_id) con teclado, ratón y vendor 0xFF00, como un receptor real.
+- Incidencias resueltas: (1) `mkdir` de los grupos automáticos de ConfigFS (corregido en 8c06b4a); (2) tras el reinicio, `hid_logitech_dj` volvió a cargarse porque el **initramfs de Armbian no tenía la blacklist**: ejecutado `update-initramfs -u` en el Pi; el instalador del hub debe hacerlo (pendiente VS Code); (3) el gadget se reenlaza por cada DeviceList incremental (3 binds en 80 ms): pendiente estabilización de ~500 ms (VS Code).
+- Tras el reinicio el hub reasignó índices: gadget = 1 (activo), Mac/Karabiner = 2. Mejora propuesta: persistir índices y último activo en el state_dir.
+- Pendiente de confirmar por el usuario: escritura y trackball por USB en el Mac, y conmutación Ctrl,Ctrl,2 ↔ Ctrl,Ctrl,1 entre gadget y Karabiner.
+
+## Correcciones tras la prueba del gadget (2026-10-22, VS Code)
+
+- `deploy/hub-linux/install.sh` ejecuta `update-initramfs -u` (si existe) tras instalar la blacklist; documentado en `docs/fase0-validacion.md`, `docs/gadget-instalacion.md` y ADR 0003.
+- Hub: `[receiver] require_hid_generic = true` (por defecto). En modo A no abre interfaces con otro driver y lo registra como error (una vez por interfaz y driver) con la causa probable (initramfs).
+- `agent-core`: `HidSink::settle_time()` (por defecto cero). `devices_ready()` se llama cuando la DeviceList lleva ese tiempo sin cambios; el gadget usa 500 ms, también al arrancar. ADR 0007, revisión.
+- Pendiente de desplegar en la Orange Pi: binarios aarch64 de hub y gadget.
+
 ## Convenciones
 
 Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario en castellano, `cargo fmt` y `cargo clippy -D warnings` limpios, un ADR por decisión nueva.

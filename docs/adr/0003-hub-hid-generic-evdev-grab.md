@@ -15,6 +15,13 @@ Con `hid-logitech-dj` cargado (por defecto), el receptor entra en modo DJ: las i
 
 La identidad sale de los ioctls de hidraw (`HIDIOCGRDESC`, `HIDIOCGRAWINFO`, `HIDIOCGRAWNAME`, `HIDIOCGRAWPHYS`); sysfs aporta el driver, `bInterfaceNumber`, el HID padre y los nodos evdev.
 
+## Revisión (initramfs y driver distinto de hid-generic)
+
+En Armbian (y Raspberry Pi OS con initramfs) el receptor se enumera dentro del initramfs, que lleva su propia copia de `modprobe.d`: tras reiniciar se cargaba `hid_logitech_dj` igualmente, el hub abría solo la interfaz 2 (bound a `logitech-djreceiver`) y el comando DJ-off no servía. Desde entonces:
+
+- `deploy/hub-linux/install.sh` ejecuta `update-initramfs -u` (si existe) tras instalar el conf.
+- `[receiver] require_hid_generic = true` (por defecto): en modo A el hub no abre interfaces con otro driver y lo registra a nivel error, una vez por interfaz y driver, con la causa probable. Con `false` se reenvían con un aviso, como antes.
+
 ## Consecuencias
 
 - El servicio corre como **root** (hidraw, evdev y escritura en HID++).

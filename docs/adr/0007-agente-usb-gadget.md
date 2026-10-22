@@ -16,6 +16,10 @@ Datos del kernel (`drivers/usb/gadget/function/f_hid.c`, v6.12): atributos `subc
 4. **Reconexiones**: si la `DeviceList` nueva es igual a la actual se conserva el gadget (el PC no ve desconexión USB cuando se reconecta el hub); `destroy_all` solo envía "release all". Al salir: release-all y desmontaje; al arrancar se desmonta un gadget que haya dejado un proceso muerto.
 5. **HID++ (interfaz 2)**: expuesta por defecto, `--no-hidpp` la oculta. Un host **Linux** carga `hid-logitech-dj` para 046D:C52B por USB, pone el receptor en modo DJ por HID++ (nuestro gadget lo reenvía como output report y se descarta) y espera los informes DJ multiplexados: las interfaces 0/1 se ignoran — la misma trampa que en el hub (ADR 0003). Por eso en hosts Linux se recomienda `--no-hidpp`. En Windows sin Logitech Options+ y en macOS no hay driver que lo haga.
 
+## Revisión (estabilización de la lista)
+
+El hub envía una `DeviceList` nueva cada vez que abre una interfaz (~60 ms entre ellas). En la Orange Pi el gadget se reconstruyó tres veces en 80 ms (1, 2 y 3 interfaces), con tres re-enumeraciones en el PC. `HidSink::settle_time()` (por defecto cero) permite a un sink esperar a que la lista lleve ese tiempo sin cambios antes de `devices_ready()`; el gadget usa 500 ms, también al arrancar. Una lista idéntica a la anterior no reinicia la espera.
+
 ## Por qué no en el hub
 
 El hub de la Orange Pi tiene un segundo USB-C con OTG en modo periférico y podría ser a la vez gadget para un PC. Se deja para más adelante: el hub es el componente que no debe fallar (routing, atajo de emergencia) y el gadget añade estado USB y dependencias del device tree. El módulo (`configfs`, `hidg`, `sink`) es una librería y el hub podría reutilizarlo con una opción `gadget = true`, enviando al gadget local cuando ese PC sea el destino activo, sin Wi‑Fi de por medio.

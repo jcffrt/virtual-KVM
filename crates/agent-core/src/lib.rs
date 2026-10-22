@@ -30,6 +30,14 @@ pub trait HidSink {
     /// Every device of a `DeviceList` has been passed to `create`. Sinks
     /// that must see the whole set at once (a USB gadget) build it here.
     fn devices_ready(&mut self) {}
+    /// How long the device list must stay unchanged before
+    /// [`devices_ready`](Self::devices_ready) is called. The hub announces
+    /// interfaces one by one as it opens them (tens of ms apart); a sink
+    /// that is expensive to rebuild (a USB gadget re-enumerates on the PC)
+    /// waits for the list to settle. Zero calls it right away.
+    fn settle_time(&self) -> Duration {
+        Duration::ZERO
+    }
     /// This node now receives input; place the pointer at the entry edge.
     fn activate(&mut self, _enter_edge: Option<Edge>, _pos_ratio: Option<f32>) {}
     /// This node no longer receives input.
@@ -130,6 +138,8 @@ struct Session {
     rtt_ms: Option<f64>,
     active: bool,
     t0: Instant,
+    /// When to call `devices_ready` for a list still settling.
+    ready_at: Option<Instant>,
 }
 
 impl Session {
@@ -141,10 +151,11 @@ impl Session {
             rtt_ms: None,
             active: false,
             t0: Instant::now(),
+            ready_at: None,
         }
     }
 
-    fn set_devices(&mut self, devices: Vec<HidDevice>, sink: &mut dyn HidSink) {
+    fn set_devices(&mut self, devices: Vec<HidDevice>, sink: &mut dyn HidSink, now: Instant) {
         if devices == self.devices {
             return;
         }
@@ -162,8 +173,21 @@ impl Session {
                 DescriptorInfo::parse(&d.report_descriptor).release_reports(),
             );
         }
-        sink.devices_ready();
         self.devices = devices;
+        let settle = sink.settle_time();
+        if settle.is_zero() {
+            sink.devices_ready();
+        } else {
+            self.ready_at = Some(now + settle);
+        }
+    }
+
+    /// Call `devices_ready` if the list has settled by `now`.
+    fn poll_ready(&mut self, sink: &mut dyn HidSink, now: Instant) {
+        if self.ready_at.is_some_and(|t| now >= t) {
+            self.ready_at = None;
+            sink.devices_ready();
+        }
     }
 
     fn release_all(&self, sink: &mut dyn HidSink) {
@@ -298,7 +322,7 @@ async fn session_inner(
             frame = wire::read_frame(&mut recv) => {
                 let Some(msg) = frame? else { return Ok(()) };
                 match msg {
-                    Control::DeviceList { devices } => s.set_devices(devices, sink),
+                    Control::DeviceList { devices } => s.set_devices(devices, sink, Instant::now()),
                     Control::Activate { enter_edge, pos_ratio } => {
                         info!(?enter_edge, ?pos_ratio, "active");
                         s.active = true;
@@ -321,6 +345,7 @@ async fn session_inner(
                 }
             }
             dg = conn.read_datagram() => s.on_datagram(&dg?, sink),
+            _ = sleep_until(s.ready_at) => s.poll_ready(sink, Instant::now()),
             _ = ping.tick() => {
                 let t = s.t0.elapsed().as_micros() as u64;
                 wire::write_frame(&mut send, &Control::Ping(t)).await?;
@@ -337,6 +362,14 @@ async fn session_inner(
                 );
             }
         }
+    }
+}
+
+/// Sleep until `t`, or forever if there is nothing to wait for.
+async fn sleep_until(t: Option<Instant>) {
+    match t {
+        Some(t) => tokio::time::sleep_until(t.into()).await,
+        None => std::future::pending().await,
     }
 }
 

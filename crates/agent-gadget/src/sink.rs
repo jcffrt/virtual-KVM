@@ -40,6 +40,10 @@ impl Default for Paths {
 const PATIENCE_MOUSE: Duration = Duration::from_millis(8);
 const PATIENCE_OTHER: Duration = Duration::from_millis(50);
 
+/// The hub announces the receiver's interfaces one by one as it opens them;
+/// rebuilding for each would re-enumerate the gadget on the PC every time.
+pub const SETTLE_TIME: Duration = Duration::from_millis(500);
+
 struct Port {
     hidg: Option<Hidg>,
     info: DescriptorInfo,
@@ -192,6 +196,10 @@ impl HidSink for GadgetSink {
     fn create(&mut self, dev: &HidDevice) -> Result<()> {
         self.pending.push(dev.clone());
         Ok(())
+    }
+
+    fn settle_time(&self) -> Duration {
+        SETTLE_TIME
     }
 
     fn devices_ready(&mut self) {

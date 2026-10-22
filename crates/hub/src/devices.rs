@@ -54,6 +54,23 @@ pub fn to_hid_device(iface: &RawInterface, id: u8) -> HidDevice {
     }
 }
 
+/// Why `iface` must not be opened despite matching, if it must not.
+pub fn refusal(iface: &RawInterface, m: &ReceiverMatch) -> Option<String> {
+    if m.mode != MatchMode::Receiver || !m.require_hid_generic {
+        return None;
+    }
+    match iface.driver.as_deref() {
+        Some("hid-generic") => None,
+        driver => Some(format!(
+            "{} is bound to {:?}, not hid-generic; not forwarding it. Probably \
+             hid_logitech_dj was loaded from the initramfs: run `update-initramfs -u` \
+             and reboot, or re-run deploy/hub-linux/install.sh (docs/adr/0003)",
+            iface.hidraw.display(),
+            driver.unwrap_or("no driver"),
+        )),
+    }
+}
+
 /// Device id for `iface`, stable while the hub runs. In `receiver` mode it
 /// is the USB interface number (0 keyboard, 1 mouse, 2 HID++), so agents see
 /// the same ids across hub restarts.
@@ -123,6 +140,8 @@ fn scan_loop(router: Arc<Router>, m: ReceiverMatch) {
     let open: Arc<Mutex<HashMap<String, OpenIface>>> = Arc::default();
     let mut ids: HashMap<String, u8> = HashMap::new();
     let mut warned_empty = false;
+    // phys -> driver already reported as refused, to log once per change.
+    let mut refused: HashMap<String, Option<String>> = HashMap::new();
     loop {
         let found = match hidraw::enumerate() {
             Ok(list) => list,
@@ -141,6 +160,14 @@ fn scan_loop(router: Arc<Router>, m: ReceiverMatch) {
         warned_empty = matching.is_empty();
 
         for iface in matching {
+            if let Some(why) = refusal(&iface, &m) {
+                if refused.get(&iface.phys) != Some(&iface.driver) {
+                    error!("{why}");
+                    refused.insert(iface.phys.clone(), iface.driver.clone());
+                }
+                continue;
+            }
+            refused.remove(&iface.phys);
             let mut open_g = open.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(o) = open_g.get_mut(&iface.phys) {
                 if m.grab_evdev {
@@ -203,5 +230,49 @@ fn scan_loop(router: Arc<Router>, m: ReceiverMatch) {
             }
         }
         thread::sleep(SCAN_INTERVAL);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn iface(driver: Option<&str>) -> RawInterface {
+        RawInterface {
+            hidraw: PathBuf::from("/dev/hidraw0"),
+            phys: "usb-5200000.usb-1/input2".into(),
+            name: "Logitech USB Receiver".into(),
+            bus: BUS_USB,
+            vid: 0x046d,
+            pid: 0xc52b,
+            serial: None,
+            usb_interface: Some(2),
+            dj_index: None,
+            parent_hid: None,
+            driver: driver.map(Into::into),
+            descriptor: Vec::new(),
+            event_nodes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn receiver_mode_refuses_the_dj_driver() {
+        let m = ReceiverMatch::default();
+        assert!(is_forwarded(&iface(Some("logitech-djreceiver")), &m));
+        let why = refusal(&iface(Some("logitech-djreceiver")), &m).unwrap();
+        assert!(why.contains("logitech-djreceiver") && why.contains("update-initramfs"));
+        assert!(refusal(&iface(None), &m).is_some());
+        assert!(refusal(&iface(Some("hid-generic")), &m).is_none());
+
+        let lax = ReceiverMatch {
+            require_hid_generic: false,
+            ..m.clone()
+        };
+        assert!(refusal(&iface(Some("logitech-djreceiver")), &lax).is_none());
+        let dj = ReceiverMatch {
+            mode: MatchMode::DjChildren,
+            ..m
+        };
+        assert!(refusal(&iface(Some("logitech-hidpp-device")), &dj).is_none());
     }
 }
