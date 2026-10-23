@@ -35,11 +35,6 @@
   let speedDraft = $state({});
   const speedLabel = (v) => (v / 256).toFixed(2) + '×';
 
-  function batteryText(b) {
-    const pct = b.percent == null ? '?' : `${b.percent} %`;
-    return b.charge ? `${pct}, ${b.charge}` : pct;
-  }
-
   let tunable = $derived(
     (view.receiver_devices ?? []).filter((d) => d.pointer_speed || d.fn_swap != null),
   );
@@ -70,7 +65,7 @@
             <td>
               {#if d.battery}
                 <span class:bad={d.battery.low} title="Por tramos: el dispositivo da el nivel en pasos, no un porcentaje exacto.">
-                  {d.battery.low ? '⚠︎ ' : ''}{batteryText(d.battery)}
+                  {d.battery.low ? '⚠︎ ' : ''}{d.battery.text}
                 </span>
               {:else}<span class="muted">—</span>{/if}
             </td>

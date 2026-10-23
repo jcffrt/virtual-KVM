@@ -450,6 +450,10 @@ Decisiones del usuario/orquestador sobre `docs/widget-plan.md`: (1) protocolo v3
 - Windows: helper v6 y widget (d67c7c5, F4.3) instalados por el usuario; el hub registra "GAMER" como Widget. Sin rechazos de protocolo en el hub.
 - Pendiente de probar por el usuario: F4.2 (modificador, 0 = anterior, Esc = liberar, columna Atajo, bandeja), widget de Windows (bandeja con número, clics, cambio rápido, Monitores con 4 pantallas, Aplicar, autostart), extensión GNOME v2 (re-login y bloqueo), LED del Mac tras volver a dar el permiso.
 
+## Batería sin nivel mientras carga (2026-10-23)
+
+- Widget: el texto de la columna Batería se construye en `view.rs` (`BatteryView.text`, con test). Si el dispositivo da nivel 0 (desconocido, lo hace mientras carga) muestra solo "cargando", sin "?" ni porcentaje. Antes salía "?, cargando". Sin cambio de protocolo ni del hub: solo hay que reinstalar el widget. Sin probar en hardware.
+
 ## Convenciones
 
 Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario en castellano, `cargo fmt` y `cargo clippy -D warnings` limpios, un ADR por decisión nueva.

@@ -80,6 +80,9 @@ pub struct BatteryView {
     pub charge: Option<&'static str>,
     /// 10 % or less and not charging.
     pub low: bool,
+    /// What the Battery column shows: "50 %", "50 %, cargando", or just
+    /// "cargando" when the device reports no level (it does while charging).
+    pub text: String,
 }
 
 /// Raw HID++ value (256 = 1x) and its range.
@@ -99,10 +102,17 @@ fn battery_view(b: proto::Battery) -> BatteryView {
         Charge::Full => Some("cargada"),
         Charge::Error => Some("error de carga"),
     };
+    let text = match (b.percent, charge) {
+        (Some(p), Some(c)) => format!("{p} %, {c}"),
+        (Some(p), None) => format!("{p} %"),
+        (None, Some(c)) => c.to_string(),
+        (None, None) => "?".to_string(),
+    };
     BatteryView {
         percent: b.percent,
         charge,
         low: b.charge == Charge::Discharging && b.percent.is_some_and(|p| p <= 10),
+        text,
     }
 }
 
@@ -486,11 +496,30 @@ mod tests {
         );
         let b = p[0].battery.as_ref().unwrap();
         assert!(b.low && b.charge.is_none());
+        assert_eq!(b.text, "5 %");
         assert_eq!(p[0].fn_swap, Some(true));
         let v = pairing(&st);
         assert!(v.ok && v.until_ms.is_none());
         assert_eq!(v.message.as_deref(), Some("Emparejado: K230 (teclado)."));
         assert!(paired(&WidgetState::default()).is_none());
+    }
+
+    #[test]
+    fn battery_text() {
+        use proto::{Battery, Charge};
+        let text = |percent, charge| {
+            battery_view(Battery {
+                percent,
+                next_percent: None,
+                charge,
+            })
+            .text
+        };
+        // Charging devices report level 0 (unknown): no percentage.
+        assert_eq!(text(None, Charge::Charging), "cargando");
+        assert_eq!(text(Some(50), Charge::Charging), "50 %, cargando");
+        assert_eq!(text(Some(50), Charge::Discharging), "50 %");
+        assert_eq!(text(None, Charge::Discharging), "?");
     }
 
     #[test]
