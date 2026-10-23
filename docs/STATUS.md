@@ -420,6 +420,14 @@ Decisiones del usuario/orquestador sobre `docs/widget-plan.md`: (1) protocolo v3
 - Tests: `receiver_ctl` reproduce las **trazas reales** de `fixtures/hidpp/` (lista de ranuras, Linux → Windows, escritura única, vuelta a macOS). Además: sesión de emparejamiento completa con cancelación, errores y silencio del receptor; teclado dormido que despierta; router (disposición por SO y por opción, órdenes solo de widgets, listas solo a widgets).
 - Verificado: fmt, clippy `-D warnings` (macOS, Linux con zig, Windows gnu), tests del workspace y del widget, build del frontend sin avisos. **Sin probar en hardware**: el cambio al conmutar con el hub en servicio, el emparejamiento real y la pestaña Dispositivos. Al desplegar v4, quitar `swap_alt_gui` de `hub.toml`.
 
+## Redespliegue v4 (Fase 3 A, C y D en hardware) (2026-10-23 11:35)
+
+- Desplegado fbf5349 en todo: hub y gadget en la Pi (hashes comprobados, `swap_alt_gui` retirado de `hub.toml`, copia en `hub.toml.bak-v3`), agente en el Ubuntu, agente + helper de borde + widget en el Mac (carpeta `target/mac-v4`, instalados por el usuario con sudo), helper de borde en el Windows (`rawkvm-edge-windows-v4.zip`).
+- Incidentes del despliegue: (1) el instalador del Mac aborta si no tiene al lado los plists de `deploy/macos` → el daemon de Karabiner quedó parado (`bootout` sin `bootstrap`) y el Mac sin teclado hasta reejecutarlo con la carpeta completa; conviene que `install.sh` compruebe los ficheros antes de tocar launchd. (2) La Pi se cayó a las 11:16 (sin ping; el Windows seguía encendido); reset manual del usuario, binarios íntegros al volver. Causa sin determinar. (3) El widget nuevo pierde el permiso de Red local al cambiar la firma ad hoc: hay que volver a concederlo.
+- **Validado por el usuario**: LED de Bloq Mayús funciona en Mac, Windows y Ubuntu (bloque A); en el Mac el agente registra "watching the keyboard LEDs" tras conceder Monitorización de entrada por arrastre desde el Finder (el selector de Ajustes no entra en `/usr/local/bin`). El perfil del MX Keys cambia en cada cruce por borde en <50 ms (`keyboard layout set … want=MacOs platform=1` / `want=Linux platform=0` para el gadget; bloque C). Cruce por borde Windows↔Mac y Ubuntu operativo con los helpers v4.
+- Detalle para VS Code: el nodo gadget se registra con `os=Linux` (corre en la Pi) y el hub lo mapea a plataforma Windows por la regla Linux=Windows; funciona, pero el gadget debería anunciar el SO del PC al que está enchufado o llevar `os_profile = "windows"` en la doc de instalación.
+- Pendiente: permiso de Red local al widget y prueba de la pestaña Dispositivos (lista del receptor, emparejar/olvidar; bloque D).
+
 ## Convenciones
 
 Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario en castellano, `cargo fmt` y `cargo clippy -D warnings` limpios, un ADR por decisión nueva.
