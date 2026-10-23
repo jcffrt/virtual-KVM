@@ -49,6 +49,12 @@ npx tauri build --bundles app      # src-tauri/target/release/bundle/macos/RawKV
   - **Escala**: cada equipo se dibuja dividiendo sus medidas por la escala que informa su helper (macOS ya informa en puntos, 1; Windows, su escalado de pantalla). Si un bloque sale de tamaño equivocado, se corrige a mano; vacío = la informada. La corrección se guarda en el hub con la disposición.
   - Mientras el hub use la semilla, la pestaña muestra una propuesta hecha a partir de ella. Hasta pulsar Aplicar no cambia nada.
 
+- **Pestaña Dispositivos**: las interfaces del receptor que el hub reenvía (teclado, ratón + multimedia + control del sistema, HID++), con VID:PID y tamaño del descriptor. Listar y emparejar los teclados y ratones del receptor llegará con HID++ en la Fase 3.
+- **Pestaña Opciones**:
+  - **Conmutación (hub)**: histéresis (tiempo mínimo entre dos cambios por borde) y atajo de emergencia. El hub los aplica al instante y los guarda en `/var/lib/rawkvm/settings.toml`, que manda sobre `[switching]` de `hub.toml`.
+  - **Bordes (helpers)**: empujar (ms que hay que mantener el puntero en el borde; 0 = al tocarlo), esquinas (% de cada extremo que no cambia de equipo) y zona muerta (px). Viajan con la disposición: si el hub aún usa la semilla, guardar esto guarda también la disposición de Monitores.
+  - **Este Mac**: abrir RawKVM al iniciar sesión (LaunchAgent del usuario).
+
 ## Ficheros
 
 - `~/Library/Application Support/rawkvm/widget.toml`: hub, token y certificado fijado. Nunca guarda el layout: lo guarda el hub.

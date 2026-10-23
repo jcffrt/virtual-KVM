@@ -3,7 +3,8 @@
 
 use agent_core::widget::WidgetState;
 use agent_core::AgentConfig;
-use proto::{NodeKind, Os};
+use proto::descriptor::DescriptorInfo;
+use proto::{EdgeOptions, HubSettings, NodeKind, Os};
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -21,6 +22,61 @@ pub struct View {
     pub fatal: bool,
     pub active: Option<Uuid>,
     pub nodes: Vec<NodeView>,
+    pub devices: Vec<DeviceView>,
+    /// Hysteresis and hotkey as the hub applies them (None until it says).
+    pub settings: Option<HubSettings>,
+    /// Edge options in force (from the hub's layout).
+    pub options: EdgeOptions,
+    /// The hub keeps a layout set by a widget (not its config seed).
+    pub custom_layout: bool,
+}
+
+/// One HID interface of the receiver the hub forwards.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct DeviceView {
+    pub id: u8,
+    pub interface: u8,
+    pub name: String,
+    /// "046d:c52b".
+    pub vid_pid: String,
+    pub descriptor_len: usize,
+    /// What the interface carries, e.g. ["teclado"], ["ratón", "multimedia"].
+    pub kinds: Vec<String>,
+}
+
+fn kind_name(page: u16, usage: u16) -> String {
+    match (page, usage) {
+        (0x01, 0x06) => "teclado".into(),
+        (0x01, 0x02) => "ratón".into(),
+        (0x01, 0x80) => "control del sistema".into(),
+        (0x0C, 0x01) => "multimedia".into(),
+        (0xFF00, _) => "HID++ (vendor)".into(),
+        (p, _) if p >= 0xFF00 => format!("vendor 0x{p:04X}"),
+        (p, u) => format!("0x{p:02X}/0x{u:02X}"),
+    }
+}
+
+pub fn devices(st: &WidgetState) -> Vec<DeviceView> {
+    st.devices
+        .iter()
+        .map(|d| {
+            let info = DescriptorInfo::parse(&d.report_descriptor);
+            let mut kinds: Vec<String> = info
+                .applications
+                .iter()
+                .map(|&(p, u)| kind_name(p, u))
+                .collect();
+            kinds.dedup();
+            DeviceView {
+                id: d.id,
+                interface: d.interface,
+                name: d.name.clone(),
+                vid_pid: format!("{:04x}:{:04x}", d.vid, d.pid),
+                descriptor_len: d.report_descriptor.len(),
+                kinds,
+            }
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -107,6 +163,10 @@ pub fn view(st: &WidgetState, cfg: &AgentConfig) -> View {
         fatal: st.fatal,
         active,
         nodes,
+        devices: devices(st),
+        settings: st.settings,
+        options: st.options,
+        custom_layout: !st.canvas.is_empty(),
     }
 }
 
@@ -193,6 +253,35 @@ mod tests {
         assert!(!v.nodes[2].has_helper, "Ubuntu: no screens, drawn grey");
         assert_eq!(v.nodes[3].helper_of.as_deref(), Some("MacBook"));
         assert_eq!(v.active, Some(mac.node_id));
+    }
+
+    #[test]
+    fn devices_describe_the_receiver_interfaces() {
+        use proto::descriptor::tests::{BOOT_KEYBOARD, UNIFYING_IFACE1, UNIFYING_IFACE2};
+        let dev = |id: u8, desc: &[u8]| proto::HidDevice {
+            id,
+            name: "Logitech USB Receiver".into(),
+            vid: 0x046d,
+            pid: 0xc52b,
+            serial: None,
+            interface: id,
+            report_descriptor: desc.to_vec(),
+            uses_report_ids: false,
+        };
+        let st = WidgetState {
+            devices: vec![
+                dev(0, BOOT_KEYBOARD),
+                dev(1, UNIFYING_IFACE1),
+                dev(2, UNIFYING_IFACE2),
+            ],
+            ..Default::default()
+        };
+        let d = devices(&st);
+        assert_eq!(d[0].kinds, ["teclado"]);
+        assert_eq!(d[0].vid_pid, "046d:c52b");
+        assert!(d[1].kinds.contains(&"ratón".to_string()));
+        assert!(d[1].kinds.contains(&"multimedia".to_string()));
+        assert_eq!(d[2].kinds, ["HID++ (vendor)"]);
     }
 
     #[test]

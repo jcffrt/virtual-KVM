@@ -3,6 +3,8 @@
   import { listen } from '@tauri-apps/api/event';
   import Hub from './lib/Hub.svelte';
   import Monitors from './lib/Monitors.svelte';
+  import Devices from './lib/Devices.svelte';
+  import Options from './lib/Options.svelte';
 
   const tabs = [
     { id: 'hub', label: 'Hub' },
@@ -30,8 +32,10 @@
       <Hub {view} />
     {:else if tab === 'monitors'}
       <Monitors {view} />
+    {:else if tab === 'devices'}
+      <Devices {view} />
     {:else}
-      <p class="muted">Próximamente.</p>
+      <Options {view} />
     {/if}
   </section>
 </main>

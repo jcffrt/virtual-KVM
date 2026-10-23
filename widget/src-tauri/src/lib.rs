@@ -304,6 +304,84 @@ fn switch_to(state: tauri::State<'_, Arc<AppState>>, node: Uuid) -> Result<(), S
     })
 }
 
+// ---- options -----------------------------------------------------------
+
+/// Hysteresis and hotkey: the hub applies them at once and keeps them in
+/// its settings.toml.
+#[tauri::command]
+fn set_settings(
+    state: tauri::State<'_, Arc<AppState>>,
+    hysteresis_ms: u32,
+    hotkey: bool,
+) -> Result<(), String> {
+    if hysteresis_ms > 5000 {
+        return Err("la histéresis va de 0 a 5000 ms".into());
+    }
+    info!(hysteresis_ms, hotkey, "settings");
+    state.send(Control::Settings(proto::HubSettings {
+        hysteresis_ms,
+        hotkey,
+    }))
+}
+
+/// Edge options travel with the layout: resend the layout in force (the
+/// hub's saved one, or the current arrangement if the hub still uses its
+/// seed) with the new options.
+#[tauri::command]
+fn set_edge_options(
+    state: tauri::State<'_, Arc<AppState>>,
+    push_ms: u16,
+    corner_pct: u8,
+    dead_zone_px: u16,
+) -> Result<(), String> {
+    if corner_pct > 40 || dead_zone_px > 50 || push_ms > 2000 {
+        return Err("valor fuera de rango".into());
+    }
+    let st = state.shared.snapshot();
+    let options = proto::EdgeOptions {
+        push_ms,
+        corner_pct,
+        dead_zone_px,
+    };
+    let placements = canvas_view::arrangement(&st, None);
+    let layout = if st.canvas.is_empty() {
+        let Control::Layout { edges, canvas, .. } = canvas_view::layout_for(&st, &placements)
+        else {
+            unreachable!()
+        };
+        Control::Layout {
+            screens: Vec::new(),
+            edges,
+            options,
+            canvas,
+        }
+    } else {
+        Control::Layout {
+            screens: Vec::new(),
+            edges: st.edges.clone(),
+            options,
+            canvas: st.canvas.clone(),
+        }
+    };
+    info!(?options, "edge options");
+    state.send(layout)
+}
+
+#[tauri::command]
+fn get_autostart(app: AppHandle) -> Result<bool, String> {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch().is_enabled().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let a = app.autolaunch();
+    let r = if enabled { a.enable() } else { a.disable() };
+    info!(enabled, "start at login");
+    r.map_err(|e| e.to_string())
+}
+
 // ---- monitors canvas ---------------------------------------------------
 
 /// What to draw for `draft` (or, without one, the hub's arrangement or a
@@ -411,6 +489,10 @@ pub fn run() {
         "rawkvm-widget starting"
     );
     tauri::Builder::default()
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
@@ -462,7 +544,11 @@ pub fn run() {
             canvas_drop,
             canvas_scale,
             canvas_apply,
-            canvas_reset
+            canvas_reset,
+            set_settings,
+            set_edge_options,
+            get_autostart,
+            set_autostart
         ])
         .run(tauri::generate_context!())
         .expect("running the RawKVM widget");

@@ -322,6 +322,16 @@ Decisiones del usuario/orquestador sobre `docs/widget-plan.md`: (1) protocolo v3
 - Hub: un `Layout` de widget con `edges` y `canvas` vacíos vuelve a la semilla y borra `layout.toml`. Sin cambio de protocolo, pero **hay que redesplegar el hub** para que «Volver a la semilla» funcione: el hub `dc62461` lo guardaría como layout vacío.
 - **Sin probar en la app real** (geometría cubierta por tests; la interfaz solo compilada).
 
+## Widget, paso 5: Dispositivos y Opciones (2026-10-22, VS Code)
+
+- `view.rs`: `devices` (interfaces del receptor con su contenido según las colecciones del descriptor: teclado, ratón, multimedia, control del sistema, HID++) y, en `View`, `settings`, `options` y `custom_layout`. Test con los descriptores de referencia.
+- Comandos:
+  - `set_settings` (`Control::Settings`, 0–5000 ms);
+  - `set_edge_options` (reenvía el layout en vigor con las opciones nuevas; si el hub usa la semilla, envía la disposición actual de Monitores);
+  - `get_autostart` / `set_autostart` (`tauri-plugin-autostart`, LaunchAgent).
+- `Devices.svelte` (emparejar HID++ deshabilitado hasta la Fase 3) y `Options.svelte`.
+- Sin cambios en hub ni protocolo. **Sin probar en la app real.**
+
 ## Convenciones
 
 Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario en castellano, `cargo fmt` y `cargo clippy -D warnings` limpios, un ADR por decisión nueva.
