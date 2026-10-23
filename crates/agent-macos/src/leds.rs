@@ -13,8 +13,9 @@
 //! Opening a keyboard needs Input Monitoring (TCC) approval for the agent
 //! binary; without it the open fails and only a warning is logged. The
 //! state is known from the first change after the open.
+// Off macOS only the stub of `ffi` is built.
+#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 
-use std::ffi::{c_char, c_void, CStr, CString};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -22,7 +23,7 @@ use std::time::Duration;
 use agent_core::{OutputReport, OutputSender};
 use proto::descriptor::{DescriptorInfo, USAGE_KEYBOARD, USAGE_PAGE_GENERIC_DESKTOP};
 use proto::HidDevice;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 const MANUFACTURER: &str = "pqrs.org";
 const PRODUCT_PREFIX: &str = "Karabiner DriverKit VirtualHIDKeyboard";
@@ -113,8 +114,22 @@ impl Ctx {
     }
 }
 
+/// Off macOS (CI builds the workspace on Linux) there is nothing to watch.
+#[cfg(not(target_os = "macos"))]
 mod ffi {
     use super::*;
+
+    pub(super) fn run(tx: OutputSender, target: Target) {
+        drop((tx, target));
+        warn!("keyboard LEDs are only watched on macOS");
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod ffi {
+    use super::*;
+    use std::ffi::{c_char, c_void, CStr, CString};
+    use tracing::info;
 
     type CFIndex = isize;
     type IOReturn = i32;
