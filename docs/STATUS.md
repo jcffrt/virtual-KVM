@@ -458,6 +458,12 @@ Decisiones del usuario/orquestador sobre `docs/widget-plan.md`: (1) protocolo v3
 
 - Hallazgo del orquestador en el Mac: tras pasar el agente de ad hoc a «RawKVM Local», TCC conserva el requisito viejo y Monitorización de entrada queda denegada con el interruptor encendido; al ser un daemon, no hay diálogo. Solución única: `sudo tccutil reset ListenEvent`, volver a arrastrar el binario y `launchctl kickstart -k`. Documentado en `macos-instalacion.md` y ADR 0016. `install.sh` avisa de esos pasos cuando el binario anterior estaba firmado ad hoc y el nuevo no (`signed_adhoc` en `signing.sh`). Solo comprobado con `sh -n` y `signed_adhoc` sobre binarios locales; sin ejecutar `install.sh` con sudo. Confirmado por el orquestador: tras el reset, volver a arrastrar el binario y `kickstart`, el agente registra `watching the keyboard LEDs`. El aviso de `install.sh` se queda.
 
+## Fase 4 validada en hardware (2026-10-23 17:30)
+
+- **Confirmado por el usuario**: LED de Bloq Mayús en el Mac tras `tccutil reset ListenEvent` + volver a añadir el agente (R1); extensión GNOME v2 sigue activa con la pantalla bloqueada (F4.2 extra); widget de Windows en el GAMER (bandeja con número, clics, cambio rápido, Monitores y Aplicar, F4.3); atajos configurables (modificador, 0 = anterior, Esc = liberar, columna Atajo y bandeja, F4.2). Con F4.1 validado antes, **la Fase 4 queda completa en hardware** (hub y gadget 778f633 en la Pi; agentes y helpers v6; widgets d67c7c5 en Mac y Windows).
+- Pendiente menor: redesplegar los widgets con a9918fa ("cargando" sin "?") en el próximo ciclo; emparejar desde el widget (D de la Fase 3) sin probar por falta de dispositivo libre.
+- Limpieza: `TOKEN.txt` de `~/Downloads/RawKVM-windows` borrado en el Mac; el usuario debe borrar su copia en el Windows.
+
 ## Convenciones
 
 Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario en castellano, `cargo fmt` y `cargo clippy -D warnings` limpios, un ADR por decisión nueva.
