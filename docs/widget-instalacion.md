@@ -32,6 +32,7 @@ npx tauri build --bundles app      # src-tauri/target/release/bundle/macos/RawKV
 - **Barra de menús**:
   - el icono de dos monitores lleva al lado el número del equipo activo;
   - el menú lista los equipos (1 Windows, 2 Mac…) con el activo marcado: elegir otro cambia la entrada al momento, sin pasar por el borde, y el puntero de ese equipo se queda donde estaba;
+  - «Liberar teclas» hace que el hub mande «nada pulsado» a todos los equipos, por si una tecla se queda pulsada. También está en Opciones;
   - «Ajustes…» abre la ventana;
   - «Salir de RawKVM» cierra la app. Cerrar la ventana solo la oculta.
 - **Pestaña Hub**:

@@ -70,10 +70,32 @@ struct KarabinerSink {
     devices: Vec<HidDevice>,
     country_code: u8,
     last_error_log: Option<Instant>,
+    /// A post failed: Karabiner may hold a state the mapper no longer has
+    /// (a lost release). The whole state is posted again at the next chance.
+    resync: bool,
+    /// Last keyboard report from the hub, for the held-key watchdog.
+    last_keyboard_report: Instant,
+    held_warned: bool,
 }
 
+/// A key held this long with no new keyboard report is logged (it may be
+/// held on purpose; nothing is released automatically).
+const HELD_WARN: Duration = Duration::from_secs(10);
+
 impl KarabinerSink {
-    fn post(&mut self, outputs: Vec<Output>) {
+    /// Post the mapper's outputs; after a failure, post the whole state
+    /// instead until it goes through.
+    fn deliver(&mut self, outputs: Vec<Output>) {
+        let outputs = if self.resync {
+            self.mapper.full_state()
+        } else {
+            outputs
+        };
+        self.resync = !self.post(outputs);
+    }
+
+    /// Returns false if a post failed (the rest is skipped).
+    fn post(&mut self, outputs: Vec<Output>) -> bool {
         for o in outputs {
             let Some(vhid) = &self.vhid else {
                 info!(?o, "dry-run");
@@ -90,12 +112,13 @@ impl KarabinerSink {
                     .last_error_log
                     .map_or(true, |t| t.elapsed() > Duration::from_secs(10))
                 {
-                    warn!("posting to Karabiner: {e:#}");
+                    warn!("posting to Karabiner: {e:#}; the full state will be posted again");
                     self.last_error_log = Some(Instant::now());
                 }
-                return;
+                return false;
             }
         }
+        true
     }
 }
 
@@ -116,9 +139,31 @@ impl HidSink for KarabinerSink {
     }
 
     fn input(&mut self, dev_id: u8, report: &[u8]) -> Result<()> {
+        if self.mapper.is_keyboard_report(dev_id, report) {
+            self.last_keyboard_report = Instant::now();
+            self.held_warned = false;
+        }
         let out = self.mapper.on_report(dev_id, report);
-        self.post(out);
+        self.deliver(out);
         Ok(())
+    }
+
+    fn tick(&mut self, now: Instant) {
+        if self.resync {
+            self.deliver(Vec::new());
+        }
+        if self.mapper.keyboard_held() && !self.held_warned {
+            let idle = now.duration_since(self.last_keyboard_report);
+            if idle >= HELD_WARN {
+                // No key name: the log must not record what is typed.
+                warn!(
+                    secs = idle.as_secs(),
+                    "a key or modifier has been held with no new keyboard report from the hub; \
+                     if it is stuck, use «Liberar teclas» in the widget or press that key once"
+                );
+                self.held_warned = true;
+            }
+        }
     }
 
     fn destroy_all(&mut self) {
@@ -126,7 +171,8 @@ impl HidSink for KarabinerSink {
         // release everything they hold.
         if self.mapper.device_count() > 0 {
             let out = self.mapper.clear();
-            self.post(out);
+            self.resync = false;
+            self.deliver(out);
         }
         self.devices.clear();
     }
@@ -138,7 +184,8 @@ impl HidSink for KarabinerSink {
 
     fn deactivate(&mut self) {
         let out = self.mapper.release_all();
-        self.post(out);
+        self.resync = false;
+        self.deliver(out);
     }
 }
 
@@ -203,6 +250,9 @@ fn main() -> Result<()> {
         devices: Vec::new(),
         country_code: args.country_code,
         last_error_log: None,
+        resync: false,
+        last_keyboard_report: Instant::now(),
+        held_warned: false,
     };
     let opts = AgentOptions {
         config_path,

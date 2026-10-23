@@ -473,6 +473,13 @@ impl Router {
                     debug!(node = %from, "SwitchTo from an inactive node ignored");
                     return;
                 }
+                if kind == NodeKind::Widget && st.active == Some(target) {
+                    // "Release keys": a switch to the node that is already
+                    // active (it would do nothing otherwise).
+                    info!(node = %from, "release of every key requested by a widget");
+                    self.release_everywhere(&mut st);
+                    return;
+                }
                 let entry = entry.map(|e| Entry {
                     pos_ratio: e.pos_ratio.clamp(0.0, 1.0),
                     ..e
@@ -669,6 +676,29 @@ impl Router {
             n.send(send.clone());
         }
         st.layout_sent = layout;
+    }
+
+    /// Send every agent a "nothing pressed" report for every device, twice
+    /// (the copy after `resend`, as for keys), in case a key is stuck.
+    fn release_everywhere(&self, st: &mut State) {
+        let State { devices, nodes, .. } = st;
+        for n in nodes.values_mut().filter(|n| n.is_agent()) {
+            for d in devices.values() {
+                for r in &d.release {
+                    let Some(b) = n.datagram(d.dev.id, FLAG_RELEASE_ALL, r) else {
+                        continue;
+                    };
+                    n.link.send_datagram(b.clone());
+                    if let (Some(delay), Some(rt)) = (self.opts.resend, &self.runtime) {
+                        let link = n.link.clone();
+                        rt.spawn(async move {
+                            tokio::time::sleep(delay).await;
+                            link.send_datagram(b);
+                        });
+                    }
+                }
+            }
+        }
     }
 
     /// Make `target` the active agent. `force` bypasses the hysteresis.
@@ -1632,6 +1662,40 @@ mod tests {
         );
         r.on_report(0, &alt_a);
         assert_eq!(mac.link.take()[0].3, alt_a);
+    }
+
+    #[test]
+    fn widget_switch_to_the_active_node_releases_every_key() {
+        let r = router();
+        r.add_device(device(0, BOOT_KEYBOARD));
+        let a = join(&r, NodeKind::Agent).unwrap();
+        let b = join(&r, NodeKind::Agent).unwrap();
+        let w = join(&r, NodeKind::Widget).unwrap();
+        r.on_report(0, &key_report(0, 0x36));
+        a.link.take();
+        r.on_control(
+            w.id,
+            Control::SwitchTo {
+                target: a.id,
+                entry: None,
+            },
+        );
+        assert_eq!(r.active(), Some(a.id), "no switch");
+        for n in [&a, &b] {
+            let got = n.link.take();
+            assert_eq!(got.len(), 1);
+            assert_eq!((got[0].1, got[0].3.clone()), (FLAG_RELEASE_ALL, vec![0; 8]));
+        }
+        assert!(w.link.take().is_empty());
+        // An agent asking the same does nothing.
+        r.on_control(
+            a.id,
+            Control::SwitchTo {
+                target: a.id,
+                entry: None,
+            },
+        );
+        assert!(a.link.take().is_empty());
     }
 
     #[test]

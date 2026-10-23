@@ -49,7 +49,7 @@ Mensajes en régimen:
 | Mensaje | Dirección | Efecto |
 |---|---|---|
 | `Ping(t)` / `Pong(t)` | ambos | eco; el agente envía `Ping` cada 1 s con microsegundos desde el inicio de sesión y calcula el RTT (EWMA 0.2) |
-| `SwitchTo { target, entry: Option<Entry> }` | agente activo, su helper o widget → hub | cambia el destino. `Entry { screen, edge, pos_ratio }` dice dónde aparece el puntero en `target` (`pos_ratio` ya traducido por los rangos del enlace). Sin `entry` (menú del widget) el destino conserva su puntero. El de un widget no respeta la histéresis |
+| `SwitchTo { target, entry: Option<Entry> }` | agente activo, su helper o widget → hub | cambia el destino. `Entry { screen, edge, pos_ratio }` dice dónde aparece el puntero en `target` (`pos_ratio` ya traducido por los rangos del enlace). Sin `entry` (menú del widget) el destino conserva su puntero. El de un widget no respeta la histéresis. **Un widget que pide el nodo ya activo** («Liberar teclas») hace que el hub envíe a todos los agentes un datagrama `RELEASE_ALL` por dispositivo, repetido a los `resend_ms` |
 | `Screens` | agente o helper → hub → widgets | monitores de la máquina (el hub reescribe `node` con el agente) |
 | `Layout { screens, edges, options, canvas }` | hub → nodos; widget → hub | enlaces de bordes en vigor y lienzo del widget (ver Layout) |
 | `Settings(HubSettings { hysteresis_ms, hotkey })` | hub → widgets (al conectar y al cambiar); widget → hub | ajustes de conmutación; el hub los aplica y guarda en `/var/lib/rawkvm/settings.toml`, que manda sobre `[switching]` de `hub.toml` |

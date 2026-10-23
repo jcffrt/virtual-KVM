@@ -92,6 +92,12 @@
   </div>
 
   <div class="card">
+    <h3>Teclas atascadas</h3>
+    <p class="muted">Si una tecla o un botón se queda pulsado, el hub envía «nada pulsado» a todos los equipos.</p>
+    <button onclick={() => run('release_keys', {}, 'Teclas liberadas.')} disabled={!view.connected}>Liberar teclas</button>
+  </div>
+
+  <div class="card">
     <h3>Este Mac</h3>
     <label>
       <input type="checkbox" bind:checked={autostart} onchange={saveAutostart} />

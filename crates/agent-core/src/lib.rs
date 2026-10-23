@@ -42,6 +42,8 @@ pub trait HidSink {
     fn settle_time(&self) -> Duration {
         Duration::ZERO
     }
+    /// Called about once a second while connected (watchdogs).
+    fn tick(&mut self, _now: Instant) {}
     /// This node now receives input; place the pointer at the entry edge.
     fn activate(&mut self, _enter_edge: Option<Edge>, _pos_ratio: Option<f32>) {}
     /// This node no longer receives input.
@@ -365,6 +367,7 @@ async fn session_inner(
     let mut s = Session::new();
     let mut ping = tokio::time::interval(PING_EVERY);
     let mut stats = tokio::time::interval(STATS_EVERY);
+    let mut tick = tokio::time::interval(Duration::from_secs(1));
     stats.tick().await;
     loop {
         tokio::select! {
@@ -400,6 +403,7 @@ async fn session_inner(
                 let t = s.t0.elapsed().as_micros() as u64;
                 wire::write_frame(&mut send, &Control::Ping(t)).await?;
             }
+            _ = tick.tick() => sink.tick(Instant::now()),
             _ = stats.tick() => {
                 info!(
                     rtt_ms = s.rtt_ms.map(|r| (r * 10.0).round() / 10.0),

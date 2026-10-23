@@ -87,6 +87,22 @@ impl AppState {
         }));
     }
 
+    /// Ask the hub to send "nothing pressed" to every agent (a widget's
+    /// switch to the node that is already active).
+    fn release_keys(&self) -> Result<(), String> {
+        let active = self
+            .shared
+            .snapshot()
+            .status
+            .and_then(|s| s.active)
+            .ok_or("no hay ningún equipo activo")?;
+        info!("release keys");
+        self.send(Control::SwitchTo {
+            target: active,
+            entry: None,
+        })
+    }
+
     fn send(&self, msg: Control) -> Result<(), String> {
         let tx = lock(&self.tx);
         let tx = tx.as_ref().ok_or("no hay conexión con el hub")?;
@@ -128,6 +144,14 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>, v: &view::View) -> tauri::Result<M
         )?)?;
     }
     if !agents.is_empty() {
+        menu.append(&PredefinedMenuItem::separator(app)?)?;
+        menu.append(&MenuItem::with_id(
+            app,
+            "release",
+            "Liberar teclas",
+            v.connected && v.active.is_some(),
+            None::<&str>,
+        )?)?;
         menu.append(&PredefinedMenuItem::separator(app)?)?;
     }
     menu.append(&MenuItem::with_id(
@@ -199,6 +223,13 @@ fn on_menu(app: &AppHandle, id: &str) {
     match id {
         "settings" => show_settings(app),
         "quit" => app.exit(0),
+        "release" => {
+            if let Some(state) = app.try_state::<Arc<AppState>>() {
+                if let Err(e) = state.release_keys() {
+                    warn!("{e}");
+                }
+            }
+        }
         id => {
             let Some(node) = id
                 .strip_prefix("switch:")
@@ -294,6 +325,11 @@ fn forget(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
     state.restart();
     state.shared.reset();
     Ok(())
+}
+
+#[tauri::command]
+fn release_keys(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
+    state.release_keys()
 }
 
 #[tauri::command]
@@ -540,6 +576,7 @@ pub fn run() {
             pair,
             forget,
             switch_to,
+            release_keys,
             canvas_view,
             canvas_drop,
             canvas_scale,

@@ -351,6 +351,14 @@ Decisiones del usuario/orquestador sobre `docs/widget-plan.md`: (1) protocolo v3
 - `docs/gnome-plan.md`: instalación y comandos de verificación (`gdbus`) para copiar tal cual.
 - Verificado: tests (conversión de monitores, derivación de config, caché del puntero) y clippy en macOS y Linux. **Sin probar en el Ubuntu.**
 
+## Incidente de la coma repetida en el Mac (2026-10-23) y endurecimiento
+
+- Causa más probable, según el usuario: una pulsación física sin querer. Con la distribución española, además, la «,» puede venir del «.» del teclado numérico (usage 0x63), no de 0x36.
+- No se encontró ningún fallo en `SeqTracker` ni en la unión del mapper. Test nuevo con secuencias reales: press, release y copia tardía del press; release antes que el press; informe de otra interfaz en medio; reconexión con `clear()` y `SeqTracker` nuevos. No queda nada pulsado.
+- Fallo latente corregido en `agent-macos`: si una publicación en Karabiner fallaba, el mapper ya había dado el estado por enviado (una suelta perdida podía dejar la tecla pulsada) y el resto de salidas se descartaba. Ahora se marca `resync` y se reenvía el estado completo (`Mapper::full_state`) en el siguiente informe o en el siguiente tick.
+- Watchdog: `HidSink::tick` (cada segundo) avisa una vez si una tecla o un modificador lleva más de 10 s pulsado sin ningún informe de teclado nuevo. No dice qué tecla y no suelta nada.
+- «Liberar teclas»: en la bandeja del widget y en Opciones. Es un `SwitchTo` del widget al nodo ya activo; el hub envía `RELEASE_ALL` por dispositivo a todos los agentes, dos veces. Sin cambio de protocolo; requiere el hub nuevo.
+
 ## Convenciones
 
 Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario en castellano, `cargo fmt` y `cargo clippy -D warnings` limpios, un ADR por decisión nueva.

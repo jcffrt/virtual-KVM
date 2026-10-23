@@ -167,6 +167,39 @@ impl Mapper {
         ]
     }
 
+    /// Reports carrying the whole current state, whether or not it changed.
+    /// Posted again after a failed post, so a release that never reached
+    /// Karabiner cannot leave a key down.
+    pub fn full_state(&self) -> Vec<Output> {
+        vec![
+            Output::Keyboard(self.last_keyboard.clone()),
+            Output::Keys(KeysReport::Consumer, self.last_consumer.clone()),
+            Output::Keys(KeysReport::GenericDesktop, self.last_system.clone()),
+            Output::Pointing(PointingInput {
+                buttons: self.last_buttons,
+                ..Default::default()
+            }),
+        ]
+    }
+
+    /// A key or modifier is held.
+    pub fn keyboard_held(&self) -> bool {
+        self.last_keyboard != KeyboardInput::default()
+    }
+
+    /// Whether `report` of device `dev_id` carries keyboard state.
+    pub fn is_keyboard_report(&self, dev_id: u8, report: &[u8]) -> bool {
+        let Some(info) = self.devices.get(&dev_id) else {
+            return false;
+        };
+        let rid = if info.uses_report_ids {
+            report.first().copied()
+        } else {
+            None
+        };
+        Present::of(info, rid).keyboard
+    }
+
     /// Convert one raw report of device `dev_id`.
     pub fn on_report(&mut self, dev_id: u8, report: &[u8]) -> Vec<Output> {
         let Some(info) = self.devices.get(&dev_id) else {
@@ -479,6 +512,70 @@ mod tests {
         assert!(out.contains(&Output::Pointing(PointingInput::default())));
         // After a release, the same press is reported again.
         assert_eq!(m.on_report(0, &[0x02, 0, 0x04, 0, 0, 0, 0, 0]).len(), 1);
+    }
+
+    /// The incident of 2026-10-23 (a key autorepeating on the Mac): the
+    /// mapper must not keep anything after a reorder, a late duplicate or a
+    /// reconnection. Datagrams go through `SeqTracker` as in agent-core.
+    #[test]
+    fn reordered_and_late_copies_leave_nothing_pressed() {
+        use proto::datagram::SeqTracker;
+        let Some(mut m) = receiver() else { return };
+        let comma = [0, 0, 0x36, 0, 0, 0, 0, 0];
+        let none = [0u8; 8];
+        let mut t = SeqTracker::new();
+        let feed = |m: &mut Mapper, t: &mut SeqTracker, seq: u16, r: &[u8]| {
+            if t.observe(0, seq).is_some() {
+                m.on_report(0, r);
+            }
+        };
+        // press, release, then the redundant copy of the press (same seq).
+        feed(&mut m, &mut t, 10, &comma);
+        feed(&mut m, &mut t, 11, &none);
+        feed(&mut m, &mut t, 10, &comma);
+        assert!(!m.keyboard_held(), "late copy of the press");
+        // release overtakes the press: the press arrives late and is dropped.
+        feed(&mut m, &mut t, 13, &none);
+        feed(&mut m, &mut t, 12, &comma);
+        assert!(!m.keyboard_held(), "press after its release");
+        // A report from another source (mouse interface, report ID 2) in
+        // between does not resurrect the key.
+        feed(&mut m, &mut t, 14, &comma);
+        m.on_report(1, &mouse(0, 3, 0, 0, 0));
+        feed(&mut m, &mut t, 15, &none);
+        assert!(!m.keyboard_held());
+
+        // Held key, then the hub restarts: destroy_all clears the mapper,
+        // the new session re-creates the devices and the tracker restarts.
+        feed(&mut m, &mut t, 16, &comma);
+        assert!(m.keyboard_held());
+        let out = m.clear();
+        assert!(out.contains(&Output::Keyboard(KeyboardInput::default())));
+        assert!(!m.keyboard_held());
+        let mut fresh = receiver().unwrap();
+        std::mem::swap(&mut m, &mut fresh);
+        let mut t = SeqTracker::new();
+        // First report of the new session: a '0' only.
+        feed(&mut m, &mut t, 0, &[0, 0, 0x27, 0, 0, 0, 0, 0]);
+        let Output::Keyboard(k) = m.full_state().remove(0) else {
+            panic!()
+        };
+        assert_eq!(k.keys, [0x27], "no ghost key after a reconnection");
+        feed(&mut m, &mut t, 1, &none);
+        assert!(!m.keyboard_held());
+    }
+
+    #[test]
+    fn full_state_reposts_what_is_held() {
+        let Some(mut m) = receiver() else { return };
+        m.on_report(0, &[0x02, 0, 0x04, 0, 0, 0, 0, 0]);
+        // Same state again: nothing new to post...
+        assert!(m.on_report(0, &[0x02, 0, 0x04, 0, 0, 0, 0, 0]).is_empty());
+        // ...but after a failed post the whole state goes out again.
+        let full = m.full_state();
+        assert!(matches!(&full[0], Output::Keyboard(k) if k.modifiers == 0x02 && k.keys == [0x04]));
+        assert!(m.is_keyboard_report(0, &[0; 8]));
+        assert!(!m.is_keyboard_report(1, &mouse(0, 1, 0, 0, 0)));
     }
 
     #[test]
