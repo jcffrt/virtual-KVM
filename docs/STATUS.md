@@ -404,6 +404,14 @@ Decisiones del usuario/orquestador sobre `docs/widget-plan.md`: (1) protocolo v3
 - CLI: `--hidpp-list`, `--hidpp-set-os <ranura> <windows|macos|linux> [--hidpp-via ...]`, `--hidpp-call`, `--hidpp-trace`. Guía en `docs/hidpp-validacion.md`.
 - Verificado: tests (7 de `hidpp`, con bytes de Solaar/kernel), clippy macOS y Linux, build aarch64-musl. **Pendiente: validación en la Pi** con el hub parado y el usuario mirando el Windows; según el resultado, bloque C o se queda ADR 0011.
 
+## Fase 3 B validada en la Pi: el MX Keys cambia de perfil en caliente (2026-10-23 05:10)
+
+- Hub fedb591 instalado aparte como `/usr/local/bin/rawkvm-hub-v4` (el servicio sigue con el hub v3 hasta el redespliegue conjunto). Con el servicio parado, `--hidpp-list --hidpp-trace`: ranura 1 MX Ergo (HID++ 4.5, HOSTS_INFO), ranura 2 K230 (dormido, error 1.0 0x09), ranura 3 **MX Keys** (HID++ 4.5, HOSTS_INFO 0x1815 con host actual 0 y SO 6 = macOS 27.0, `can set OS`; **MULTIPLATFORM 0x4531** modificable, plataformas Windows/macOS/iOS/Android, actual macOS), 4–6 vacías.
+- `--hidpp-set-os 3 windows`: escribe por MULTIPLATFORM (plataforma 0); el teclado emite al instante la notificación de cambio (`11 03 10 00 00 00 03`) y la relectura confirma. Con el hub arrancado y `swap_alt_gui = false`, **el usuario confirma en el Windows que Alt y Win están en su sitio sin el parche**. `--hidpp-set-os 3 macos` (plataforma 1): notificación y relectura OK; **el usuario confirma que en el Windows vuelven a cruzarse y en el Mac Cmd/Option van bien**. Cambio en caliente, sin reconectar el teclado. HOSTS_INFO fn 8 no se ha probado (no hizo falta).
+- Trazas en `fixtures/hidpp/` (`hidpp-list.txt`, `hidpp-set-windows.txt`, `hidpp-set-macos.txt`).
+- Estado dejado: `hub.toml` con `swap_alt_gui = true` restaurado y el hub v3 en marcha (7 nodos). **Vía libre al bloque C** (perfil al conmutar por MULTIPLATFORM, con 0x1815 como alternativa) y al D. Al entregar C, redespliegue conjunto v4 (hub, gadget, agentes, widget) y retirada de `swap_alt_gui` del `hub.toml` de la Pi.
+- Fase 3 A (LED) sigue sin probar en hardware: se probará con el redespliegue v4.
+
 ## Convenciones
 
 Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario en castellano, `cargo fmt` y `cargo clippy -D warnings` limpios, un ADR por decisión nueva.
