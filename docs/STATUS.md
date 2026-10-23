@@ -380,7 +380,7 @@ Decisiones del usuario/orquestador sobre `docs/widget-plan.md`: (1) protocolo v3
 - El agente (f66d895, ya en marcha) la detectó solo a los 10 s: "GNOME extension found version=1", "edge helper connected", pantalla 1536×960 escala 1.0, layout links=3, puntero aparcado al quedar inactivo.
 - Hub: "Linux-JCF (edge)" registrado como EdgeHelper, `screens reported … screens=1`, **layout screens=4 links=8** (2 Mac + Windows + Ubuntu). Antes de conectar el helper ya se conmutaba *hacia* Linux por el borde superior de GAMER (03:49 y 03:53); salir de Linux por el borde requiere el helper, ahora presente.
 - Lienzo actual en `layout.toml`: Linux encima de GAMER (y = -920) y pegado a la derecha del monitor externo del Mac; no es la disposición Mac → Windows → Linux en fila que pidió el usuario. Se recoloca desde el widget (Monitores → Aplicar) sin tocar nada más.
-- Pendiente: prueba del usuario del cruce Windows↔Ubuntu y Mac↔Ubuntu con el puntero; reinstalar el agente macOS 5464fb4.
+- **Confirmado por el usuario (2026-10-23): el cruce por el borde entre Windows y Ubuntu funciona en ambos sentidos con el puntero.** Fase 2, paso 5 cerrado: los tres SO conmutan por borde. Pendiente: reinstalar el agente macOS 5464fb4; recolocar el bloque Linux en el widget si se quiere la fila Mac → Windows → Linux.
 
 ## Convenciones
 
