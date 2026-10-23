@@ -8,13 +8,14 @@
 //! LaunchDaemon. See docs/adr/0005.
 
 mod karabiner;
+mod leds;
 mod mapper;
 mod vhid;
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use agent_core::{AgentConfig, AgentOptions, HidSink};
+use agent_core::{AgentConfig, AgentOptions, HidSink, OutputReceiver};
 use anyhow::{Context, Result};
 use clap::Parser;
 use mapper::{Mapper, Output};
@@ -76,6 +77,9 @@ struct KarabinerSink {
     /// Last keyboard report from the hub, for the held-key watchdog.
     last_keyboard_report: Instant,
     held_warned: bool,
+    /// Where the Mac's keyboard LEDs go (see `leds`).
+    led_target: leds::Target,
+    outputs: Option<OutputReceiver>,
 }
 
 /// A key held this long with no new keyboard report is logged (it may be
@@ -126,6 +130,9 @@ impl HidSink for KarabinerSink {
     fn create(&mut self, dev: &HidDevice) -> Result<()> {
         self.mapper.add_device(dev);
         self.devices.push(dev.clone());
+        if let Some(t) = leds::led_report(dev) {
+            *self.led_target.lock().unwrap_or_else(|e| e.into_inner()) = Some(t);
+        }
         if let (Some(vhid), Some((vid, pid))) =
             (&self.vhid, Mapper::keyboard_identity(&self.devices))
         {
@@ -187,6 +194,10 @@ impl HidSink for KarabinerSink {
         self.resync = false;
         self.deliver(out);
     }
+
+    fn take_outputs(&mut self) -> Option<OutputReceiver> {
+        self.outputs.take()
+    }
 }
 
 fn is_root() -> bool {
@@ -244,6 +255,14 @@ fn main() -> Result<()> {
         Some(v)
     };
 
+    let led_target = leds::Target::default();
+    let outputs = if args.dry_run {
+        None
+    } else {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        leds::spawn(tx, led_target.clone());
+        Some(rx)
+    };
     let mut sink = KarabinerSink {
         vhid: vhid.clone(),
         mapper: Mapper::new(),
@@ -253,6 +272,8 @@ fn main() -> Result<()> {
         resync: false,
         last_keyboard_report: Instant::now(),
         held_warned: false,
+        led_target,
+        outputs,
     };
     let opts = AgentOptions {
         config_path,

@@ -19,7 +19,7 @@ use tracing::{error, info, warn};
 use crate::config::{MatchMode, ReceiverMatch};
 use crate::hidraw::{self, RawInterface, BUS_USB};
 use crate::receiver;
-use crate::router::Router;
+use crate::router::{ReportWriter, Router};
 
 const SCAN_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -105,6 +105,59 @@ fn force_normal_mode(iface: &RawInterface, file: &File) {
             "{}: switching DJ mode off failed: {e}",
             iface.hidraw.display()
         ),
+    }
+}
+
+/// Output reports queued per interface before new ones are dropped.
+const WRITE_QUEUE: usize = 16;
+
+/// Writes output reports to a hidraw node from its own thread: a write may
+/// become a USB control transfer (SET_REPORT), which must not stall the
+/// router.
+pub struct HidrawWriter {
+    tx: std::sync::mpsc::SyncSender<Vec<u8>>,
+    uses_report_ids: bool,
+}
+
+impl HidrawWriter {
+    pub fn spawn(file: File, path: PathBuf, uses_report_ids: bool) -> std::io::Result<Self> {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(WRITE_QUEUE);
+        thread::Builder::new()
+            .name("hid-write".into())
+            .spawn(move || {
+                use std::io::Write;
+                let mut f = file;
+                for r in rx {
+                    if let Err(e) = f.write_all(&r) {
+                        warn!("{}: writing an output report: {e}", path.display());
+                    }
+                }
+            })?;
+        Ok(Self {
+            tx,
+            uses_report_ids,
+        })
+    }
+}
+
+/// hidraw `write()` takes the report number first, 0 when the interface
+/// has no report IDs (Documentation/hid/hidraw.rst).
+pub fn hidraw_buffer(uses_report_ids: bool, report: &[u8]) -> Vec<u8> {
+    if uses_report_ids {
+        report.to_vec()
+    } else {
+        let mut b = Vec::with_capacity(report.len() + 1);
+        b.push(0);
+        b.extend_from_slice(report);
+        b
+    }
+}
+
+impl ReportWriter for HidrawWriter {
+    fn write(&self, report: &[u8]) -> bool {
+        self.tx
+            .try_send(hidraw_buffer(self.uses_report_ids, report))
+            .is_ok()
     }
 }
 
@@ -211,7 +264,14 @@ fn scan_loop(router: Arc<Router>, m: ReceiverMatch) {
                 iface.phys,
                 iface.interface()
             );
-            router.add_device(to_hid_device(&iface, id));
+            let dev = to_hid_device(&iface, id);
+            let writer = file
+                .try_clone()
+                .and_then(|f| HidrawWriter::spawn(f, iface.hidraw.clone(), dev.uses_report_ids))
+                .map(|w| Arc::new(w) as Arc<dyn ReportWriter>)
+                .map_err(|e| warn!("{}: no output reports: {e}", iface.hidraw.display()))
+                .ok();
+            router.add_device_with_writer(dev, writer);
 
             let router = router.clone();
             let open = open.clone();
@@ -253,6 +313,12 @@ mod tests {
             descriptor: Vec::new(),
             event_nodes: Vec::new(),
         }
+    }
+
+    #[test]
+    fn hidraw_writes_start_with_the_report_number() {
+        assert_eq!(hidraw_buffer(false, &[0x02]), [0x00, 0x02]);
+        assert_eq!(hidraw_buffer(true, &[0x10, 0xFF, 0x81]), [0x10, 0xFF, 0x81]);
     }
 
     #[test]

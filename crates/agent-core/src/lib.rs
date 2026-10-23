@@ -10,18 +10,30 @@ pub mod edge;
 pub mod helper;
 pub mod widget;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
-use proto::datagram::{Datagram, SeqTracker};
+use proto::datagram::{Datagram, SeqTracker, FLAG_OUTPUT};
 use proto::descriptor::DescriptorInfo;
 use proto::{wire, Control, Edge, HidDevice, NodeKind, Os, RejectReason, PROTO_VERSION};
 use tracing::{debug, info, warn};
 
 pub use config::AgentConfig;
+
+/// An output report the PC sent to virtual device `dev_id` (keyboard
+/// LEDs), as its HID stack produced it: report ID first only if the
+/// device uses report IDs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutputReport {
+    pub dev_id: u8,
+    pub report: Vec<u8>,
+}
+
+pub type OutputSender = tokio::sync::mpsc::UnboundedSender<OutputReport>;
+pub type OutputReceiver = tokio::sync::mpsc::UnboundedReceiver<OutputReport>;
 
 /// The OS side of an agent: the virtual HID devices.
 pub trait HidSink {
@@ -48,6 +60,98 @@ pub trait HidSink {
     fn activate(&mut self, _enter_edge: Option<Edge>, _pos_ratio: Option<f32>) {}
     /// This node no longer receives input.
     fn deactivate(&mut self) {}
+    /// Output reports of the virtual devices, forwarded to the hub so the
+    /// real keyboard's LEDs show this PC's state. Called once; `None` if
+    /// the sink has no way to see them.
+    fn take_outputs(&mut self) -> Option<OutputReceiver> {
+        None
+    }
+}
+
+/// Delay of the redundant copy of an output report datagram (the hub drops
+/// the duplicate by its sequence number).
+const OUTPUT_RESEND: Duration = Duration::from_millis(30);
+
+/// Output reports to the hub, across sessions.
+struct Outputs {
+    rx: Option<OutputReceiver>,
+    /// Last report per device and report ID, sent again on every new
+    /// session: the hub forgets nothing, but a restarted hub does, and the
+    /// PC only sends its LEDs when they change.
+    last: BTreeMap<(u8, Option<u8>), Vec<u8>>,
+    seq: [u16; 256],
+}
+
+impl Outputs {
+    fn new(rx: Option<OutputReceiver>) -> Self {
+        Self {
+            rx,
+            last: BTreeMap::new(),
+            seq: [0; 256],
+        }
+    }
+
+    /// Next report from the sink; never resolves if it has none (left).
+    async fn recv(&mut self) -> OutputReport {
+        if let Some(rx) = &mut self.rx {
+            if let Some(o) = rx.recv().await {
+                return o;
+            }
+            self.rx = None;
+        }
+        std::future::pending().await
+    }
+
+    /// Remember `o` (keyed with the device's report ID use) and send it.
+    fn on_report(&mut self, o: OutputReport, devices: &[HidDevice], conn: &quinn::Connection) {
+        let Some(dev) = devices.iter().find(|d| d.id == o.dev_id) else {
+            return;
+        };
+        let rid = dev
+            .uses_report_ids
+            .then(|| o.report.first().copied())
+            .flatten();
+        debug!(dev = o.dev_id, report = ?o.report, "output report");
+        self.send(o.dev_id, &o.report, conn);
+        self.last.insert((o.dev_id, rid), o.report);
+    }
+
+    /// Send the remembered reports of the devices in `devices`.
+    fn resend_all(&mut self, devices: &[HidDevice], conn: &quinn::Connection) {
+        let last: Vec<_> = self
+            .last
+            .iter()
+            .filter(|((id, _), _)| devices.iter().any(|d| d.id == *id))
+            .map(|((id, _), r)| (*id, r.clone()))
+            .collect();
+        for (id, r) in last {
+            self.send(id, &r, conn);
+        }
+    }
+
+    /// One datagram now and its redundant copy shortly after.
+    fn send(&mut self, dev_id: u8, report: &[u8], conn: &quinn::Connection) {
+        let seq = self.seq[dev_id as usize];
+        self.seq[dev_id as usize] = seq.wrapping_add(1);
+        let Ok(b) = (Datagram {
+            dev_id,
+            flags: FLAG_OUTPUT,
+            seq,
+            report,
+        })
+        .encode() else {
+            return;
+        };
+        if let Err(e) = conn.send_datagram(b.clone()) {
+            debug!("output report not sent: {e}");
+            return;
+        }
+        let conn = conn.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(OUTPUT_RESEND).await;
+            let _ = conn.send_datagram(b);
+        });
+    }
 }
 
 pub struct AgentOptions {
@@ -97,12 +201,13 @@ pub(crate) async fn fatal_pause(e: anyhow::Error) -> anyhow::Error {
 /// Run the agent until a fatal error: connect, serve, reconnect.
 pub async fn run(opts: AgentOptions, sink: &mut dyn HidSink) -> Result<()> {
     let mut backoff = BACKOFF_MIN;
+    let mut outputs = Outputs::new(sink.take_outputs());
     loop {
         let mut cfg = AgentConfig::load_or_init(&opts.config_path)?;
         cfg.token_bytes()?;
         let started = Instant::now();
         let end = match resolve_hub(&cfg).await {
-            Ok(addr) => session(&opts, &mut cfg, addr, sink).await,
+            Ok(addr) => session(&opts, &mut cfg, addr, sink, &mut outputs).await,
             Err(e) => End::Retry(e),
         };
         sink.destroy_all();
@@ -258,8 +363,9 @@ async fn session(
     cfg: &mut AgentConfig,
     addr: SocketAddr,
     sink: &mut dyn HidSink,
+    outputs: &mut Outputs,
 ) -> End {
-    match session_inner(opts, cfg, addr, sink).await {
+    match session_inner(opts, cfg, addr, sink, outputs).await {
         Ok(()) => End::Retry(anyhow!("hub closed the session")),
         Err(e) => e,
     }
@@ -358,6 +464,7 @@ async fn session_inner(
     cfg: &mut AgentConfig,
     addr: SocketAddr,
     sink: &mut dyn HidSink,
+    outputs: &mut Outputs,
 ) -> Result<(), End> {
     let Accepted {
         conn,
@@ -374,7 +481,13 @@ async fn session_inner(
             frame = wire::read_frame(&mut recv) => {
                 let Some(msg) = frame? else { return Ok(()) };
                 match msg {
-                    Control::DeviceList { devices } => s.set_devices(devices, sink, Instant::now()),
+                    Control::DeviceList { devices } => {
+                        let first = s.devices.is_empty();
+                        s.set_devices(devices, sink, Instant::now());
+                        if first {
+                            outputs.resend_all(&s.devices, &conn);
+                        }
+                    }
                     Control::Activate { entry } => {
                         let (enter_edge, pos_ratio) = (entry.map(|e| e.edge), entry.map(|e| e.pos_ratio));
                         info!("active");
@@ -398,6 +511,7 @@ async fn session_inner(
                 }
             }
             dg = conn.read_datagram() => s.on_datagram(&dg?, sink),
+            o = outputs.recv() => outputs.on_report(o, &s.devices, &conn),
             _ = sleep_until(s.ready_at) => s.poll_ready(sink, Instant::now()),
             _ = ping.tick() => {
                 let t = s.t0.elapsed().as_micros() as u64;

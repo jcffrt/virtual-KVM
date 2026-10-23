@@ -38,7 +38,7 @@ pub struct KeyboardLayout {
     pub keys_len: usize,
 }
 
-/// One input report declared by the descriptor.
+/// One input (or output) report declared by the descriptor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InputReport {
     pub report_id: Option<u8>,
@@ -128,6 +128,8 @@ pub struct Value {
 pub struct DescriptorInfo {
     pub uses_report_ids: bool,
     pub inputs: Vec<InputReport>,
+    /// Output reports (keyboard LEDs, HID++ requests), same shape.
+    pub outputs: Vec<InputReport>,
     /// Every non-constant input field, in descriptor order.
     pub fields: Vec<Field>,
     pub keyboard: Option<KeyboardLayout>,
@@ -171,6 +173,27 @@ fn extract(payload: &[u8], bit: usize, size: u32) -> Option<u32> {
     Some(v)
 }
 
+/// Turn the bit counts of one application collection into reports.
+fn flush(
+    pos: &mut BTreeMap<Option<u8>, usize>,
+    out: &mut Vec<InputReport>,
+    app_usage_page: u16,
+    app_usage: u16,
+) {
+    for (rid, bits) in pos.iter() {
+        if *bits == 0 {
+            continue;
+        }
+        out.push(InputReport {
+            report_id: *rid,
+            len: bits.div_ceil(8),
+            app_usage_page,
+            app_usage,
+        });
+    }
+    pos.clear();
+}
+
 impl DescriptorInfo {
     pub fn parse(desc: &[u8]) -> Self {
         let mut info = DescriptorInfo::default();
@@ -181,6 +204,8 @@ impl DescriptorInfo {
         let mut usage_max: Option<u16> = None;
         // bit position per report id, for input reports
         let mut bit_pos: BTreeMap<Option<u8>, usize> = BTreeMap::new();
+        // the same for output reports
+        let mut out_pos: BTreeMap<Option<u8>, usize> = BTreeMap::new();
         let mut app: Option<(u16, u16)> = None;
         let mut depth = 0u32;
         let mut keyboard_mods: Option<(Option<u8>, usize)> = None;
@@ -268,8 +293,16 @@ impl DescriptorInfo {
                     usage_min = None;
                     usage_max = None;
                 }
-                (0, 0x9) | (0, 0xB) => {
-                    // Output / Feature: ignore sizes, clear locals
+                (0, 0x9) => {
+                    // Output: only its size matters
+                    *out_pos.entry(g.report_id).or_insert(0) +=
+                        (g.report_size * g.report_count) as usize;
+                    usages.clear();
+                    usage_min = None;
+                    usage_max = None;
+                }
+                (0, 0xB) => {
+                    // Feature: ignore sizes, clear locals
                     usages.clear();
                     usage_min = None;
                     usage_max = None;
@@ -292,18 +325,8 @@ impl DescriptorInfo {
                     if depth == 0 {
                         // flush input reports of this application
                         let (ap, au) = app.take().unwrap_or((0, 0));
-                        for (rid, bits) in bit_pos.iter() {
-                            if *bits == 0 {
-                                continue;
-                            }
-                            info.inputs.push(InputReport {
-                                report_id: *rid,
-                                len: bits.div_ceil(8),
-                                app_usage_page: ap,
-                                app_usage: au,
-                            });
-                        }
-                        bit_pos.clear();
+                        flush(&mut bit_pos, &mut info.inputs, ap, au);
+                        flush(&mut out_pos, &mut info.outputs, ap, au);
                     }
                 }
                 // ---- global items ----
@@ -340,20 +363,9 @@ impl DescriptorInfo {
             }
         }
         // descriptor without a closing End Collection: flush anyway
-        if !bit_pos.is_empty() {
-            let (ap, au) = app.unwrap_or((0, 0));
-            for (rid, bits) in bit_pos.iter() {
-                if *bits == 0 {
-                    continue;
-                }
-                info.inputs.push(InputReport {
-                    report_id: *rid,
-                    len: bits.div_ceil(8),
-                    app_usage_page: ap,
-                    app_usage: au,
-                });
-            }
-        }
+        let (ap, au) = app.unwrap_or((0, 0));
+        flush(&mut bit_pos, &mut info.inputs, ap, au);
+        flush(&mut out_pos, &mut info.outputs, ap, au);
         if let (Some((rid_m, mods)), Some((rid_k, keys, len))) = (keyboard_mods, keyboard_keys) {
             if rid_m == rid_k {
                 info.keyboard = Some(KeyboardLayout {
@@ -365,6 +377,19 @@ impl DescriptorInfo {
             }
         }
         info
+    }
+
+    /// The declared output report `report` is an instance of: same report
+    /// ID (first byte, if the interface uses IDs) and same length.
+    pub fn output_for(&self, report: &[u8]) -> Option<&InputReport> {
+        let (id, payload) = if self.uses_report_ids {
+            (Some(*report.first()?), report.len() - 1)
+        } else {
+            (None, report.len())
+        };
+        self.outputs
+            .iter()
+            .find(|r| r.report_id == id && r.len == payload)
     }
 
     /// Synthesize one "nothing pressed" report per input report of the
@@ -574,6 +599,12 @@ pub mod tests {
         );
         let rel = d.release_reports();
         assert_eq!(rel, vec![vec![0u8; 8]]);
+        // 5 LED bits + 3 padding bits.
+        assert_eq!(d.outputs.len(), 1);
+        assert_eq!((d.outputs[0].report_id, d.outputs[0].len), (None, 1));
+        assert!(d.output_for(&[0x02]).is_some());
+        assert!(d.output_for(&[0x02, 0]).is_none());
+        assert!(d.output_for(&[]).is_none());
         let st = kb.decode(false, &[0x01, 0, 0x1E, 0, 0, 0, 0, 0]).unwrap();
         assert_eq!(st.modifiers, 0x01);
         assert_eq!(st.keys, &[0x1E, 0, 0, 0, 0, 0]);
@@ -615,6 +646,11 @@ pub mod tests {
         assert_eq!(d.inputs[1].len, 19);
         assert!(d.release_reports().is_empty());
         assert!(!d.is_keyboard());
+        let outs: Vec<_> = d.outputs.iter().map(|r| (r.report_id, r.len)).collect();
+        assert_eq!(outs, vec![(Some(0x10), 6), (Some(0x11), 19)]);
+        assert!(d.output_for(&[0x10, 0xFF, 0x81, 0, 0, 0, 0]).is_some());
+        assert!(d.output_for(&[0x11, 0xFF]).is_none());
+        assert!(DescriptorInfo::parse(UNIFYING_IFACE1).outputs.is_empty());
     }
 
     #[test]
@@ -639,6 +675,9 @@ pub mod tests {
         let _ = DescriptorInfo::parse(&[0xFE, 0x05]);
         let _ = DescriptorInfo::parse(&[0x75]);
         let _ = DescriptorInfo::parse(&[]);
+        assert!(DescriptorInfo::parse(&[0x85, 0x01])
+            .output_for(&[])
+            .is_none());
         let _ = DescriptorInfo::parse(&[0x81, 0x02, 0xC0, 0xC0, 0xC0]);
     }
 }

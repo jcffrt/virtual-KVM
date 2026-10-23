@@ -228,6 +228,10 @@ async fn handle(
                 Ok(None) => break Ok(()),
                 Err(e) => break Err(anyhow::Error::from(e)),
             },
+            dg = conn.read_datagram() => match dg {
+                Ok(b) => on_datagram(&router, node_id, &b),
+                Err(e) => break Err(e.into()),
+            },
             e = conn.closed() => break Err(e.into()),
         }
     };
@@ -235,6 +239,15 @@ async fn handle(
     writer.abort();
     conn.close(0u32.into(), b"bye");
     result
+}
+
+/// A datagram from a node: only output reports travel that way (v4).
+fn on_datagram(router: &Router, node: Uuid, bytes: &[u8]) {
+    match proto::datagram::Datagram::decode(bytes) {
+        Ok(d) if d.is_output() => router.on_output(node, d.dev_id, d.seq, d.report),
+        Ok(d) => debug!(%node, flags = d.flags, "datagram without FLAG_OUTPUT ignored"),
+        Err(e) => debug!(%node, "bad datagram: {e}"),
+    }
 }
 
 /// Advertise `_rawkvm._udp.local.`. Keep the daemon alive while serving.

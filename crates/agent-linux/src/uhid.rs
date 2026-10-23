@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 
+use agent_core::{OutputReport, OutputSender};
 use anyhow::{bail, Context, Result};
 use tracing::{debug, trace};
 
@@ -26,6 +27,10 @@ pub const UHID_CREATE2: u32 = 11;
 pub const UHID_INPUT2: u32 = 12;
 pub const UHID_SET_REPORT: u32 = 13;
 pub const UHID_SET_REPORT_REPLY: u32 = 14;
+
+/// `enum uhid_report_type`: UHID_FEATURE_REPORT, UHID_OUTPUT_REPORT,
+/// UHID_INPUT_REPORT.
+pub const UHID_OUTPUT_REPORT: u8 = 1;
 
 pub const BUS_USB: u16 = 0x03;
 pub const BUS_VIRTUAL: u16 = 0x06;
@@ -125,9 +130,21 @@ pub enum KernelEvent {
     Stop,
     Open,
     Close,
-    Output { rtype: u8, data: Vec<u8> },
-    GetReport { id: u32, rnum: u8, rtype: u8 },
-    SetReport { id: u32, rnum: u8, rtype: u8 },
+    Output {
+        rtype: u8,
+        data: Vec<u8>,
+    },
+    GetReport {
+        id: u32,
+        rnum: u8,
+        rtype: u8,
+    },
+    SetReport {
+        id: u32,
+        rnum: u8,
+        rtype: u8,
+        data: Vec<u8>,
+    },
     Other(u32),
 }
 
@@ -158,11 +175,16 @@ pub fn decode_event(b: &[u8]) -> Option<KernelEvent> {
             rnum: *b.get(8)?,
             rtype: *b.get(9)?,
         },
-        UHID_SET_REPORT => KernelEvent::SetReport {
-            id: u32_at(4)?,
-            rnum: *b.get(8)?,
-            rtype: *b.get(9)?,
-        },
+        UHID_SET_REPORT => {
+            // u32 id, u8 rnum, u8 rtype, u16 size at 10, data at 12
+            let size = (u16_at(10)? as usize).min(UHID_DATA_MAX);
+            KernelEvent::SetReport {
+                id: u32_at(4)?,
+                rnum: *b.get(8)?,
+                rtype: *b.get(9)?,
+                data: b.get(12..12 + size)?.to_vec(),
+            }
+        }
         other => KernelEvent::Other(other),
     })
 }
@@ -175,7 +197,13 @@ pub struct UhidDevice {
 }
 
 impl UhidDevice {
-    pub fn create(path: &Path, p: &CreateParams) -> Result<Self> {
+    /// `outputs`: where output reports of the PC go, tagged with the
+    /// hub's device id.
+    pub fn create(
+        path: &Path,
+        p: &CreateParams,
+        outputs: Option<(u8, OutputSender)>,
+    ) -> Result<Self> {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -193,14 +221,15 @@ impl UhidDevice {
 
         // The kernel blocks probing until GET/SET_REPORT are answered (up to
         // 5 s each), so a thread answers them right away. We hold no state
-        // for feature/output reports: GET fails with EIO, SET is accepted.
+        // for feature/output reports: GET fails with EIO, SET is accepted
+        // (and an output SET is forwarded like UHID_OUTPUT).
         let reader = file.clone();
         let destroyed = Arc::new(AtomicBool::new(false));
         let flag = destroyed.clone();
         let name = p.name.to_string();
         thread::Builder::new()
             .name("uhid-events".into())
-            .spawn(move || event_loop(&reader, &flag, &name))?;
+            .spawn(move || event_loop(&reader, &flag, &name, outputs))?;
         Ok(Self {
             file,
             destroyed,
@@ -226,7 +255,30 @@ impl Drop for UhidDevice {
     }
 }
 
-fn event_loop(file: &File, destroyed: &AtomicBool, name: &str) {
+/// A SET_REPORT buffer as an output report: `__hid_request` (hid-core.c)
+/// reserves a leading byte for the report number even when it is 0 (no
+/// report IDs), unlike the output path.
+fn set_report_payload(rnum: u8, mut data: Vec<u8>) -> Vec<u8> {
+    if rnum == 0 && !data.is_empty() {
+        data.remove(0);
+    }
+    data
+}
+
+fn event_loop(
+    file: &File,
+    destroyed: &AtomicBool,
+    name: &str,
+    outputs: Option<(u8, OutputSender)>,
+) {
+    let forward = |data: Vec<u8>| {
+        if let Some((dev_id, tx)) = &outputs {
+            let _ = tx.send(OutputReport {
+                dev_id: *dev_id,
+                report: data,
+            });
+        }
+    };
     let mut buf = vec![0u8; EVENT_SIZE];
     while !destroyed.load(Ordering::SeqCst) {
         let n = match (&*file).read(&mut buf) {
@@ -240,14 +292,27 @@ fn event_loop(file: &File, destroyed: &AtomicBool, name: &str) {
                 trace!(name, rnum, rtype, "GET_REPORT -> EIO");
                 Some(encode_reply(UHID_GET_REPORT_REPLY, id, EIO))
             }
-            Some(KernelEvent::SetReport { id, rnum, rtype }) => {
-                trace!(name, rnum, rtype, "SET_REPORT -> ok");
+            Some(KernelEvent::SetReport {
+                id,
+                rnum,
+                rtype,
+                data,
+            }) => {
+                trace!(name, rnum, rtype, ?data, "SET_REPORT -> ok");
+                if rtype == UHID_OUTPUT_REPORT {
+                    forward(set_report_payload(rnum, data));
+                }
                 Some(encode_reply(UHID_SET_REPORT_REPLY, id, 0))
             }
             Some(KernelEvent::Output { rtype, data }) => {
-                // Keyboard LEDs and HID++ requests from the host. Not
-                // forwarded to the hub yet (phase 0).
-                trace!(name, rtype, len = data.len(), "output report ignored");
+                // Keyboard LEDs: uhid has no raw_request, so hid-input's
+                // LED worker ends here (hid_hw_output_report). The hub
+                // drops anything the receiver's descriptor does not declare,
+                // and HID++ requests.
+                trace!(name, rtype, ?data, "output report");
+                if rtype == UHID_OUTPUT_REPORT {
+                    forward(data);
+                }
                 None
             }
             Some(KernelEvent::Stop) => {
@@ -368,6 +433,23 @@ mod tests {
                 data: vec![2]
             })
         );
+        let mut set = vec![0u8; EVENT_SIZE];
+        set[0..4].copy_from_slice(&UHID_SET_REPORT.to_ne_bytes());
+        set[4..8].copy_from_slice(&7u32.to_ne_bytes());
+        set[9] = UHID_OUTPUT_REPORT;
+        set[10..12].copy_from_slice(&1u16.to_ne_bytes());
+        set[12] = 0x02;
+        assert_eq!(
+            decode_event(&set),
+            Some(KernelEvent::SetReport {
+                id: 7,
+                rnum: 0,
+                rtype: UHID_OUTPUT_REPORT,
+                data: vec![2]
+            })
+        );
+        assert_eq!(set_report_payload(0, vec![0, 2]), [2]);
+        assert_eq!(set_report_payload(5, vec![5, 2]), [5, 2]);
         assert_eq!(decode_event(&2u32.to_ne_bytes()), Some(KernelEvent::Start));
         assert_eq!(decode_event(&[1]), None);
     }

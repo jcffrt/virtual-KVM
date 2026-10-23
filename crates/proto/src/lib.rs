@@ -31,7 +31,9 @@ use uuid::Uuid;
 /// * 3: optional [`Entry`] in `SwitchTo` / `Activate`; `canvas` in
 ///   `Layout`; `version` in `HubStatus`, `screens` in `NodeInfo`;
 ///   `Settings`; `Screen::scale` is native units per logical unit.
-pub const PROTO_VERSION: u16 = 3;
+/// * 4: agent -> hub output report datagrams (`FLAG_OUTPUT`);
+///   `ReceiverDevices`, `Unpair`.
+pub const PROTO_VERSION: u16 = 4;
 
 /// DNS-SD service type the hub advertises on the LAN.
 pub const SERVICE_TYPE: &str = "_rawkvm._udp.local.";
@@ -227,6 +229,21 @@ pub enum PairingEvent {
     TimedOut,
 }
 
+/// A device paired with the hub's receiver (phase 3).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct PairedDevice {
+    /// Receiver slot, 1..=6.
+    pub slot: u8,
+    pub name: String,
+    /// "keyboard", "mouse", "trackball", ... as the receiver reports it.
+    pub kind: String,
+    pub wireless_pid: u16,
+    /// The device supports the HID++ feature HOSTS_INFO (0x1815).
+    pub hosts_info: bool,
+    /// Keyboard layout profile the hub last set, if any.
+    pub os_profile: Option<Os>,
+}
+
 /// Summary of a connected node as seen by the hub.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct NodeInfo {
@@ -335,6 +352,15 @@ pub enum Control {
     Pong(u64),
     /// hub -> widgets (on connect and on change); widget -> hub (change).
     Settings(HubSettings),
+    /// hub -> widgets (on connect and on change). Devices paired with the
+    /// receiver, read over HID++.
+    ReceiverDevices {
+        devices: Vec<PairedDevice>,
+    },
+    /// widget -> hub. Unpair the device in receiver slot `slot`.
+    Unpair {
+        slot: u8,
+    },
 }
 
 impl Control {
@@ -357,6 +383,8 @@ impl Control {
             Control::Ping(_) => "Ping",
             Control::Pong(_) => "Pong",
             Control::Settings(_) => "Settings",
+            Control::ReceiverDevices { .. } => "ReceiverDevices",
+            Control::Unpair { .. } => "Unpair",
         }
     }
 }
@@ -495,6 +523,17 @@ mod tests {
                 }],
             },
             Control::Deactivate,
+            Control::ReceiverDevices {
+                devices: vec![PairedDevice {
+                    slot: 1,
+                    name: "MX Keys".into(),
+                    kind: "keyboard".into(),
+                    wireless_pid: 0x408a,
+                    hosts_info: true,
+                    os_profile: Some(Os::Windows),
+                }],
+            },
+            Control::Unpair { slot: 2 },
             Control::Ping(42),
             Control::Status(HubStatus {
                 hub_name: "hub".into(),

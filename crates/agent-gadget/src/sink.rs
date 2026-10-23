@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use agent_core::HidSink;
+use agent_core::{HidSink, OutputReceiver, OutputSender};
 use anyhow::{anyhow, Context, Result};
 use proto::descriptor::{DescriptorInfo, USAGE_MOUSE, USAGE_PAGE_GENERIC_DESKTOP};
 use proto::HidDevice;
@@ -108,6 +108,7 @@ pub struct GadgetSink {
     ports: BTreeMap<u8, Port>,
     dropped: u64,
     host: HostState,
+    outputs: (OutputSender, Option<OutputReceiver>),
 }
 
 impl GadgetSink {
@@ -120,6 +121,10 @@ impl GadgetSink {
             ports: BTreeMap::new(),
             dropped: 0,
             host: HostState::default(),
+            outputs: {
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                (tx, Some(rx))
+            },
         }
     }
 
@@ -181,7 +186,7 @@ impl GadgetSink {
             let func_dir = g.join("functions").join(format!("hid.{}", f.instance));
             let hidg = hidg::device_node(&func_dir, &self.paths.sys_dev_char).and_then(|node| {
                 hidg::wait_for(&node, Duration::from_secs(2))?;
-                Hidg::open(&node)
+                Hidg::open(&node, Some((f.dev_id, self.outputs.0.clone())))
             });
             let hidg = match hidg {
                 Ok(h) => {
@@ -294,6 +299,10 @@ impl HidSink for GadgetSink {
         let delivered = h.write_report(report, patience)?;
         self.note_write(delivered);
         Ok(())
+    }
+
+    fn take_outputs(&mut self) -> Option<OutputReceiver> {
+        self.outputs.1.take()
     }
 
     /// The hub connection ended: release keys but keep the gadget, so a

@@ -504,3 +504,97 @@ async fn widget_body() {
     }
     let _ = std::fs::remove_dir_all(&hub.dir);
 }
+
+#[derive(Default)]
+struct RecWriter(Mutex<Vec<Vec<u8>>>);
+
+impl rawkvm_hub::router::ReportWriter for RecWriter {
+    fn write(&self, report: &[u8]) -> bool {
+        self.0.lock().unwrap().push(report.to_vec());
+        true
+    }
+}
+
+/// A sink whose PC sends output reports through `tx`.
+struct OutSink(RecSink, Option<OutputReceiver>);
+
+impl HidSink for OutSink {
+    fn create(&mut self, dev: &HidDevice) -> Result<()> {
+        self.0.create(dev)
+    }
+    fn input(&mut self, dev_id: u8, report: &[u8]) -> Result<()> {
+        self.0.input(dev_id, report)
+    }
+    fn destroy_all(&mut self) {
+        self.0.destroy_all()
+    }
+    fn activate(&mut self, e: Option<Edge>, r: Option<f32>) {
+        self.0.activate(e, r)
+    }
+    fn take_outputs(&mut self) -> Option<OutputReceiver> {
+        self.1.take()
+    }
+}
+
+#[tokio::test]
+async fn output_reports_reach_the_receiver() {
+    let hub = start_hub().await;
+    let writer = Arc::new(RecWriter::default());
+    // Replace the keyboard with one the hub can write to.
+    hub.router.remove_device(0);
+    hub.router.add_device_with_writer(
+        HidDevice {
+            id: 0,
+            name: "Logitech USB Receiver".into(),
+            vid: 0x046d,
+            pid: 0xc52b,
+            serial: None,
+            interface: 0,
+            report_descriptor: BOOT_KEYBOARD.to_vec(),
+            uses_report_ids: false,
+        },
+        Some(writer.clone()),
+    );
+    let path = agent_config(&hub, &hub.cfg.token, "");
+    let rec = RecSink::default();
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut sink = OutSink(rec.clone(), Some(rx));
+    let opts = AgentOptions {
+        config_path: path,
+        os: Os::Linux,
+    };
+    let written = || writer.0.lock().unwrap().clone();
+    let test = async {
+        wait_for(&rec, |e| {
+            e.contains(&Ev::Activate) && e.contains(&Ev::Create(0))
+        })
+        .await;
+        // Caps Lock on: written once although it travels twice.
+        tx.send(OutputReport {
+            dev_id: 0,
+            report: vec![0x02],
+        })
+        .unwrap();
+        // Unknown devices are not sent.
+        tx.send(OutputReport {
+            dev_id: 9,
+            report: vec![0x02],
+        })
+        .unwrap();
+        for _ in 0..200 {
+            if written().contains(&vec![0x02]) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        // The activation turned the LEDs off first.
+        assert_eq!(written(), [vec![0x00], vec![0x02]]);
+    };
+    tokio::select! {
+        r = run(opts, &mut sink) => panic!("agent stopped: {r:?}"),
+        _ = tokio::time::timeout(Duration::from_secs(10), test) => {}
+    }
+    assert_eq!(written(), [vec![0x00], vec![0x02]], "test timed out");
+    let _ = std::fs::remove_dir_all(&hub.dir);
+}

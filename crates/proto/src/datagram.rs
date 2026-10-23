@@ -7,6 +7,10 @@
 //! ```
 //!
 //! `seq` is per device and wraps. Agents use it only to count losses.
+//!
+//! Hub -> agent datagrams carry input reports. Agent -> hub datagrams carry
+//! output reports the PC sent to its virtual device (keyboard LEDs) and
+//! must have [`FLAG_OUTPUT`].
 
 use bytes::{BufMut, Bytes, BytesMut};
 
@@ -16,6 +20,11 @@ pub const HEADER_LEN: usize = 4;
 /// The report is a synthetic "all keys / buttons released" report generated
 /// by the hub when it switches away from the receiving node.
 pub const FLAG_RELEASE_ALL: u8 = 0x01;
+
+/// Agent -> hub: the report is an output report for device `dev_id`, bytes
+/// as the PC's HID stack produced them (report ID first only if the
+/// interface uses report IDs). Protocol v4.
+pub const FLAG_OUTPUT: u8 = 0x02;
 
 /// Largest report the hub forwards. hidraw reads of a Unifying receiver never
 /// exceed 64 bytes; QUIC datagrams on a typical MTU allow ~1200.
@@ -68,6 +77,10 @@ impl<'a> Datagram<'a> {
 
     pub fn is_release_all(&self) -> bool {
         self.flags & FLAG_RELEASE_ALL != 0
+    }
+
+    pub fn is_output(&self) -> bool {
+        self.flags & FLAG_OUTPUT != 0
     }
 }
 
@@ -143,6 +156,7 @@ mod tests {
         let back = Datagram::decode(&b).unwrap();
         assert_eq!(back, d);
         assert!(back.is_release_all());
+        assert!(!back.is_output());
         assert_eq!(Datagram::decode(&b[..3]), Err(DatagramError::TooShort));
     }
 

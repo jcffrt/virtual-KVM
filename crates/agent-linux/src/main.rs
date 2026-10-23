@@ -8,7 +8,7 @@ mod uhid;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use agent_core::{AgentConfig, AgentOptions, HidSink};
+use agent_core::{AgentConfig, AgentOptions, HidSink, OutputReceiver, OutputSender};
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use proto::{HidDevice, Os};
@@ -60,6 +60,7 @@ struct UhidSink {
     path: PathBuf,
     bus: u16,
     devices: HashMap<u8, uhid::UhidDevice>,
+    outputs: (OutputSender, Option<OutputReceiver>),
 }
 
 impl HidSink for UhidSink {
@@ -77,6 +78,7 @@ impl HidSink for UhidSink {
                 version: 0,
                 descriptor: &dev.report_descriptor,
             },
+            Some((dev.id, self.outputs.0.clone())),
         )?;
         self.devices.insert(dev.id, d);
         Ok(())
@@ -94,6 +96,10 @@ impl HidSink for UhidSink {
             info!("removing {} virtual devices", self.devices.len());
         }
         self.devices.clear();
+    }
+
+    fn take_outputs(&mut self) -> Option<OutputReceiver> {
+        self.outputs.1.take()
     }
 }
 
@@ -143,6 +149,10 @@ fn main() -> Result<()> {
             Bus::Usb => uhid::BUS_USB,
         },
         devices: HashMap::new(),
+        outputs: {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            (tx, Some(rx))
+        },
     };
     let edge_config = config_path.clone();
     let opts = AgentOptions {

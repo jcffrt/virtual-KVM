@@ -45,7 +45,14 @@ Debe aparecer: `connected to .../karabiner_virtual_hid_device_service.sock`, `Ka
 
 La primera vez macOS puede abrir el **Asistente de configuración del teclado** para el teclado nuevo: pulsar las teclas que pide (o elegir ISO/ANSI) una vez.
 
-No hacen falta permisos de Monitorización de entrada ni Accesibilidad para esta fase. Los necesitará el ayudante de detección de bordes de la Fase 2.
+Para el teclado y el ratón no hacen falta permisos de Monitorización de entrada ni Accesibilidad.
+
+**LED de Bloq Mayús (Fase 3).** El daemon de Karabiner no avisa a sus clientes de los LED, pero su driver devuelve el estado que macOS fija en el teclado virtual como un informe de entrada. El agente lo lee abriendo ese teclado virtual (sin capturarlo, como hace Karabiner-Elements) y se lo manda al hub, que enciende el LED del teclado real. Para abrirlo, macOS pide **Monitorización de entrada** para el binario del agente:
+
+1. Ajustes del Sistema → Privacidad y seguridad → Monitorización de entrada → **+** → `/usr/local/bin/rawkvm-agent` (en el diálogo de archivos, ⌘⇧G y pegar la ruta).
+2. `sudo launchctl kickstart -k system/cc.olitec.rawkvm.agent` para que lo vuelva a intentar ya (si no, lo reintenta cada 5 s).
+
+En el log debe aparecer `watching the keyboard LEDs of the Karabiner virtual keyboard`. Sin el permiso sale `keyboard LEDs not watched: not permitted` y todo lo demás funciona igual. Limitaciones: el estado se conoce desde el **primer cambio** después de abrir el teclado virtual (hasta entonces el hub deja el LED apagado al cambiar al Mac), y Karabiner solo devuelve Bloq Num y Bloq Mayús. El binario va firmado ad hoc: es probable que macOS ligue el permiso a esa firma y haya que volver a darlo tras cada reinstalación (quitar la entrada vieja y añadirla de nuevo); sin comprobar todavía.
 
 ## 4. Diagnóstico sin Karabiner
 

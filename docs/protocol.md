@@ -1,4 +1,4 @@
-# Protocolo RawKVM (versión 3)
+# Protocolo RawKVM (versión 4)
 
 Fuente de verdad: `crates/proto`. Este documento lo resume.
 
@@ -41,7 +41,7 @@ hub  -> todos Status(HubStatus)       (en cada cambio)
 - `assigned_index` 1..4 para agentes (dígito del atajo de emergencia; se conserva al reconectar mientras viva el hub), 0 para widgets. Un quinto agente recibe `Reject { TooManyNodes }`.
 - `Reject { BadToken | VersionMismatch }` es definitivo: el agente se detiene. `TooManyNodes` se reintenta.
 - `kind`: `Agent`, `Widget` o `EdgeHelper { for_node }` (v2). Un helper vigila el puntero en nombre del agente `for_node`, que no puede hacerlo (gadget USB, daemon root fuera de la sesión gráfica). No recibe índice ni informes; sus `Screens` cuentan como del agente, puede enviar `SwitchTo` mientras ese agente es el activo, y recibe sus `Activate`/`Deactivate`.
-- **Versiones**: hub y nodos deben tener la misma `PROTO_VERSION`; si no, `Reject { VersionMismatch }` y el nodo se detiene con un mensaje que pide actualizar. `Hello` y las variantes hasta `Reject` no cambian nunca de forma, para que un nodo de otra versión siempre reciba ese rechazo (test `handshake_stays_decodable_across_versions`). Historia: v1, fases 0 y 1; v2 añade `EdgeHelper`, `screen` en `SwitchTo`/`Activate` y `options` en `Layout`; v3 (widget) añade `Entry` opcional, `canvas` en `Layout`, `Settings`, `version` en `HubStatus` y `screens` en `NodeInfo`, y fija el significado de `Screen::scale`.
+- **Versiones**: hub y nodos deben tener la misma `PROTO_VERSION`; si no, `Reject { VersionMismatch }` y el nodo se detiene con un mensaje que pide actualizar. `Hello` y las variantes hasta `Reject` no cambian nunca de forma, para que un nodo de otra versión siempre reciba ese rechazo (test `handshake_stays_decodable_across_versions`). Historia: v1, fases 0 y 1; v2 añade `EdgeHelper`, `screen` en `SwitchTo`/`Activate` y `options` en `Layout`; v3 (widget) añade `Entry` opcional, `canvas` en `Layout`, `Settings`, `version` en `HubStatus` y `screens` en `NodeInfo`, y fija el significado de `Screen::scale`; v4 (Fase 3) añade los datagramas de salida agente → hub (`FLAG_OUTPUT`), `ReceiverDevices` y `Unpair`.
 - Si el mismo `node_id` se reconecta, la conexión nueva sustituye a la vieja.
 
 Mensajes en régimen:
@@ -56,6 +56,8 @@ Mensajes en régimen:
 | `DeviceList` | hub → nodos | al conectar y cuando cambia el conjunto de dispositivos |
 | `Activate { entry: Option<Entry> }` / `Deactivate` | hub → agente y sus helpers | este agente empieza / deja de recibir. Sin `entry` (atajo, caída del activo, menú del widget) el helper no mueve el puntero |
 | `PairingStart` / `PairingStop` | widget → hub | fase 3; hoy responde `PairingEvent(Failed)` |
+| `ReceiverDevices { devices: Vec<PairedDevice> }` | hub → widgets | v4. Dispositivos emparejados con el receptor (`slot`, `name`, `kind`, `wireless_pid`, `hosts_info`, `os_profile`), leídos por HID++; al conectar y al cambiar. Definido; el hub aún no lo envía (Fase 3 D) |
+| `Unpair { slot }` | widget → hub | v4. Desemparejar la ranura `slot` del receptor. Definido; aún sin implementar (Fase 3 D) |
 
 ## Datagramas (informes HID)
 
@@ -68,8 +70,17 @@ Mensajes en régimen:
 - `dev_id` = `HidDevice.id`. En modo `receiver` es el número de interfaz USB (0 teclado, 1 ratón/consumer/system, 2 HID++/DJ).
 - `seq` es por dispositivo **y por agente**; el agente cuenta pérdidas con `SeqTracker` y **descarta** duplicados y datagramas más antiguos que el último recibido.
 - `flags & 0x01` (`RELEASE_ALL`): informe sintético "nada pulsado".
+- `flags & 0x02` (`OUTPUT`, v4): **agente → hub**, un informe de salida que el PC envió a su dispositivo virtual (LEDs del teclado), con los bytes tal como los produce su pila HID: report ID delante solo si la interfaz usa IDs (el teclado boot de la interfaz 0 no: 1 byte de LEDs, bit 0 Bloq Num, bit 1 Bloq Mayús, bit 2 Bloq Despl). Es el único datagrama que aceptan los hubs de nodo a hub. Ver «Informes de salida».
 - **Redundancia**: todo informe que no sea de ratón se envía dos veces, la segunda a los `resend_ms` (15 ms por defecto). Así una pérdida aislada no deja teclas pegadas. El duplicado lleva el mismo `seq` y el agente lo descarta. Ver ADR 0004.
 - Congestión: el buffer de envío de datagramas es de 64 KiB; quinn descarta los más antiguos al llenarse.
+
+## Informes de salida (LEDs)
+
+v4, ADR 0012. Camino de vuelta del PC al teclado real:
+
+- Agentes: Linux reenvía los `UHID_OUTPUT` (y los `SET_REPORT` de tipo salida, quitando el byte de número de informe que añade el kernel cuando es 0); el gadget, cada lectura de `/dev/hidgN` (el endpoint OUT entrega el informe tal cual); macOS, el estado de los LED que el driver de Karabiner devuelve como informe de entrada (página 0x08), convertido al byte del teclado boot. Cada informe va dos veces (la segunda a los 30 ms, mismo `seq`). El agente recuerda el último por dispositivo y report ID y lo reenvía al empezar cada sesión, porque el PC solo los manda cuando cambian.
+- Hub: solo de **agentes**; descarta duplicados y atrasados por `seq`; solo informes **declarados** por el descriptor de esa interfaz (mismo report ID y longitud) y de páginas estándar (nunca HID++: esos son del hub). Guarda el último por agente, dispositivo y report ID (también de agentes inactivos y entre reconexiones), y solo **escribe** en el `hidraw` los del agente **activo**, como mucho 50 por segundo e interfaz, desde un hilo por interfaz (`write()` con el número de informe delante, 0 sin IDs).
+- Al activar un agente, el hub escribe su último estado; si nunca mandó uno, todo a cero (LEDs apagados). Lo mismo al reconectar el receptor.
 
 ## Conmutación
 

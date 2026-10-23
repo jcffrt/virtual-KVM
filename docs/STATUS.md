@@ -387,6 +387,16 @@ Decisiones del usuario/orquestador sobre `docs/widget-plan.md`: (1) protocolo v3
 - Brief en `docs/fase3-plan.md` (ddd14a8), aprobado por el usuario y enviado a VS Code. Bloques: A) informes de salida PC → teclado (**el LED de Bloq Mayús del MX Keys no funciona en ningún PC**, pedido por el usuario), B) transporte HID++ en el hub y CLI para validar `HOSTS_INFO` 0x1815 en la Pi, C) perfil del teclado al conmutar (sustituye a `swap_alt_gui` si B funciona en caliente), D) emparejamiento desde el widget. Protocolo v4 en un salto; el orquestador redespliega todo a la vez.
 - Pendiente del Mac: reinstalar el agente 5464fb4.
 
+## Fase 3 A: informes de salida y LED de Bloq Mayús (2026-10-23, VS Code)
+
+- Protocolo **v4** (un solo salto para toda la Fase 3): `FLAG_OUTPUT = 0x02` en datagramas agente → hub; `ReceiverDevices`, `PairedDevice` y `Unpair` ya definidos (D). `protocol.md` actualizado, ADR 0012.
+- `proto`: el parser de descriptores expone `outputs` y `output_for`.
+- Hub: `Router::on_output` (solo agentes, descarta duplicados/atrasados por `seq`, solo informes declarados y de páginas estándar, nunca HID++), último estado por agente, se escribe solo el del activo y se reaplica al activar (ceros si nunca mandó) y al reconectar el receptor; 50/s por interfaz. `HidrawWriter`: hilo por interfaz, cola de 16, `write()` con el número de informe delante (0 sin IDs). El servidor lee datagramas de los nodos.
+- `agent-core`: `HidSink::take_outputs`, cada informe va dos veces (30 ms), último estado reenviado al empezar cada sesión.
+- Linux: `UHID_OUTPUT` y `SET_REPORT` de salida → hub. Gadget: el hilo `hidg-out` reenvía en vez de descartar. macOS: Karabiner 8.6.0 **no** notifica LEDs al cliente; el agente lee el eco del driver (página 0x08) abriendo el teclado virtual con IOHIDManager, como Karabiner-Elements. Necesita **Monitorización de entrada** para `/usr/local/bin/rawkvm-agent` (`macos-instalacion.md` §3).
+- Formatos contrastados con el código: `hidraw.rst`/`hidraw.c`/usbhid (byte 0 en escrituras sin IDs), `uhid.h`/`uhid.c`/`hid-core.c`/`hid-input.c` (LEDs por `UHID_OUTPUT`), `f_hid.c` (read con endpoint OUT), Karabiner-DriverKit-VirtualHIDDevice v8.6.0 y Karabiner-Elements.
+- Verificado: fmt, clippy `-D warnings` (macOS, Linux con zig, Windows gnu), tests del workspace (router: filtro por activo, longitud, HID++, reaplicación, límite; e2e agente → hub → escritor). **Sin probar en hardware**: Bloq Mayús en el Ubuntu, el Windows (gadget) y el Mac, y que el LED siga al PC activo. Hay que redesplegar todo a la vez (v4).
+
 ## Convenciones
 
 Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario en castellano, `cargo fmt` y `cargo clippy -D warnings` limpios, un ADR por decisión nueva.

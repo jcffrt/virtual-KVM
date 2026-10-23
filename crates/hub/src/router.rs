@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use proto::datagram::{Datagram, FLAG_RELEASE_ALL};
+use proto::datagram::{Datagram, SeqTracker, FLAG_RELEASE_ALL};
 use proto::descriptor::{DescriptorInfo, USAGE_MOUSE, USAGE_PAGE_GENERIC_DESKTOP};
 use proto::{
     Control, EdgeOptions, HidDevice, HubSettings, HubStatus, NodeInfo, NodeKind, Os, RejectReason,
@@ -38,6 +38,18 @@ pub trait Link: Send + Sync + 'static {
     fn send_datagram(&self, data: Bytes);
     fn rtt(&self) -> Option<Duration>;
 }
+
+/// Writes output reports to a receiver interface. Must not block: the
+/// router calls it with its lock held.
+pub trait ReportWriter: Send + Sync + 'static {
+    /// Queue one output report, in HID format (report ID first only if the
+    /// interface uses IDs). False if it was dropped.
+    fn write(&self, report: &[u8]) -> bool;
+}
+
+/// Output reports a node may write to one interface per second (a PC
+/// toggling its LEDs in a loop must not flood the receiver).
+pub const OUTPUT_RATE: u32 = 50;
 
 #[derive(Debug, Clone)]
 pub struct Options {
@@ -90,13 +102,55 @@ struct Device {
     dev: HidDevice,
     info: DescriptorInfo,
     release: Vec<Vec<u8>>,
+    writer: Option<Arc<dyn ReportWriter>>,
+    /// Start of the current rate window and output reports written in it.
+    out_window: (Instant, u32),
 }
 
 impl Device {
-    fn new(dev: HidDevice) -> Self {
+    fn new(dev: HidDevice, writer: Option<Arc<dyn ReportWriter>>) -> Self {
         let info = DescriptorInfo::parse(&dev.report_descriptor);
         let release = info.release_reports();
-        Self { dev, info, release }
+        Self {
+            dev,
+            info,
+            release,
+            writer,
+            out_window: (Instant::now(), 0),
+        }
+    }
+
+    /// Output reports PCs may set: those of standard usage pages (keyboard
+    /// LEDs). Vendor ones (HID++ requests) stay with the hub.
+    fn forwarded_outputs(&self) -> impl Iterator<Item = &proto::descriptor::InputReport> {
+        self.info
+            .outputs
+            .iter()
+            .filter(|r| r.app_usage_page < 0xFF00)
+    }
+
+    /// Key of an output report in [`State::outputs`]: its report ID.
+    fn output_key(&self, report: &[u8]) -> Option<u8> {
+        self.info
+            .uses_report_ids
+            .then(|| report.first().copied())
+            .flatten()
+    }
+
+    /// Write `report` within the rate limit.
+    fn write_output(&mut self, report: &[u8], now: Instant) -> bool {
+        let Some(w) = &self.writer else {
+            return false;
+        };
+        let (start, count) = &mut self.out_window;
+        if now.duration_since(*start) >= Duration::from_secs(1) {
+            (*start, *count) = (now, 0);
+        }
+        if *count >= OUTPUT_RATE {
+            return false;
+        }
+        *count += 1;
+        w.write(report)
     }
 
     /// Mouse motion is not worth resending: a stale copy is useless.
@@ -121,6 +175,8 @@ struct Node {
     link: Arc<dyn Link>,
     ctl: UnboundedSender<Control>,
     seq: [u16; 256],
+    /// Sequence numbers of the node's output report datagrams.
+    out_seq: SeqTracker,
 }
 
 impl Node {
@@ -155,6 +211,9 @@ impl Node {
     }
 }
 
+/// Last output report per (device, report ID).
+type OutputState = BTreeMap<(u8, Option<u8>), Vec<u8>>;
+
 #[derive(Default)]
 struct State {
     devices: BTreeMap<u8, Device>,
@@ -179,6 +238,10 @@ struct State {
     /// Screens of each agent (reported by the agent or its edge helper).
     screens: BTreeMap<Uuid, Vec<Screen>>,
     hotkey: Hotkey,
+    /// Last output report each agent sent, by device and report ID, to
+    /// apply it again when that agent becomes active (the keyboard LEDs
+    /// follow the active PC). Kept across reconnections.
+    outputs: HashMap<Uuid, OutputState>,
     /// Hysteresis and hotkey switch, from the config or `settings.toml`.
     settings: HubSettings,
     settings_path: Option<std::path::PathBuf>,
@@ -278,6 +341,11 @@ impl Router {
     // ---- devices -------------------------------------------------------
 
     pub fn add_device(&self, dev: HidDevice) {
+        self.add_device_with_writer(dev, None);
+    }
+
+    /// Add a device whose output reports can be written with `writer`.
+    pub fn add_device_with_writer(&self, dev: HidDevice, writer: Option<Arc<dyn ReportWriter>>) {
         let mut st = self.lock();
         info!(
             id = dev.id,
@@ -288,7 +356,11 @@ impl Router {
             dev.pid,
             dev.report_descriptor.len()
         );
-        st.devices.insert(dev.id, Device::new(dev));
+        let id = dev.id;
+        st.devices.insert(id, Device::new(dev, writer));
+        if let Some(active) = st.active {
+            Self::apply_outputs(&mut st, active, Some(id));
+        }
         self.broadcast_devices(&st);
         self.broadcast_status(&st);
     }
@@ -343,6 +415,7 @@ impl Router {
             link,
             ctl,
             seq: [0; 256],
+            out_seq: SeqTracker::new(),
         };
         node.send(Control::HelloAck {
             hub_id: self.hub_id,
@@ -743,6 +816,7 @@ impl Router {
             }
         }
         st.active = Some(target);
+        Self::apply_outputs(st, target, None);
         st.restore = None;
         st.store.set_last_active(target);
         st.history.retain(|n| *n != target);
@@ -822,6 +896,89 @@ impl Router {
                     tokio::time::sleep(delay).await;
                     link.send_datagram(bytes);
                 });
+            }
+        }
+    }
+
+    /// An output report datagram from node `from` (protocol v4). Kept as
+    /// that node's last state; written to the receiver only if the node is
+    /// the active agent.
+    pub fn on_output(&self, from: Uuid, dev_id: u8, seq: u16, report: &[u8]) {
+        let mut guard = self.lock();
+        let st = &mut *guard;
+        let Some(node) = st.nodes.get_mut(&from) else {
+            return;
+        };
+        if !node.is_agent() {
+            debug!(node = %from, "output report from a non-agent ignored");
+            return;
+        }
+        if node.out_seq.observe(dev_id, seq).is_none() {
+            return; // redundant copy or late
+        }
+        let Some(dev) = st.devices.get_mut(&dev_id) else {
+            return;
+        };
+        let declared = dev
+            .info
+            .output_for(report)
+            .is_some_and(|r| r.app_usage_page < 0xFF00);
+        if !declared {
+            debug!(
+                node = %from,
+                dev_id,
+                len = report.len(),
+                "output report not declared by the interface (or vendor); dropped"
+            );
+            return;
+        }
+        let key = (dev_id, dev.output_key(report));
+        let stored = st.outputs.entry(from).or_default();
+        if stored.get(&key).map(Vec::as_slice) == Some(report) {
+            return;
+        }
+        stored.insert(key, report.to_vec());
+        if st.active == Some(from) {
+            debug!(dev_id, ?report, "output report written");
+            if !dev.write_output(report, Instant::now()) {
+                debug!(
+                    dev_id,
+                    "output report not written (rate limit or queue full)"
+                );
+            }
+        }
+    }
+
+    /// Write `node`'s last output reports to the receiver (all devices, or
+    /// only `only`); a report it never sent is written as all zeros (LEDs
+    /// off), so the LEDs show the state of the PC that is now active.
+    fn apply_outputs(st: &mut State, node: Uuid, only: Option<u8>) {
+        let State {
+            devices, outputs, ..
+        } = st;
+        let stored = outputs.get(&node);
+        let now = Instant::now();
+        for dev in devices.values_mut() {
+            if dev.writer.is_none() || only.is_some_and(|o| o != dev.dev.id) {
+                continue;
+            }
+            let reports: Vec<Vec<u8>> = dev
+                .forwarded_outputs()
+                .map(|r| {
+                    stored
+                        .and_then(|s| s.get(&(dev.dev.id, r.report_id)))
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            let mut z = vec![0u8; r.len];
+                            if let Some(id) = r.report_id {
+                                z.insert(0, id);
+                            }
+                            z
+                        })
+                })
+                .collect();
+            for r in reports {
+                dev.write_output(&r, now);
             }
         }
     }
@@ -1800,7 +1957,7 @@ mod tests {
         assert!(released.iter().all(|d| d.3[0] < 0x10));
 
         // Trackball motion is a mouse report, keyboard is not.
-        let ergo_dev = Device::new(device(1, &ergo));
+        let ergo_dev = Device::new(device(1, &ergo), None);
         assert!(ergo_dev.is_mouse_report(&[0x02, 0, 1, 0, 0, 0, 0, 0]));
         assert!(!ergo_dev.is_mouse_report(&[0x03, 0, 0, 0, 0]));
     }
@@ -1851,15 +2008,108 @@ mod tests {
         );
 
         // Mouse (ID 2) is not resent; consumer (ID 3) and HID++ are.
-        let d1 = Device::new(device(1, &i1));
+        let d1 = Device::new(device(1, &i1), None);
         assert!(d1.is_mouse_report(&[2, 0, 1, 0, 0, 0, 0, 0]));
         assert!(!d1.is_mouse_report(&[3, 0xe9, 0, 0, 0]));
-        assert!(!Device::new(device(2, &i2)).is_mouse_report(&[0x10, 1, 2, 3, 4, 5, 6]));
+        assert!(!Device::new(device(2, &i2), None).is_mouse_report(&[0x10, 1, 2, 3, 4, 5, 6]));
+
+        // Only the keyboard's LED report is forwarded: none on interface 1,
+        // and interface 2's are HID++ (vendor).
+        let outs = |d: &[u8]| {
+            Device::new(device(0, d), None)
+                .forwarded_outputs()
+                .map(|r| (r.report_id, r.len))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(outs(&i0), vec![(None, 1)]);
+        assert!(outs(&i1).is_empty());
+        assert!(outs(&i2).is_empty());
+    }
+
+    #[derive(Default)]
+    struct FakeWriter(Mutex<Vec<Vec<u8>>>);
+
+    impl ReportWriter for FakeWriter {
+        fn write(&self, report: &[u8]) -> bool {
+            self.0.lock().unwrap().push(report.to_vec());
+            true
+        }
+    }
+
+    impl FakeWriter {
+        fn take(&self) -> Vec<Vec<u8>> {
+            std::mem::take(&mut self.0.lock().unwrap())
+        }
+    }
+
+    #[test]
+    fn output_reports_follow_the_active_agent() {
+        let r = router();
+        let kb = Arc::new(FakeWriter::default());
+        let hidpp = Arc::new(FakeWriter::default());
+        r.add_device_with_writer(device(0, BOOT_KEYBOARD), Some(kb.clone()));
+        r.add_device_with_writer(
+            device(2, proto::descriptor::tests::UNIFYING_IFACE2),
+            Some(hidpp.clone()),
+        );
+        let a = join(&r, NodeKind::Agent).unwrap();
+        assert_eq!(r.active(), Some(a.id));
+        // Activating A, which never sent its LEDs: all off.
+        assert_eq!(kb.take(), vec![vec![0]]);
+        let b = join(&r, NodeKind::Agent).unwrap();
+        let w = join(&r, NodeKind::Widget).unwrap();
+
+        // The active agent's Caps Lock reaches the keyboard; a redundant
+        // copy (same seq) and an unchanged state are not written again.
+        r.on_output(a.id, 0, 0, &[0x02]);
+        r.on_output(a.id, 0, 0, &[0x02]);
+        r.on_output(a.id, 0, 1, &[0x02]);
+        assert_eq!(kb.take(), vec![vec![0x02]]);
+        // A late copy of an older state is dropped.
+        r.on_output(a.id, 0, 3, &[0x03]);
+        r.on_output(a.id, 0, 2, &[0x00]);
+        assert_eq!(kb.take(), vec![vec![0x03]]);
+
+        // Inactive agents, widgets, wrong lengths, unknown devices and
+        // HID++ requests are not written.
+        r.on_output(b.id, 0, 0, &[0x01]);
+        r.on_output(w.id, 0, 0, &[0x02]);
+        r.on_output(a.id, 0, 4, &[0x02, 0x00]);
+        r.on_output(a.id, 7, 0, &[0x02]);
+        r.on_output(a.id, 2, 0, &[0x10, 0xFF, 0x81, 0x00, 0, 0, 0]);
+        assert!(kb.take().is_empty());
+        assert!(hidpp.take().is_empty());
+
+        // Switching applies the new agent's last state, and back.
+        force_switch(&r, b.id);
+        assert_eq!(kb.take(), vec![vec![0x01]]);
+        force_switch(&r, a.id);
+        assert_eq!(kb.take(), vec![vec![0x03]]);
+
+        // A re-plugged keyboard gets the active agent's state.
+        r.remove_device(0);
+        r.add_device_with_writer(device(0, BOOT_KEYBOARD), Some(kb.clone()));
+        assert_eq!(kb.take(), vec![vec![0x03]]);
+        assert!(hidpp.take().is_empty());
+    }
+
+    #[test]
+    fn output_reports_are_rate_limited() {
+        let r = router();
+        let kb = Arc::new(FakeWriter::default());
+        r.add_device_with_writer(device(0, BOOT_KEYBOARD), Some(kb.clone()));
+        let a = join(&r, NodeKind::Agent).unwrap();
+        kb.take();
+        for seq in 0..200u16 {
+            r.on_output(a.id, 0, seq, &[(seq % 2) as u8]);
+        }
+        // The activation's "LEDs off" counted against the same second.
+        assert_eq!(kb.take().len(), OUTPUT_RATE as usize - 1);
     }
 
     #[test]
     fn mouse_reports_are_classified() {
-        let d = Device::new(device(1, UNIFYING_IFACE1));
+        let d = Device::new(device(1, UNIFYING_IFACE1), None);
         let info = &d.info;
         let mouse_id = info
             .inputs
@@ -1875,6 +2125,6 @@ mod tests {
             .and_then(|r| r.report_id)
             .unwrap();
         assert!(!d.is_mouse_report(&[other, 0]));
-        assert!(!Device::new(device(0, BOOT_KEYBOARD)).is_mouse_report(&[0; 8]));
+        assert!(!Device::new(device(0, BOOT_KEYBOARD), None).is_mouse_report(&[0; 8]));
     }
 }

@@ -5,7 +5,10 @@
 //! 1 ms at high speed). While the host is suspended or not enumerated,
 //! `EAGAIN` persists, so writers retry briefly and then drop the report.
 //! Output reports from the host (LEDs, HID++ requests) queue up in the
-//! driver; a reader thread drains and discards them.
+//! driver; a reader thread drains them and forwards them to the hub, which
+//! keeps only those the receiver's descriptor declares (keyboard LEDs).
+//! The function has an OUT endpoint (`no_out_endpoint` stays 0), so a read
+//! returns one report as the host sent it.
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -17,6 +20,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use agent_core::{OutputReport, OutputSender};
 use tracing::trace;
 
 /// `/dev/<DEVNAME>` for a function, from its ConfigFS `dev` attribute
@@ -53,7 +57,9 @@ pub struct Hidg {
 }
 
 impl Hidg {
-    pub fn open(path: &Path) -> io::Result<Self> {
+    /// `outputs`: where the host's output reports go, tagged with the
+    /// hub's device id.
+    pub fn open(path: &Path, outputs: Option<(u8, OutputSender)>) -> io::Result<Self> {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -65,7 +71,7 @@ impl Hidg {
         let name = path.display().to_string();
         thread::Builder::new()
             .name("hidg-out".into())
-            .spawn(move || drain(reader, flag, name))?;
+            .spawn(move || drain(reader, flag, name, outputs))?;
         Ok(Self {
             path: path.to_path_buf(),
             file,
@@ -105,8 +111,8 @@ impl Drop for Hidg {
     }
 }
 
-/// Read and discard output reports until stopped.
-fn drain(mut file: File, stop: Arc<AtomicBool>, name: String) {
+/// Read output reports until stopped and forward them.
+fn drain(mut file: File, stop: Arc<AtomicBool>, name: String, outputs: Option<(u8, OutputSender)>) {
     let mut buf = [0u8; 1024];
     while !stop.load(Ordering::SeqCst) {
         let mut pfd = libc::pollfd {
@@ -120,7 +126,15 @@ fn drain(mut file: File, stop: Arc<AtomicBool>, name: String) {
             continue;
         }
         match file.read(&mut buf) {
-            Ok(n) => trace!(dev = %name, len = n, "output report from the host dropped"),
+            Ok(n) => {
+                trace!(dev = %name, report = ?&buf[..n], "output report from the host");
+                if let Some((dev_id, tx)) = &outputs {
+                    let _ = tx.send(OutputReport {
+                        dev_id: *dev_id,
+                        report: buf[..n].to_vec(),
+                    });
+                }
+            }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
             Err(_) => return,
         }
