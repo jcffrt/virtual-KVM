@@ -382,6 +382,11 @@ Decisiones del usuario/orquestador sobre `docs/widget-plan.md`: (1) protocolo v3
 - Lienzo actual en `layout.toml`: Linux encima de GAMER (y = -920) y pegado a la derecha del monitor externo del Mac; no es la disposición Mac → Windows → Linux en fila que pidió el usuario. Se recoloca desde el widget (Monitores → Aplicar) sin tocar nada más.
 - **Confirmado por el usuario (2026-10-23): el cruce por el borde entre Windows y Ubuntu funciona en ambos sentidos con el puntero.** Fase 2, paso 5 cerrado: los tres SO conmutan por borde. Pendiente: reinstalar el agente macOS 5464fb4; recolocar el bloque Linux en el widget si se quiere la fila Mac → Windows → Linux.
 
+## Fase 3 encargada (2026-10-23)
+
+- Brief en `docs/fase3-plan.md` (ddd14a8), aprobado por el usuario y enviado a VS Code. Bloques: A) informes de salida PC → teclado (**el LED de Bloq Mayús del MX Keys no funciona en ningún PC**, pedido por el usuario), B) transporte HID++ en el hub y CLI para validar `HOSTS_INFO` 0x1815 en la Pi, C) perfil del teclado al conmutar (sustituye a `swap_alt_gui` si B funciona en caliente), D) emparejamiento desde el widget. Protocolo v4 en un salto; el orquestador redespliega todo a la vez.
+- Pendiente del Mac: reinstalar el agente 5464fb4.
+
 ## Convenciones
 
 Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario en castellano, `cargo fmt` y `cargo clippy -D warnings` limpios, un ADR por decisión nueva.
