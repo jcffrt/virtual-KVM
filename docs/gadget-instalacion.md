@@ -28,7 +28,7 @@ Cuando el PC deja de leer (apagado, suspendido o cable fuera), el agente lo regi
 
 ### Alt y Win cruzadas en Windows (MX Keys)
 
-Desde la Fase 3 (hub v4) no hace falta nada: al cambiar de equipo, el hub pone por HID++ la disposición de teclas del MX Keys en la del sistema del equipo activo (Windows en el gadget; Linux usa también la de Windows), igual que Fn+P / Fn+O. Ver ADR 0014. **Quitad `swap_alt_gui` de `/etc/rawkvm/hub.toml`**: con las dos cosas activas, Alt y Win vuelven a quedar cruzadas (el hub lo avisa al arrancar).
+Desde la Fase 3 (hub v4) no hace falta nada: al cambiar de equipo, el hub pone por HID++ la disposición de teclas del MX Keys en la del sistema del equipo activo (la del `--host-os` del gadget, Windows por defecto; Linux usa también la de Windows), igual que Fn+P / Fn+O. Ver ADR 0014. **Quitad `swap_alt_gui` de `/etc/rawkvm/hub.toml`**: con las dos cosas activas, Alt y Win vuelven a quedar cruzadas (el hub lo avisa al arrancar).
 
 Para forzar otra disposición en un equipo, con su índice (`sudo rawkvm-hub --list-nodes`):
 
@@ -81,7 +81,9 @@ ssh pi@<placa> 'sudo sh rawkvm-gadget/install.sh ./rawkvm-agent-gadget --hub 192
 3. Instala el binario en `/usr/local/bin`, guarda hub y token en `/etc/rawkvm/agent.toml` y activa `rawkvm-agent-gadget.service` (root).
 4. Si cambió el overlay, pide **reiniciar**; el servicio arranca después.
 
-**PC con Linux**: añadir `--no-hidpp` al `ExecStart` de `/etc/systemd/system/rawkvm-agent-gadget.service` (`sudo systemctl edit --full rawkvm-agent-gadget`). Si no, `hid-logitech-dj` del PC pondrá nuestro "receptor" en modo DJ y las interfaces de teclado y ratón quedarán mudas (ver ADR 0007). En Windows y macOS no hace falta.
+**Sistema del PC**: el agente anuncia al hub el sistema del PC enchufado por USB (no el de la placa) para que el hub ponga la disposición de teclas correcta. Por defecto es Windows; para otro sistema, añadir `--host-os macos` o `--host-os linux` al `ExecStart`.
+
+**PC con Linux**: añadir `--host-os linux --no-hidpp` al `ExecStart` de `/etc/systemd/system/rawkvm-agent-gadget.service` (`sudo systemctl edit --full rawkvm-agent-gadget`). Si no, `hid-logitech-dj` del PC pondrá nuestro "receptor" en modo DJ y las interfaces de teclado y ratón quedarán mudas (ver ADR 0007). En Windows y macOS no hace falta.
 
 ## 3. Comprobar
 

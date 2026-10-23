@@ -12,6 +12,12 @@ agent_label=cc.olitec.rawkvm.agent
 
 [ -f "$bin" ] || { echo "binary not found: $bin (cargo build --release -p rawkvm-agent-macos)" >&2; exit 1; }
 [ -d "$vhid" ] || { echo "Karabiner-DriverKit-VirtualHIDDevice is not installed" >&2; exit 1; }
+# Check every plist before stopping anything: a bootout followed by a failed
+# install leaves Karabiner's daemon stopped and the Mac without a keyboard.
+for plist in "$here/$daemon_label.plist" "$here/$agent_label.plist"; do
+    [ -f "$plist" ] || { echo "missing $plist: copy the whole deploy/macos folder" >&2; exit 1; }
+    plutil -lint -s "$plist" || { echo "invalid plist: $plist" >&2; exit 1; }
+done
 
 # Binary, signed ad hoc.
 install -d -m 0755 /usr/local/bin

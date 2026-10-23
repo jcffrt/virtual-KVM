@@ -47,6 +47,11 @@ struct Args {
     #[arg(long)]
     no_hidpp: bool,
 
+    /// System of the PC on the USB cable, announced to the hub so it can set
+    /// the keyboard layout for it (this agent itself always runs on Linux).
+    #[arg(long, value_enum, default_value_t = HostOs::Windows)]
+    host_os: HostOs,
+
     /// USB serial number to present (default: derived from the node id).
     #[arg(long)]
     serial: Option<String>,
@@ -54,6 +59,23 @@ struct Args {
     /// Save --hub / --token / --unpin to the config and exit.
     #[arg(long)]
     configure_only: bool,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum HostOs {
+    Windows,
+    Macos,
+    Linux,
+}
+
+impl From<HostOs> for proto::Os {
+    fn from(os: HostOs) -> Self {
+        match os {
+            HostOs::Windows => proto::Os::Windows,
+            HostOs::Macos => proto::Os::MacOs,
+            HostOs::Linux => proto::Os::Linux,
+        }
+    }
 }
 
 fn main() -> Result<()> {
@@ -96,7 +118,10 @@ fn main() -> Result<()> {
     if args.configure_only {
         return Ok(());
     }
-    info!(node = %cfg.node_id, name = %cfg.node_name, "starting");
+    info!(node = %cfg.node_id, name = %cfg.node_name, host_os = ?args.host_os, "starting");
+    if matches!(args.host_os, HostOs::Linux) && !args.no_hidpp {
+        warn!("--host-os linux without --no-hidpp: hid-logitech-dj on the PC will mute the keyboard and mouse (ADR 0007)");
+    }
 
     let serial = args
         .serial
@@ -118,7 +143,7 @@ fn main() -> Result<()> {
 
     let opts = AgentOptions {
         config_path: args.config,
-        os: proto::Os::Linux,
+        os: args.host_os.into(),
     };
     let result = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

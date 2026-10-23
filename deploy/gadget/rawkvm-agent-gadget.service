@@ -1,5 +1,6 @@
 # RawKVM USB gadget agent. Root: it writes ConfigFS and /dev/hidgN.
-# Add --no-hidpp to ExecStart if the PC on the USB cable runs Linux (ADR 0007).
+# If the PC on the USB cable runs Linux, add --host-os linux --no-hidpp to
+# ExecStart (ADR 0007); for a Mac, --host-os macos. The default is Windows.
 [Unit]
 Description=RawKVM USB gadget agent (receiver over USB)
 Wants=network-online.target

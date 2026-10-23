@@ -431,3 +431,8 @@ Decisiones del usuario/orquestador sobre `docs/widget-plan.md`: (1) protocolo v3
 ## Convenciones
 
 Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario en castellano, `cargo fmt` y `cargo clippy -D warnings` limpios, un ADR por decisión nueva.
+
+## Encargos tras el redespliegue v4 (2026-10-23)
+
+- `deploy/macos/install.sh` comprueba que existen (y son válidos, `plutil -lint`) los dos plists antes de cualquier `bootout`; si falta alguno sale sin tocar launchd. Sin verificar con sudo en el Mac (solo `sh -n` y `plutil` local).
+- Gadget: nueva opción `--host-os windows|macos|linux` (por defecto `windows`): el nodo anuncia en Hello el sistema del PC enchufado, no el de la placa, y el hub elige la disposición por eso. Avisa si `--host-os linux` va sin `--no-hidpp`. Sin cambio de protocolo; requiere redesplegar el binario del gadget para que el hub vea `os=Windows`.
