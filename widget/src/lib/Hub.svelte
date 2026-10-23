@@ -82,7 +82,7 @@
   <h3>Equipos</h3>
   <table>
     <thead>
-      <tr><th>N.º</th><th>Nombre</th><th>Sistema</th><th>Tipo</th><th>Pantallas</th><th>RTT</th><th></th></tr>
+      <tr><th>N.º</th><th>Nombre</th><th>Sistema</th><th>Tipo</th><th>Pantallas</th><th>RTT</th><th>Atajo</th><th></th></tr>
     </thead>
     <tbody>
       {#each view.nodes as n (n.id)}
@@ -96,6 +96,7 @@
           </td>
           <td>{n.role === 'agent' ? n.screens : ''}</td>
           <td>{n.rtt_ms != null ? `${n.rtt_ms.toFixed(0)} ms` : ''}</td>
+          <td class="mono muted">{n.role === 'agent' && view.hotkey && n.index >= 1 && n.index <= 4 ? `${view.hotkey}, ${n.index}` : ''}</td>
           <td>
             {#if n.role === 'agent' && !n.active && view.connected}
               <button onclick={() => switchTo(n.id)}>Usar</button>
@@ -103,7 +104,7 @@
           </td>
         </tr>
       {:else}
-        <tr><td colspan="7" class="muted">Sin datos del hub todavía.</td></tr>
+        <tr><td colspan="8" class="muted">Sin datos del hub todavía.</td></tr>
       {/each}
     </tbody>
   </table>

@@ -35,7 +35,9 @@ use uuid::Uuid;
 ///   `ReceiverDevices`, `Unpair`.
 /// * 5: `battery`, `pointer_speed` and `fn_swap` in [`PairedDevice`];
 ///   `SetPointerSpeed`, `SetFnSwap`.
-pub const PROTO_VERSION: u16 = 5;
+/// * 6: [`HubSettings::hotkey`] is a [`Hotkey`] (modifier, previous,
+///   release keys) instead of a bool.
+pub const PROTO_VERSION: u16 = 6;
 
 /// DNS-SD service type the hub advertises on the LAN.
 pub const SERVICE_TYPE: &str = "_rawkvm._udp.local.";
@@ -153,7 +155,7 @@ impl Default for HubSettings {
     fn default() -> Self {
         Self {
             hysteresis_ms: 150,
-            hotkey: true,
+            hotkey: Hotkey::default(),
         }
     }
 }
@@ -165,8 +167,43 @@ impl Default for HubSettings {
 pub struct HubSettings {
     /// Minimum time between two edge switches.
     pub hysteresis_ms: u32,
-    /// Emergency hotkey Ctrl, Ctrl, 1..4.
-    pub hotkey: bool,
+    /// Emergency hotkey: modifier, modifier, then a key.
+    pub hotkey: Hotkey,
+}
+
+/// The emergency hotkey: tap `modifier` twice, then press 1..4 (that
+/// agent), 0 (the previous one, if `previous`) or Esc (release every key,
+/// if `release_keys`).
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(default)]
+pub struct Hotkey {
+    pub enabled: bool,
+    pub modifier: HotkeyModifier,
+    pub previous: bool,
+    pub release_keys: bool,
+}
+
+impl Default for Hotkey {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            modifier: HotkeyModifier::Ctrl,
+            previous: true,
+            release_keys: true,
+        }
+    }
+}
+
+/// Left or right, either counts.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum HotkeyModifier {
+    #[default]
+    Ctrl,
+    Shift,
+    Alt,
+    /// Windows key / Cmd.
+    Gui,
 }
 
 /// Where the widget's monitor canvas puts one node's block of screens, in
@@ -544,7 +581,12 @@ mod tests {
             Control::Activate { entry: None },
             Control::Settings(HubSettings {
                 hysteresis_ms: 150,
-                hotkey: true,
+                hotkey: Hotkey {
+                    enabled: true,
+                    modifier: HotkeyModifier::Alt,
+                    previous: false,
+                    release_keys: true,
+                },
             }),
             Control::Hello {
                 proto_ver: PROTO_VERSION,

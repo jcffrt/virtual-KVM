@@ -4,6 +4,11 @@
   let { view } = $props();
   let hysteresis = $state(150);
   let hotkey = $state(true);
+  let modifier = $state('ctrl');
+  let previous = $state(true);
+  let releaseKeys = $state(true);
+  const modifierNames = { ctrl: 'Ctrl', shift: 'Mayús', alt: 'Alt', gui: 'Cmd/Win' };
+  let tap = $derived(`${modifierNames[modifier]}, ${modifierNames[modifier]}`);
   let push = $state(0);
   let corner = $state(3);
   let dead = $state(2);
@@ -16,7 +21,10 @@
   $effect(() => {
     if (view.settings && !loadedSettings) {
       hysteresis = view.settings.hysteresis_ms;
-      hotkey = view.settings.hotkey;
+      hotkey = view.settings.hotkey.enabled;
+      modifier = view.settings.hotkey.modifier;
+      previous = view.settings.hotkey.previous;
+      releaseKeys = view.settings.hotkey.release_keys;
       loadedSettings = true;
     }
   });
@@ -40,7 +48,14 @@
     }
   }
   const saveSettings = () =>
-    run('set_settings', { hysteresisMs: Number(hysteresis), hotkey }, 'Guardado en el hub (settings.toml).');
+    run(
+      'set_settings',
+      {
+        hysteresisMs: Number(hysteresis),
+        hotkey: { enabled: hotkey, modifier, previous, release_keys: releaseKeys },
+      },
+      'Guardado en el hub (settings.toml).',
+    );
   const saveOptions = () =>
     run(
       'set_edge_options',
@@ -63,7 +78,30 @@
     </label>
     <label>
       <input type="checkbox" bind:checked={hotkey} />
-      Atajo de emergencia <span class="mono">Ctrl, Ctrl, 1…4</span>
+      Atajo de emergencia <span class="mono">{tap}, 1…4</span>
+    </label>
+    <label class:muted={!hotkey}>
+      Tecla del atajo
+      <select bind:value={modifier} disabled={!hotkey}>
+        <option value="ctrl">Ctrl</option>
+        <option value="shift">Mayús</option>
+        <option value="alt">Alt</option>
+        <option value="gui">Cmd / Win</option>
+      </select>
+      <span class="muted">dos pulsaciones cortas, sin nada más, y luego la tecla</span>
+    </label>
+    {#if hotkey && (modifier === 'alt' || modifier === 'gui')}
+      <p class="muted">
+        Cada pulsación llega también al equipo activo: en Windows, Win abre el menú Inicio y Alt marca el menú de la ventana.
+      </p>
+    {/if}
+    <label class:muted={!hotkey}>
+      <input type="checkbox" bind:checked={previous} disabled={!hotkey} />
+      <span class="mono">{tap}, 0</span> vuelve al equipo anterior
+    </label>
+    <label class:muted={!hotkey}>
+      <input type="checkbox" bind:checked={releaseKeys} disabled={!hotkey} />
+      <span class="mono">{tap}, Esc</span> libera las teclas (como «Liberar teclas»)
     </label>
     <button class="primary" onclick={saveSettings} disabled={!view.connected}>Guardar</button>
   </div>

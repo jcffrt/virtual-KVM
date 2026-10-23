@@ -143,6 +143,19 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>, v: &view::View) -> tauri::Result<M
             None::<&str>,
         )?)?;
     }
+    if let Some(hint) = v
+        .settings
+        .and_then(|s| view::hotkey_extras(&s.hotkey))
+        .filter(|_| !agents.is_empty())
+    {
+        menu.append(&MenuItem::with_id(
+            app,
+            "hotkey",
+            hint,
+            false,
+            None::<&str>,
+        )?)?;
+    }
     if !agents.is_empty() {
         menu.append(&PredefinedMenuItem::separator(app)?)?;
         menu.append(&MenuItem::with_id(
@@ -348,12 +361,12 @@ fn switch_to(state: tauri::State<'_, Arc<AppState>>, node: Uuid) -> Result<(), S
 fn set_settings(
     state: tauri::State<'_, Arc<AppState>>,
     hysteresis_ms: u32,
-    hotkey: bool,
+    hotkey: proto::Hotkey,
 ) -> Result<(), String> {
     if hysteresis_ms > 5000 {
         return Err("la histéresis va de 0 a 5000 ms".into());
     }
-    info!(hysteresis_ms, hotkey, "settings");
+    info!(hysteresis_ms, ?hotkey, "settings");
     state.send(Control::Settings(proto::HubSettings {
         hysteresis_ms,
         hotkey,

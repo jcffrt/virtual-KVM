@@ -128,8 +128,26 @@ pub struct Switching {
     /// Send every non-mouse report a second time after this delay, so that a
     /// single lost datagram cannot leave a key pressed. 0 disables it.
     pub resend_ms: u64,
-    /// Emergency hotkey: Ctrl, Ctrl, then 1..4.
+    /// Emergency hotkey: modifier, modifier, then 1..4 (0 previous, Esc
+    /// release keys).
     pub hotkey: bool,
+    /// "ctrl", "shift", "alt" or "gui".
+    pub hotkey_modifier: proto::HotkeyModifier,
+    /// Modifier, modifier, 0: back to the previous agent.
+    pub hotkey_previous: bool,
+    /// Modifier, modifier, Esc: release every key.
+    pub hotkey_release_keys: bool,
+}
+
+impl Switching {
+    pub fn hotkey(&self) -> proto::Hotkey {
+        proto::Hotkey {
+            enabled: self.hotkey,
+            modifier: self.hotkey_modifier,
+            previous: self.hotkey_previous,
+            release_keys: self.hotkey_release_keys,
+        }
+    }
 }
 
 impl Default for HubConfig {
@@ -172,6 +190,9 @@ impl Default for Switching {
             hysteresis_ms: 150,
             resend_ms: 15,
             hotkey: true,
+            hotkey_modifier: proto::HotkeyModifier::Ctrl,
+            hotkey_previous: true,
+            hotkey_release_keys: true,
         }
     }
 }

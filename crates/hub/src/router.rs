@@ -23,7 +23,7 @@ use uuid::Uuid;
 
 use crate::config::{NodeOptions, OsProfile};
 use crate::hidpp::OsKind;
-use crate::hotkey::Hotkey;
+use crate::hotkey::{Action, Detector};
 use crate::layout::{self, LayoutFile, LinkSpec};
 use crate::nodes::NodeStore;
 use crate::receiver_ctl::Cmd;
@@ -58,7 +58,7 @@ pub struct Options {
     pub hysteresis: Duration,
     /// Delay of the redundant copy of non-mouse reports.
     pub resend: Option<Duration>,
-    pub hotkey: bool,
+    pub hotkey: proto::Hotkey,
     /// Edge links from the hub config (`[[layout]]`).
     pub layout: Vec<LinkSpec>,
     pub edge: EdgeOptions,
@@ -75,7 +75,7 @@ impl Default for Options {
         Self {
             hysteresis: Duration::from_millis(150),
             resend: None,
-            hotkey: true,
+            hotkey: proto::Hotkey::default(),
             layout: Vec::new(),
             edge: EdgeOptions::default(),
             version: String::new(),
@@ -242,7 +242,7 @@ struct State {
     layout_sent: Option<Control>,
     /// Screens of each agent (reported by the agent or its edge helper).
     screens: BTreeMap<Uuid, Vec<Screen>>,
-    hotkey: Hotkey,
+    hotkey: Detector,
     /// Devices paired with the receiver, as the receiver thread last
     /// reported them; sent to widgets.
     receiver_devices: Option<Vec<proto::PairedDevice>>,
@@ -921,6 +921,35 @@ impl Router {
         }
     }
 
+    fn hotkey_action(&self, st: &mut State, action: Action) {
+        let target = match action {
+            Action::ReleaseKeys => {
+                info!("emergency hotkey: release keys");
+                self.release_everywhere(st);
+                return;
+            }
+            Action::Agent(index) => st
+                .nodes
+                .values()
+                .find(|n| n.is_agent() && n.index == index)
+                .map(|n| n.hello.node_id),
+            // The most recently active connected agent but the current one.
+            Action::Previous => st
+                .history
+                .iter()
+                .rev()
+                .find(|id| Some(**id) != st.active && st.nodes.get(id).is_some_and(Node::is_agent))
+                .copied(),
+        };
+        match target {
+            Some(t) => {
+                info!(?action, "emergency hotkey");
+                self.switch_locked(st, t, None, true);
+            }
+            None => info!(?action, "emergency hotkey: no such agent"),
+        }
+    }
+
     /// Make `target` the active agent. `force` bypasses the hysteresis.
     fn switch_locked(
         &self,
@@ -994,23 +1023,15 @@ impl Router {
             return;
         };
 
-        if st.settings.hotkey {
+        if st.settings.hotkey.enabled {
             if let Some(kb) = &dev.info.keyboard {
                 if let Some(ks) = kb.decode(dev.info.uses_report_ids, report) {
-                    if let Some(index) = st.hotkey.feed(Instant::now(), ks.modifiers, ks.keys) {
-                        let target = st
-                            .nodes
-                            .values()
-                            .find(|n| n.is_agent() && n.index == index)
-                            .map(|n| n.hello.node_id);
-                        match target {
-                            Some(t) => {
-                                info!(index, "emergency hotkey");
-                                self.switch_locked(st, t, None, true);
-                            }
-                            None => info!(index, "emergency hotkey: no agent with that index"),
-                        }
-                        // The digit is not delivered anywhere.
+                    let cfg = st.settings.hotkey;
+                    if let Some(action) =
+                        st.hotkey.feed(Instant::now(), &cfg, ks.modifiers, ks.keys)
+                    {
+                        self.hotkey_action(st, action);
+                        // The key is not delivered anywhere.
                         return;
                     }
                 }
@@ -1407,6 +1428,71 @@ mod tests {
         assert!(b.link.take().is_empty());
         r.on_report(0, &key_report(0, 0));
         assert_eq!(b.link.take().len(), 1);
+    }
+
+    #[test]
+    fn hotkey_previous_and_release_keys() {
+        let r = router();
+        r.add_device(device(0, BOOT_KEYBOARD));
+        let a = join(&r, NodeKind::Agent).unwrap();
+        let b = join(&r, NodeKind::Agent).unwrap();
+        let c = join(&r, NodeKind::Agent).unwrap();
+        let hotkey = |key: u8| {
+            for _ in 0..2 {
+                r.on_report(0, &key_report(0x01, 0));
+                r.on_report(0, &key_report(0, 0));
+            }
+            r.on_report(0, &key_report(0, key));
+            r.on_report(0, &key_report(0, 0));
+        };
+        hotkey(0x20); // '3'
+        assert_eq!(r.active(), Some(c.id));
+        hotkey(0x1F); // '2'
+        assert_eq!(r.active(), Some(b.id));
+        hotkey(0x27); // '0': back to c
+        assert_eq!(r.active(), Some(c.id));
+        hotkey(0x27); // and to b again
+        assert_eq!(r.active(), Some(b.id));
+
+        for n in [&a, &b, &c] {
+            n.link.take();
+        }
+        hotkey(0x29); // Esc
+        assert_eq!(r.active(), Some(b.id));
+        // Every agent gets a release-all; the Esc itself reaches nobody.
+        for n in [&a, &b, &c] {
+            let d = n.link.take();
+            assert!(d.iter().any(|d| d.1 == FLAG_RELEASE_ALL));
+            assert!(d.iter().all(|d| d.3[2] != 0x29));
+        }
+
+        // Alt as the modifier; the widget turns "previous" off.
+        let w = join(&r, NodeKind::Widget).unwrap();
+        r.on_control(
+            w.id,
+            Control::Settings(HubSettings {
+                hysteresis_ms: 150,
+                hotkey: proto::Hotkey {
+                    modifier: proto::HotkeyModifier::Alt,
+                    previous: false,
+                    ..Default::default()
+                },
+            }),
+        );
+        hotkey(0x1E); // Ctrl, Ctrl, '1': nothing
+        assert_eq!(r.active(), Some(b.id));
+        for _ in 0..2 {
+            r.on_report(0, &key_report(0x04, 0));
+            r.on_report(0, &key_report(0, 0));
+        }
+        r.on_report(0, &key_report(0, 0x1E));
+        assert_eq!(r.active(), Some(a.id));
+        for _ in 0..2 {
+            r.on_report(0, &key_report(0x40, 0));
+            r.on_report(0, &key_report(0, 0));
+        }
+        r.on_report(0, &key_report(0, 0x27)); // '0' is just a key now
+        assert_eq!(r.active(), Some(a.id));
     }
 
     #[test]
@@ -1845,7 +1931,10 @@ mod tests {
         // Settings: applied, persisted, echoed to widgets.
         let new = HubSettings {
             hysteresis_ms: 5000,
-            hotkey: false,
+            hotkey: proto::Hotkey {
+                enabled: false,
+                ..Default::default()
+            },
         };
         r.on_control(w.id, Control::Settings(new));
         assert_eq!(r.settings(), new);

@@ -29,6 +29,9 @@ pub struct View {
     pub pairing: PairingView,
     /// Hysteresis and hotkey as the hub applies them (None until it says).
     pub settings: Option<HubSettings>,
+    /// "Ctrl, Ctrl" (the hotkey's double tap) while the hotkey is on; the
+    /// agent's index follows it.
+    pub hotkey: Option<String>,
     /// Edge options in force (from the hub's layout).
     pub options: EdgeOptions,
     /// The hub keeps a layout set by a widget (not its config seed).
@@ -293,6 +296,7 @@ pub fn view(st: &WidgetState, cfg: &AgentConfig) -> View {
         receiver_devices: paired(st),
         pairing: pairing(st),
         settings: st.settings,
+        hotkey: st.settings.and_then(|s| hotkey_prefix(&s.hotkey)),
         options: st.options,
         custom_layout: !st.canvas.is_empty(),
     }
@@ -300,8 +304,43 @@ pub fn view(st: &WidgetState, cfg: &AgentConfig) -> View {
 
 /// The part of the view the tray menu depends on; the menu is rebuilt only
 /// when this changes (not on every RTT update).
+/// The double tap of the hotkey, as the user reads it: "Ctrl, Ctrl".
+pub fn hotkey_prefix(h: &proto::Hotkey) -> Option<String> {
+    use proto::HotkeyModifier as M;
+    let key = match h.modifier {
+        M::Ctrl => "Ctrl",
+        M::Shift => "Mayús",
+        M::Alt => "Alt",
+        M::Gui => "Cmd/Win",
+    };
+    h.enabled.then(|| format!("{key}, {key}"))
+}
+
+/// What the hotkey does besides the agents' digits, for the tray.
+pub fn hotkey_extras(h: &proto::Hotkey) -> Option<String> {
+    let mut extras = Vec::new();
+    if h.previous {
+        extras.push("0 el anterior");
+    }
+    if h.release_keys {
+        extras.push("Esc libera teclas");
+    }
+    let prefix = hotkey_prefix(h)?;
+    Some(if extras.is_empty() {
+        format!("Atajo: {prefix}, número")
+    } else {
+        format!("Atajo: {prefix}, número ({})", extras.join(", "))
+    })
+}
+
 pub fn tray_key(v: &View) -> String {
-    let mut k = format!("{}|{:?}|{:?}", v.connected, v.hub_name, v.active);
+    let mut k = format!(
+        "{}|{:?}|{:?}|{:?}",
+        v.connected,
+        v.hub_name,
+        v.active,
+        v.settings.map(|s| s.hotkey)
+    );
     for n in v.nodes.iter().filter(|n| n.role == "agent") {
         k.push_str(&format!("|{}:{}:{}", n.index, n.name, n.has_helper));
     }
@@ -449,6 +488,25 @@ mod tests {
         assert!(v.ok && v.until_ms.is_none());
         assert_eq!(v.message.as_deref(), Some("Emparejado: K230 (teclado)."));
         assert!(paired(&WidgetState::default()).is_none());
+    }
+
+    #[test]
+    fn hotkey_labels() {
+        let mut h = proto::Hotkey::default();
+        assert_eq!(hotkey_prefix(&h).as_deref(), Some("Ctrl, Ctrl"));
+        assert_eq!(
+            hotkey_extras(&h).as_deref(),
+            Some("Atajo: Ctrl, Ctrl, número (0 el anterior, Esc libera teclas)")
+        );
+        h.modifier = proto::HotkeyModifier::Shift;
+        h.previous = false;
+        h.release_keys = false;
+        assert_eq!(
+            hotkey_extras(&h).as_deref(),
+            Some("Atajo: Mayús, Mayús, número")
+        );
+        h.enabled = false;
+        assert_eq!(hotkey_prefix(&h), None);
     }
 
     #[test]

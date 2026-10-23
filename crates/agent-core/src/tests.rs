@@ -94,7 +94,7 @@ async fn start_hub_with(layout: Vec<rawkvm_hub::layout::LinkSpec>) -> TestHub {
         Options {
             hysteresis: Duration::from_millis(150),
             resend: Some(Duration::from_millis(5)),
-            hotkey: true,
+            hotkey: proto::Hotkey::default(),
             layout,
             ..Default::default()
         },

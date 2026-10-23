@@ -1,4 +1,4 @@
-# Protocolo RawKVM (versión 5)
+# Protocolo RawKVM (versión 6)
 
 Fuente de verdad: `crates/proto`. Este documento lo resume.
 
@@ -41,7 +41,7 @@ hub  -> todos Status(HubStatus)       (en cada cambio)
 - `assigned_index` 1..4 para agentes (dígito del atajo de emergencia; se conserva al reconectar mientras viva el hub), 0 para widgets. Un quinto agente recibe `Reject { TooManyNodes }`.
 - `Reject { BadToken | VersionMismatch }` es definitivo: el agente se detiene. `TooManyNodes` se reintenta.
 - `kind`: `Agent`, `Widget` o `EdgeHelper { for_node }` (v2). Un helper vigila el puntero en nombre del agente `for_node`, que no puede hacerlo (gadget USB, daemon root fuera de la sesión gráfica). No recibe índice ni informes; sus `Screens` cuentan como del agente, puede enviar `SwitchTo` mientras ese agente es el activo, y recibe sus `Activate`/`Deactivate`.
-- **Versiones**: hub y nodos deben tener la misma `PROTO_VERSION`; si no, `Reject { VersionMismatch }` y el nodo se detiene con un mensaje que pide actualizar. `Hello` y las variantes hasta `Reject` no cambian nunca de forma, para que un nodo de otra versión siempre reciba ese rechazo (test `handshake_stays_decodable_across_versions`). Historia: v1, fases 0 y 1; v2 añade `EdgeHelper`, `screen` en `SwitchTo`/`Activate` y `options` en `Layout`; v3 (widget) añade `Entry` opcional, `canvas` en `Layout`, `Settings`, `version` en `HubStatus` y `screens` en `NodeInfo`, y fija el significado de `Screen::scale`; v4 (Fase 3) añade los datagramas de salida agente → hub (`FLAG_OUTPUT`), `ReceiverDevices` y `Unpair`; v5 (Fase 4.1) añade `battery`, `pointer_speed` y `fn_swap` a `PairedDevice`, y `SetPointerSpeed` y `SetFnSwap`.
+- **Versiones**: hub y nodos deben tener la misma `PROTO_VERSION`; si no, `Reject { VersionMismatch }` y el nodo se detiene con un mensaje que pide actualizar. `Hello` y las variantes hasta `Reject` no cambian nunca de forma, para que un nodo de otra versión siempre reciba ese rechazo (test `handshake_stays_decodable_across_versions`). Historia: v1, fases 0 y 1; v2 añade `EdgeHelper`, `screen` en `SwitchTo`/`Activate` y `options` en `Layout`; v3 (widget) añade `Entry` opcional, `canvas` en `Layout`, `Settings`, `version` en `HubStatus` y `screens` en `NodeInfo`, y fija el significado de `Screen::scale`; v4 (Fase 3) añade los datagramas de salida agente → hub (`FLAG_OUTPUT`), `ReceiverDevices` y `Unpair`; v5 (Fase 4.1) añade `battery`, `pointer_speed` y `fn_swap` a `PairedDevice`, y `SetPointerSpeed` y `SetFnSwap`; v6 (Fase 4.2) cambia `HubSettings.hotkey` de `bool` a `Hotkey { enabled, modifier, previous, release_keys }`.
 - Si el mismo `node_id` se reconecta, la conexión nueva sustituye a la vieja.
 
 Mensajes en régimen:
@@ -52,7 +52,7 @@ Mensajes en régimen:
 | `SwitchTo { target, entry: Option<Entry> }` | agente activo, su helper o widget → hub | cambia el destino. `Entry { screen, edge, pos_ratio }` dice dónde aparece el puntero en `target` (`pos_ratio` ya traducido por los rangos del enlace). Sin `entry` (menú del widget) el destino conserva su puntero. El de un widget no respeta la histéresis. **Un widget que pide el nodo ya activo** («Liberar teclas») hace que el hub envíe a todos los agentes un datagrama `RELEASE_ALL` por dispositivo, repetido a los `resend_ms` |
 | `Screens` | agente o helper → hub → widgets | monitores de la máquina (el hub reescribe `node` con el agente) |
 | `Layout { screens, edges, options, canvas }` | hub → nodos; widget → hub | enlaces de bordes en vigor y lienzo del widget (ver Layout) |
-| `Settings(HubSettings { hysteresis_ms, hotkey })` | hub → widgets (al conectar y al cambiar); widget → hub | ajustes de conmutación; el hub los aplica y guarda en `/var/lib/rawkvm/settings.toml`, que manda sobre `[switching]` de `hub.toml` |
+| `Settings(HubSettings { hysteresis_ms, hotkey })` | hub → widgets (al conectar y al cambiar); widget → hub | ajustes de conmutación; el hub los aplica y guarda en `/var/lib/rawkvm/settings.toml`, que manda sobre `[switching]` de `hub.toml`. v6: `hotkey` es `Hotkey { enabled, modifier: Ctrl\|Shift\|Alt\|Gui, previous, release_keys }` (modificador dos veces, luego 1..4, 0 = anterior, Esc = liberar teclas) |
 | `DeviceList` | hub → nodos | al conectar y cuando cambia el conjunto de dispositivos |
 | `Activate { entry: Option<Entry> }` / `Deactivate` | hub → agente y sus helpers | este agente empieza / deja de recibir. Sin `entry` (atajo, caída del activo, menú del widget) el helper no mueve el puntero |
 | `PairingStart { timeout_s }` / `PairingStop` | widget → hub | abre (registro `0xB2` `01 00 <s>`) o cierra (`02`) el emparejamiento del receptor. Sin la interfaz HID++ abierta, `PairingEvent(Failed)` |

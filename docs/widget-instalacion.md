@@ -45,7 +45,7 @@ cd .. && deploy/macos/install-widget.sh
   - «Salir de RawKVM» cierra la app. Cerrar la ventana solo la oculta.
 - **Pestaña Hub**:
   - **Sin emparejar**: «Buscar hubs en la red» (mDNS), elegir el hub o escribir su dirección, pegar el token (`sudo rawkvm-hub --show-token` en la Pi) y pulsar **Emparejar**. El certificado del hub se fija en la primera conexión, como en los agentes.
-  - **Emparejado**: estado, latencia, versión del hub y lista de equipos: número, sistema, tipo y pantallas conocidas. Un agente sin helper de borde sale **en gris** («sin helper»): se puede cambiar a él por el menú o con el atajo, pero no por el borde. «Usar» cambia a ese equipo. «Olvidar hub» borra el emparejamiento.
+  - **Emparejado**: estado, latencia, versión del hub y lista de equipos: número, sistema, tipo, pantallas conocidas y su atajo (p. ej. `Ctrl, Ctrl, 2`). Un agente sin helper de borde sale **en gris** («sin helper»): se puede cambiar a él por el menú o con el atajo, pero no por el borde. «Usar» cambia a ese equipo. «Olvidar hub» borra el emparejamiento.
 
 - **Pestaña Monitores**:
   - un bloque por equipo con sus pantallas reales (Mac: integrada y externa; Windows: sus dos monitores), en unidades lógicas;
@@ -67,6 +67,11 @@ cd .. && deploy/macos/install-widget.sh
   - Debajo, las interfaces HID que el hub reenvía.
 - **Pestaña Opciones**:
   - **Conmutación (hub)**: histéresis (tiempo mínimo entre dos cambios por borde) y atajo de emergencia. El hub los aplica al instante y los guarda en `/var/lib/rawkvm/settings.toml`, que manda sobre `[switching]` de `hub.toml`.
+    - **Atajo** (hub v6): dos pulsaciones cortas de la tecla elegida y luego un número del 1 al 4, que cambia a ese equipo. La tecla puede ser **Ctrl** (por defecto), **Mayús**, **Alt** o **Cmd/Win**; vale la de la izquierda o la de la derecha.
+    - Con el atajo activado, la tecla elegida dos veces y después **0** vuelve al equipo anterior, y después **Esc** libera las teclas, como «Liberar teclas». Cada opción se puede desactivar.
+    - Ni el número, ni el 0, ni el Esc llegan a ningún equipo.
+    - Las dos pulsaciones sí llegan al equipo activo. Con Ctrl o Mayús no hacen nada, pero en Windows Win abre el menú Inicio y Alt marca el menú de la ventana.
+    - La pestaña Hub (columna Atajo) y el menú de la barra muestran el atajo con la tecla elegida.
   - **Bordes (helpers)**: empujar (ms que hay que mantener el puntero en el borde; 0 = al tocarlo), esquinas (% de cada extremo que no cambia de equipo) y zona muerta (px). Viajan con la disposición: si el hub aún usa la semilla, guardar esto guarda también la disposición de Monitores.
   - **Este Mac**: abrir RawKVM al iniciar sesión (LaunchAgent del usuario).
 

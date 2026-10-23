@@ -480,3 +480,19 @@ Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario e
   - el evento de batería;
   - si el dispositivo guarda los ajustes al apagarse.
   - Para grabarlos: `--hidpp-call 1 0x2205 0`, `--hidpp-call 3 0x40a3 0 00` y `--hidpp-list` con `--hidpp-trace`.
+
+## Fase 4.2: atajo configurable (2026-10-23)
+
+- **Protocolo v6** (ADR 0019): `HubSettings.hotkey` es `Hotkey { enabled, modifier: Ctrl|Shift|Alt|Gui, previous, release_keys }`.
+- **Hub**:
+  - `hotkey::Detector` devuelve `Agent(n)`, `Previous` (0, el agente más reciente según `history`) o `ReleaseKeys` (Esc, `release_everywhere`). Las teclas que lo completan no se reenvían.
+  - Claves nuevas en `[switching]`: `hotkey_modifier`, `hotkey_previous` y `hotkey_release_keys`.
+  - El `settings.toml` de v5 (`hotkey = bool`) se sigue leyendo.
+- **Widget**:
+  - Opciones: tecla y dos casillas, con aviso para Alt y Cmd/Win en Windows.
+  - Hub: columna «Atajo».
+  - Barra: una línea con el atajo.
+- **Verificado**:
+  - fmt, clippy `-D warnings` (macOS, Linux con zig, Windows gnu), tests del workspace y del widget, `npm run build`.
+  - Tests nuevos: `previous_and_release_keys`, `other_modifiers` y `hotkey_previous_and_release_keys` (router, con informes boot), y la lectura del `settings.toml` de v5.
+- **Sin verificar en hardware**: el atajo con cada modificador en los tres PCs, y que el menú de la barra y la columna se actualicen al cambiarlo.

@@ -189,7 +189,7 @@ async fn serve(args: Args) -> Result<()> {
                 hysteresis: Duration::from_millis(cfg.switching.hysteresis_ms),
                 resend: (cfg.switching.resend_ms > 0)
                     .then(|| Duration::from_millis(cfg.switching.resend_ms)),
-                hotkey: cfg.switching.hotkey,
+                hotkey: cfg.switching.hotkey(),
                 layout: cfg.layout.clone(),
                 edge: cfg.edge,
                 version: VERSION.to_string(),
