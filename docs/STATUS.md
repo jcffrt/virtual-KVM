@@ -428,6 +428,14 @@ Decisiones del usuario/orquestador sobre `docs/widget-plan.md`: (1) protocolo v3
 - Detalle para VS Code: el nodo gadget se registra con `os=Linux` (corre en la Pi) y el hub lo mapea a plataforma Windows por la regla Linux=Windows; funciona, pero el gadget debería anunciar el SO del PC al que está enchufado o llevar `os_profile = "windows"` en la doc de instalación.
 - Pendiente: permiso de Red local al widget y prueba de la pestaña Dispositivos (lista del receptor, emparejar/olvidar; bloque D).
 
+## Cierre de la Fase 3 y encargo de robustez + Fase 4 (2026-10-23 12:25)
+
+- Gadget 2f4923f en la Pi con `--host-os` por defecto Windows: el hub lo registra `os=Windows`. Carpeta `target/mac-v4` rehecha con el instalador que comprueba sus plists.
+- Widget: con el permiso de Red local "activado" en cuatro entradas, la app nueva seguía sin ruta a la Pi; lanzada desde una shell conecta. Causa: concesión ligada a la firma ad hoc anterior. Queda en marcha lanzada desde la shell; arreglo de fondo (firma estable) encargado como R1.
+- Journal de la Pi ahora **persistente** en la SD (`journald.conf.d/rawkvm.conf` + `var-log-journal.mount` bind sobre `/var/log.hdd/journal`, tras `orangepi-ramlog.service`); verificado. La caída de las 11:16 queda sin causa (journal volátil entonces).
+- Emparejamiento desde el widget (bloque D): **pendiente de probar**, sin dispositivo Unifying libre.
+- Brief de robustez y Fase 4 en `docs/fase4-plan.md`, orden del usuario: R (firma estable, journal en deploy, pequeños), F4.1 batería y DPI, F4.2 atajos configurables, F4.3 widget para Windows. Enviado a VS Code.
+
 ## Convenciones
 
 Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario en castellano, `cargo fmt` y `cargo clippy -D warnings` limpios, un ADR por decisión nueva.
