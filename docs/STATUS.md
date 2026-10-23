@@ -436,6 +436,14 @@ Decisiones del usuario/orquestador sobre `docs/widget-plan.md`: (1) protocolo v3
 - Emparejamiento desde el widget (bloque D): **pendiente de probar**, sin dispositivo Unifying libre.
 - Brief de robustez y Fase 4 en `docs/fase4-plan.md`, orden del usuario: R (firma estable, journal en deploy, pequeños), F4.1 batería y DPI, F4.2 atajos configurables, F4.3 widget para Windows. Enviado a VS Code.
 
+## Fase 4 en hardware: F4.1 validado, v6 en Pi y Ubuntu, R1 verificado (2026-10-23 16:25)
+
+- **R1 (firma estable)**: `make-signing-identity.sh` crea "RawKVM Local"; agente, helper y widget del Mac firmados con certificado (`codesign -dr` muestra identifier + certificate leaf). Fallo corregido por el orquestador (fea2600): `install_signed` creaba la copia temporal en el `$TMPDIR` privado de root, intransitable para el usuario que firma; ahora en `/tmp`. Tras el cambio ad hoc → certificado hubo que conceder una última vez Red local (widget) y Monitorización de entrada (agente). La prueba de que sobreviven a una actualización es el despliegue v6.
+- **F4.1 validado por el usuario** (v5, 7c2ab35): batería, deslizador de velocidad del MX Ergo y casilla Fn del MX Keys funcionan desde Dispositivos. Trazas reales: `fixtures/hidpp/mxergo-2205-0.txt` (POINTER_SPEED = 256, 1,00×), `mxkeys-40a3-0.txt`, `hidpp-list-3/4.txt`. Con los dos dispositivos cargando, BATTERY_STATUS devuelve nivel 0 (desconocido) y estado "recharging": el widget debe mostrar "cargando" sin porcentaje.
+- Protocolo **v6** (778f633, atajos configurables) instalado en la Pi (hub y gadget) y en el Ubuntu (agente + extensión GNOME v2 con `unlock-dialog`; helper conectado). Mac y Windows pendientes del usuario: `target/mac-v6`, `rawkvm-edge-windows-v6.zip` y el widget de Windows (`~/Downloads/RawKVM-windows`, artefacto del CI de d67c7c5, F4.3).
+- Comprobado antes: con el Ubuntu bloqueado la extensión v1 quedaba INACTIVE (`LockedHint=yes`); motivo del cambio a v2.
+- Pendiente de validar: F4.2 (modificadores, 0 = anterior, Esc = liberar; columna Atajo y bandeja), extensión v2 con pantalla bloqueada (tras re-login), F4.3 en el GAMER, y que los permisos del Mac sobrevivan a la actualización v6.
+
 ## Convenciones
 
 Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario en castellano, `cargo fmt` y `cargo clippy -D warnings` limpios, un ADR por decisión nueva.
