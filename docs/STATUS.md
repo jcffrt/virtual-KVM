@@ -496,3 +496,4 @@ Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario e
   - fmt, clippy `-D warnings` (macOS, Linux con zig, Windows gnu), tests del workspace y del widget, `npm run build`.
   - Tests nuevos: `previous_and_release_keys`, `other_modifiers` y `hotkey_previous_and_release_keys` (router, con informes boot), y la lectura del `settings.toml` de v5.
 - **Sin verificar en hardware**: el atajo con cada modificador en los tres PCs, y que el menú de la barra y la columna se actualicen al cambiarlo.
+- Extensión de GNOME v2: `session-modes` con `unlock-dialog`, para que el helper de borde de Linux siga activo con la pantalla bloqueada (antes gnome-shell la dejaba INACTIVE). Hay que reinstalarla y cerrar sesión una vez. Sin verificar en el Ubuntu.

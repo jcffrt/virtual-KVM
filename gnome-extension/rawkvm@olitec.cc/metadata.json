@@ -3,6 +3,7 @@
   "name": "RawKVM edge bridge",
   "description": "Lets the RawKVM agent read the monitors and the pointer position and place the pointer, over D-Bus (cc.olitec.RawKvm.Shell), for switching machines at screen edges. No edge logic here.",
   "shell-version": ["45", "46", "47", "48", "49", "50", "51"],
-  "version": 1,
+  "session-modes": ["user", "unlock-dialog"],
+  "version": 2,
   "url": "https://github.com/jcffrt/virtual-KVM"
 }
