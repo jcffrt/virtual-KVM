@@ -332,6 +332,10 @@ Decisiones del usuario/orquestador sobre `docs/widget-plan.md`: (1) protocolo v3
 - `Devices.svelte` (emparejar HID++ deshabilitado hasta la Fase 3) y `Options.svelte`.
 - Sin cambios en hub ni protocolo. **Sin probar en la app real.**
 
+## Widget paso 4 validado (2026-10-23)
+
+- Hub 75944b5 en la Orange Pi ("Volver a la semilla" por Layout vacío). RawKVM.app 75944b5 en el Mac. Usuario: la propuesta del lienzo aparece (Mac a la izquierda, GAMER a la derecha), **Aplicar** guarda el layout en el hub, y al mover un bloque y aplicar **el cambio por borde sigue la nueva disposición sin reiniciar nada**. Requisito del usuario (layout editable en caliente desde el widget) cumplido.
+
 ## Convenciones
 
 Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario en castellano, `cargo fmt` y `cargo clippy -D warnings` limpios, un ADR por decisión nueva.
