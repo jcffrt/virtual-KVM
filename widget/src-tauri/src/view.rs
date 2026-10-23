@@ -62,6 +62,43 @@ pub struct PairedView {
     pub os_profiles: bool,
     /// Its current layout: "Windows", "macOS", "Linux".
     pub profile: Option<&'static str>,
+    pub battery: Option<BatteryView>,
+    pub pointer_speed: Option<PointerSpeedView>,
+    /// F1..F12 send their special function without Fn.
+    pub fn_swap: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct BatteryView {
+    pub percent: Option<u8>,
+    /// "cargando", "cargada", ... (None while discharging).
+    pub charge: Option<&'static str>,
+    /// 10 % or less and not charging.
+    pub low: bool,
+}
+
+/// Raw HID++ value (256 = 1x) and its range.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PointerSpeedView {
+    pub value: u16,
+    pub min: u16,
+    pub max: u16,
+}
+
+fn battery_view(b: proto::Battery) -> BatteryView {
+    use proto::Charge;
+    let charge = match b.charge {
+        Charge::Discharging => None,
+        Charge::Charging | Charge::SlowCharging => Some("cargando"),
+        Charge::AlmostFull => Some("casi cargada"),
+        Charge::Full => Some("cargada"),
+        Charge::Error => Some("error de carga"),
+    };
+    BatteryView {
+        percent: b.percent,
+        charge,
+        low: b.charge == Charge::Discharging && b.percent.is_some_and(|p| p <= 10),
+    }
 }
 
 /// The pairing session.
@@ -99,6 +136,13 @@ pub fn paired(st: &WidgetState) -> Option<Vec<PairedView>> {
                 online: d.online,
                 os_profiles: d.os_profiles,
                 profile: d.os_profile.map(os_name),
+                battery: d.battery.map(battery_view),
+                pointer_speed: d.pointer_speed.map(|p| PointerSpeedView {
+                    value: p.value,
+                    min: p.min,
+                    max: p.max,
+                }),
+                fn_swap: d.fn_swap,
             })
             .collect()
     })
@@ -379,6 +423,13 @@ mod tests {
                 online: true,
                 os_profiles: true,
                 os_profile: Some(Os::Windows),
+                battery: Some(proto::Battery {
+                    percent: Some(5),
+                    next_percent: None,
+                    charge: proto::Charge::Discharging,
+                }),
+                pointer_speed: None,
+                fn_swap: Some(true),
             }]),
             pairing_last: Some(PairingEvent::Paired {
                 name: "K230".into(),
@@ -391,6 +442,9 @@ mod tests {
             (p[0].kind.as_str(), p[0].wpid.as_str(), p[0].profile),
             ("teclado", "408a", Some("Windows"))
         );
+        let b = p[0].battery.as_ref().unwrap();
+        assert!(b.low && b.charge.is_none());
+        assert_eq!(p[0].fn_swap, Some(true));
         let v = pairing(&st);
         assert!(v.ok && v.until_ms.is_none());
         assert_eq!(v.message.as_deref(), Some("Emparejado: K230 (teclado)."));

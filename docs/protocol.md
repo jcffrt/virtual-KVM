@@ -1,4 +1,4 @@
-# Protocolo RawKVM (versión 4)
+# Protocolo RawKVM (versión 5)
 
 Fuente de verdad: `crates/proto`. Este documento lo resume.
 
@@ -41,7 +41,7 @@ hub  -> todos Status(HubStatus)       (en cada cambio)
 - `assigned_index` 1..4 para agentes (dígito del atajo de emergencia; se conserva al reconectar mientras viva el hub), 0 para widgets. Un quinto agente recibe `Reject { TooManyNodes }`.
 - `Reject { BadToken | VersionMismatch }` es definitivo: el agente se detiene. `TooManyNodes` se reintenta.
 - `kind`: `Agent`, `Widget` o `EdgeHelper { for_node }` (v2). Un helper vigila el puntero en nombre del agente `for_node`, que no puede hacerlo (gadget USB, daemon root fuera de la sesión gráfica). No recibe índice ni informes; sus `Screens` cuentan como del agente, puede enviar `SwitchTo` mientras ese agente es el activo, y recibe sus `Activate`/`Deactivate`.
-- **Versiones**: hub y nodos deben tener la misma `PROTO_VERSION`; si no, `Reject { VersionMismatch }` y el nodo se detiene con un mensaje que pide actualizar. `Hello` y las variantes hasta `Reject` no cambian nunca de forma, para que un nodo de otra versión siempre reciba ese rechazo (test `handshake_stays_decodable_across_versions`). Historia: v1, fases 0 y 1; v2 añade `EdgeHelper`, `screen` en `SwitchTo`/`Activate` y `options` en `Layout`; v3 (widget) añade `Entry` opcional, `canvas` en `Layout`, `Settings`, `version` en `HubStatus` y `screens` en `NodeInfo`, y fija el significado de `Screen::scale`; v4 (Fase 3) añade los datagramas de salida agente → hub (`FLAG_OUTPUT`), `ReceiverDevices` y `Unpair`.
+- **Versiones**: hub y nodos deben tener la misma `PROTO_VERSION`; si no, `Reject { VersionMismatch }` y el nodo se detiene con un mensaje que pide actualizar. `Hello` y las variantes hasta `Reject` no cambian nunca de forma, para que un nodo de otra versión siempre reciba ese rechazo (test `handshake_stays_decodable_across_versions`). Historia: v1, fases 0 y 1; v2 añade `EdgeHelper`, `screen` en `SwitchTo`/`Activate` y `options` en `Layout`; v3 (widget) añade `Entry` opcional, `canvas` en `Layout`, `Settings`, `version` en `HubStatus` y `screens` en `NodeInfo`, y fija el significado de `Screen::scale`; v4 (Fase 3) añade los datagramas de salida agente → hub (`FLAG_OUTPUT`), `ReceiverDevices` y `Unpair`; v5 (Fase 4.1) añade `battery`, `pointer_speed` y `fn_swap` a `PairedDevice`, y `SetPointerSpeed` y `SetFnSwap`.
 - Si el mismo `node_id` se reconecta, la conexión nueva sustituye a la vieja.
 
 Mensajes en régimen:
@@ -59,8 +59,17 @@ Mensajes en régimen:
 | `PairingEvent` | hub → widgets | `Started { timeout_s }`, `DeviceFound { name }` (notificación `0x41` de una ranura nueva), `Paired { name, kind }` o `TimedOut` (notificación `0x4A` de cierre), `Failed { reason }` (error en `0x4A` o en la petición) |
 | `ReceiverDevices { devices: Vec<PairedDevice> }` | hub → widgets | v4. Dispositivos emparejados con el receptor (`slot`, `name`, `kind`, `wireless_pid`, `online`, `os_profiles`, `os_profile`), leídos por HID++; al conectar y al cambiar (dispositivo que se conecta, duerme, se empareja o se olvida; disposición cambiada) |
 | `Unpair { slot }` | widget → hub | v4. Desemparejar la ranura `slot` del receptor (registro `0xB2` `03 <slot>`) |
+| `SetPointerSpeed { slot, value }` | widget → hub | v5. Velocidad del puntero (HID++ `POINTER_SPEED` 0x2205, en 1/256: 256 = 1×). El hub la limita a 0x2E..=0x1FF, el rango que admite Solaar |
+| `SetFnSwap { slot, on }` | widget → hub | v5. `on`: F1…F12 dan su función especial sin Fn (HID++ 0x40A3, en el host actual) |
 
-**Solo widgets**: el hub atiende `PairingStart`, `PairingStop`, `Unpair`, `Settings` y `Layout` únicamente de nodos `Widget` (que ya presentaron el token); de un agente o un helper los ignora. `ReceiverDevices` y `PairingEvent` solo van a widgets.
+`PairedDevice` (v5) añade:
+- `battery: Option<Battery { percent, next_percent, charge }>`, de `BATTERY_STATUS` 0x1000. El nivel va por tramos (p. ej. 100, 50, 20, 5 %). `charge` es `Discharging`, `Charging`, `AlmostFull`, `Full`, `SlowCharging` o `Error`.
+- `pointer_speed: Option<PointerSpeed { value, min, max }>`.
+- `fn_swap: Option<bool>`.
+
+Cada uno vale `None` si el dispositivo no tiene esa función o no ha respondido.
+
+**Solo widgets**: el hub atiende `PairingStart`, `PairingStop`, `Unpair`, `SetPointerSpeed`, `SetFnSwap`, `Settings` y `Layout` únicamente de nodos `Widget` (que ya presentaron el token); de un agente o un helper los ignora. `ReceiverDevices` y `PairingEvent` solo van a widgets.
 
 ## Datagramas (informes HID)
 

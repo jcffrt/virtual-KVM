@@ -765,6 +765,14 @@ impl Router {
                 info!(node = %from, slot, "unpair requested by a widget");
                 self.receiver_cmd(sender, Cmd::Unpair { slot });
             }
+            Control::SetPointerSpeed { slot, value } if kind == NodeKind::Widget => {
+                info!(node = %from, slot, value, "pointer speed requested by a widget");
+                self.receiver_cmd(sender, Cmd::SetPointerSpeed { slot, value });
+            }
+            Control::SetFnSwap { slot, on } if kind == NodeKind::Widget => {
+                info!(node = %from, slot, on, "Fn swap requested by a widget");
+                self.receiver_cmd(sender, Cmd::SetFnSwap { slot, on });
+            }
             other => warn!(node = %from, msg = other.name(), "unexpected message"),
         }
     }
@@ -2279,6 +2287,14 @@ mod tests {
             },
         );
         r.on_control(a.id, Control::Unpair { slot: 3 });
+        r.on_control(
+            a.id,
+            Control::SetPointerSpeed {
+                slot: 1,
+                value: 300,
+            },
+        );
+        r.on_control(a.id, Control::SetFnSwap { slot: 3, on: true });
         assert!(rx.try_iter().next().is_none());
         r.on_control(
             w.id,
@@ -2289,12 +2305,25 @@ mod tests {
         );
         r.on_control(w.id, Control::PairingStop);
         r.on_control(w.id, Control::Unpair { slot: 3 });
+        r.on_control(
+            w.id,
+            Control::SetPointerSpeed {
+                slot: 1,
+                value: 300,
+            },
+        );
+        r.on_control(w.id, Control::SetFnSwap { slot: 3, on: true });
         assert_eq!(
             rx.try_iter().collect::<Vec<_>>(),
             [
                 Cmd::PairingStart { timeout_s: 30 },
                 Cmd::PairingStop,
-                Cmd::Unpair { slot: 3 }
+                Cmd::Unpair { slot: 3 },
+                Cmd::SetPointerSpeed {
+                    slot: 1,
+                    value: 300
+                },
+                Cmd::SetFnSwap { slot: 3, on: true },
             ]
         );
 
@@ -2310,6 +2339,9 @@ mod tests {
             online: true,
             os_profiles: true,
             os_profile: Some(Os::Windows),
+            battery: None,
+            pointer_speed: None,
+            fn_swap: None,
         };
         r.pairing_event(proto::PairingEvent::Paired {
             name: "MX Keys".into(),

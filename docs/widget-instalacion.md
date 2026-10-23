@@ -58,7 +58,13 @@ cd .. && deploy/macos/install-widget.sh
   - **Escala**: cada equipo se dibuja dividiendo sus medidas por la escala que informa su helper (macOS ya informa en puntos, 1; Windows, su escalado de pantalla). Si un bloque sale de tamaño equivocado, se corrige a mano; vacío = la informada. La corrección se guarda en el hub con la disposición.
   - Mientras el hub use la semilla, la pestaña muestra una propuesta hecha a partir de ella. Hasta pulsar Aplicar no cambia nada.
 
-- **Pestaña Dispositivos** (hub v4): los teclados y ratones emparejados con el receptor (ranura, nombre, tipo, si está conectado o dormido, y la disposición de teclas que tiene ahora: Windows o macOS). **Emparejar nuevo dispositivo…** abre el receptor 30 s con cuenta atrás: encender el dispositivo nuevo (o apagarlo y encenderlo) y esperar «Emparejado». **Olvidar** desempareja una ranura, con un segundo clic de confirmación. Debajo, las interfaces HID que el hub reenvía.
+- **Pestaña Dispositivos** (hub v4): los teclados y ratones emparejados con el receptor (ranura, nombre, tipo, si está conectado o dormido, y la disposición de teclas que tiene ahora: Windows o macOS). **Emparejar nuevo dispositivo…** abre el receptor 30 s con cuenta atrás: encender el dispositivo nuevo (o apagarlo y encenderlo) y esperar «Emparejado». **Olvidar** desempareja una ranura, con un segundo clic de confirmación.
+  - **Batería** (hub v5): el nivel que da el dispositivo. Va por tramos: el MX Keys y el MX Ergo saltan, por ejemplo, de 50 % a 20 % y a 5 %, sin pasos intermedios. Con 10 % o menos sale en rojo con ⚠︎. El hub la lee al conectarse el dispositivo, cada 5 minutos y cuando el dispositivo avisa de un cambio. Si está dormido, queda la última lectura.
+  - **Ajustes de los dispositivos** (hub v5):
+    - **Velocidad del puntero** de los ratones que la admiten (el MX Ergo): 1× es la normal. Se aplica al soltar el control; **1×** vuelve a la normal. Es un multiplicador, no los DPI del sensor: el MX Ergo cambia de DPI con su botón propio, y eso no se toca desde aquí.
+    - **F1…F12 con función especial sin Fn** en los teclados que lo admiten (el MX Keys). Se aplica en el canal Easy-Switch actual del teclado.
+    - Con el dispositivo dormido, los controles quedan desactivados.
+  - Debajo, las interfaces HID que el hub reenvía.
 - **Pestaña Opciones**:
   - **Conmutación (hub)**: histéresis (tiempo mínimo entre dos cambios por borde) y atajo de emergencia. El hub los aplica al instante y los guarda en `/var/lib/rawkvm/settings.toml`, que manda sobre `[switching]` de `hub.toml`.
   - **Bordes (helpers)**: empujar (ms que hay que mantener el puntero en el borde; 0 = al tocarlo), esquinas (% de cada extremo que no cambia de equipo) y zona muerta (px). Viajan con la disposición: si el hub aún usa la semilla, guardar esto guarda también la disposición de Monitores.

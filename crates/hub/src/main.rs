@@ -660,6 +660,34 @@ fn describe_slot(h: &rawkvm_hub::hidpp::Hidpp, s: &rawkvm_hub::hidpp::SlotInfo) 
     {
         o.push_str("\n    no HOSTS_INFO, MULTIPLATFORM or DUALPLATFORM");
     }
+    if let Some((i, b)) = s.battery {
+        let pct = |p: Option<u8>| p.map_or("?".to_string(), |p| format!("{p} %"));
+        let _ = write!(
+            o,
+            "\n    BATTERY_STATUS 1000 (index {i}): {}, next {}, {}",
+            pct(b.level),
+            pct(b.next_level),
+            b.status_name()
+        );
+    }
+    if let Some((i, v)) = s.pointer_speed {
+        let _ = write!(
+            o,
+            "\n    POINTER_SPEED 2205 (index {i}): {v} ({:.2}x)",
+            v as f32 / 256.0
+        );
+    }
+    if let Some((i, on)) = s.fn_swap {
+        let _ = write!(
+            o,
+            "\n    FN_SWAP 40a3 (index {i}): {}",
+            if on {
+                "F-keys send their special function"
+            } else {
+                "F-keys send F1..F12"
+            }
+        );
+    }
     if let Some(e) = &s.error {
         let _ = write!(o, "\n    (a request failed: {e})");
     }

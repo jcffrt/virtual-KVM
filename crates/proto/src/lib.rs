@@ -33,7 +33,9 @@ use uuid::Uuid;
 ///   `Settings`; `Screen::scale` is native units per logical unit.
 /// * 4: agent -> hub output report datagrams (`FLAG_OUTPUT`);
 ///   `ReceiverDevices`, `Unpair`.
-pub const PROTO_VERSION: u16 = 4;
+/// * 5: `battery`, `pointer_speed` and `fn_swap` in [`PairedDevice`];
+///   `SetPointerSpeed`, `SetFnSwap`.
+pub const PROTO_VERSION: u16 = 5;
 
 /// DNS-SD service type the hub advertises on the LAN.
 pub const SERVICE_TYPE: &str = "_rawkvm._udp.local.";
@@ -244,6 +246,43 @@ pub struct PairedDevice {
     pub os_profiles: bool,
     /// Its current OS layout, when it has one.
     pub os_profile: Option<Os>,
+    /// Last battery reading (HID++ BATTERY_STATUS, 0x1000).
+    pub battery: Option<Battery>,
+    /// Pointer speed (HID++ POINTER_SPEED, 0x2205), settable.
+    pub pointer_speed: Option<PointerSpeed>,
+    /// F1..F12 send their special function (media, brightness...) without
+    /// Fn (HID++ 0x40A3), settable.
+    pub fn_swap: Option<bool>,
+}
+
+/// A battery reading. BATTERY_STATUS reports the level in steps (for
+/// example 100, 50, 20, 5 %), not a continuous percentage.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Battery {
+    /// `None`: the device does not know.
+    pub percent: Option<u8>,
+    /// The next step down, when it has one.
+    pub next_percent: Option<u8>,
+    pub charge: Charge,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Charge {
+    Discharging,
+    Charging,
+    AlmostFull,
+    Full,
+    SlowCharging,
+    /// Invalid battery, thermal or other charging error.
+    Error,
+}
+
+/// Pointer speed multiplier in 1/256 (256 = 1x), within `min..=max`.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PointerSpeed {
+    pub value: u16,
+    pub min: u16,
+    pub max: u16,
 }
 
 /// Summary of a connected node as seen by the hub.
@@ -363,6 +402,16 @@ pub enum Control {
     Unpair {
         slot: u8,
     },
+    /// widget -> hub. Set the pointer speed of receiver slot `slot`.
+    SetPointerSpeed {
+        slot: u8,
+        value: u16,
+    },
+    /// widget -> hub. Set the F-key behaviour of receiver slot `slot`.
+    SetFnSwap {
+        slot: u8,
+        on: bool,
+    },
 }
 
 impl Control {
@@ -387,6 +436,8 @@ impl Control {
             Control::Settings(_) => "Settings",
             Control::ReceiverDevices { .. } => "ReceiverDevices",
             Control::Unpair { .. } => "Unpair",
+            Control::SetPointerSpeed { .. } => "SetPointerSpeed",
+            Control::SetFnSwap { .. } => "SetFnSwap",
         }
     }
 }
@@ -534,9 +585,25 @@ mod tests {
                     online: true,
                     os_profiles: true,
                     os_profile: Some(Os::Windows),
+                    battery: Some(Battery {
+                        percent: Some(50),
+                        next_percent: Some(20),
+                        charge: Charge::Discharging,
+                    }),
+                    pointer_speed: Some(PointerSpeed {
+                        value: 256,
+                        min: 0x2e,
+                        max: 0x1ff,
+                    }),
+                    fn_swap: Some(true),
                 }],
             },
             Control::Unpair { slot: 2 },
+            Control::SetPointerSpeed {
+                slot: 1,
+                value: 300,
+            },
+            Control::SetFnSwap { slot: 3, on: false },
             Control::Ping(42),
             Control::Status(HubStatus {
                 hub_name: "hub".into(),

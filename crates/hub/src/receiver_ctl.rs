@@ -16,17 +16,24 @@
 //!                                                 err 1 timeout, 2 not
 //!                                                 supported, 3 too many
 //!                                                 devices, 6 sequence timeout
+//! 1x <slot> <index> 00 ...                        HID++ 2.0 event 0 of the
+//!                                                 feature at <index> (sw id 0)
 //! ```
+//!
+//! Batteries (Phase 4.1) are read when a device connects, every
+//! [`BATTERY_POLL`], and from BATTERY_STATUS events.
 
 use std::collections::{BTreeMap, HashSet};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use proto::{Os, PairedDevice, PairingEvent};
+use proto::{Battery, Charge, Os, PairedDevice, PairingEvent, PointerSpeed};
 use tracing::{debug, info, warn};
 
-use crate::hidpp::{Error, Hidpp, OsKind, SlotInfo, RECEIVER};
+use crate::hidpp::{
+    BatteryStatus, Error, Hidpp, OsKind, SlotInfo, POINTER_SPEED_MAX, POINTER_SPEED_MIN, RECEIVER,
+};
 
 pub const SLOTS: std::ops::RangeInclusive<u8> = 1..=6;
 
@@ -49,6 +56,9 @@ const PAIRING_UNPAIR: u8 = 0x03;
 /// "pairing lock closed" before giving up.
 const PAIRING_GRACE: Duration = Duration::from_secs(5);
 
+/// How often the batteries of the connected devices are read.
+pub const BATTERY_POLL: Duration = Duration::from_secs(5 * 60);
+
 /// What the thread is asked to do.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Cmd {
@@ -64,6 +74,14 @@ pub enum Cmd {
     Unpair {
         slot: u8,
     },
+    SetPointerSpeed {
+        slot: u8,
+        value: u16,
+    },
+    SetFnSwap {
+        slot: u8,
+        on: bool,
+    },
 }
 
 /// Where the thread's results go (the router).
@@ -76,7 +94,13 @@ pub trait Events: Send + 'static {
 pub fn is_notification(r: &[u8]) -> bool {
     r.len() >= 7
         && matches!(r[0], 0x10 | 0x11)
-        && matches!(r[2], SUB_DISCONNECT | SUB_CONNECT | SUB_PAIRING_LOCK)
+        && (matches!(r[2], SUB_DISCONNECT | SUB_CONNECT | SUB_PAIRING_LOCK) || is_feature_event(r))
+}
+
+/// A HID++ 2.0 event from a paired device: feature index in B2, software
+/// id 0 in B3 (replies to us carry ours, 0x0C).
+fn is_feature_event(r: &[u8]) -> bool {
+    SLOTS.contains(&r[1]) && (1..0x40).contains(&r[2]) && r[3] & 0x0F == 0
 }
 
 /// Start the thread; it ends when the sender is dropped.
@@ -111,6 +135,7 @@ pub struct Manager<E: Events> {
     /// (slot, message) already logged, to warn once.
     warned: HashSet<(u8, String)>,
     pairing: Option<Pairing>,
+    last_battery_poll: Instant,
 }
 
 impl<E: Events> Manager<E> {
@@ -123,6 +148,7 @@ impl<E: Events> Manager<E> {
             want: None,
             warned: HashSet::new(),
             pairing: None,
+            last_battery_poll: Instant::now(),
         }
     }
 
@@ -183,16 +209,110 @@ impl<E: Events> Manager<E> {
                 }
             }
             Cmd::Unpair { slot } => self.unpair(slot),
+            Cmd::SetPointerSpeed { slot, value } => self.set_pointer_speed(slot, value),
+            Cmd::SetFnSwap { slot, on } => self.set_fn_swap(slot, on),
         }
     }
 
-    /// End a pairing session the receiver never closed.
+    /// End a pairing session the receiver never closed; read the batteries
+    /// every [`BATTERY_POLL`].
     pub fn tick(&mut self, now: Instant) {
         if self.pairing.as_ref().is_some_and(|p| now >= p.deadline) {
             self.pairing = None;
             info!("pairing: no answer from the receiver; timed out");
             self.events.pairing(PairingEvent::TimedOut);
         }
+        if now.saturating_duration_since(self.last_battery_poll) >= BATTERY_POLL {
+            self.last_battery_poll = now;
+            self.poll_batteries();
+        }
+    }
+
+    fn poll_batteries(&mut self) {
+        let mut changed = false;
+        let slots: Vec<(u8, u8)> = self
+            .slots
+            .iter()
+            .filter(|(_, k)| k.online)
+            .filter_map(|(&s, k)| k.info.battery.map(|(i, _)| (s, i)))
+            .collect();
+        for (slot, index) in slots {
+            match self.h.battery_status(slot, index) {
+                Ok(b) => changed |= self.set_battery(slot, b),
+                Err(e) => {
+                    if e.is_unreachable() {
+                        if let Some(k) = self.slots.get_mut(&slot) {
+                            k.online = false;
+                            changed = true;
+                        }
+                    }
+                    debug!(slot, "reading the battery: {e}");
+                }
+            }
+        }
+        if changed {
+            self.publish();
+        }
+    }
+
+    /// Store a battery reading; true if it changed.
+    fn set_battery(&mut self, slot: u8, b: BatteryStatus) -> bool {
+        let Some(k) = self.slots.get_mut(&slot) else {
+            return false;
+        };
+        let Some((_, old)) = &mut k.info.battery else {
+            return false;
+        };
+        if *old == b {
+            return false;
+        }
+        info!(
+            slot,
+            level = ?b.level,
+            next = ?b.next_level,
+            status = b.status_name(),
+            "battery"
+        );
+        *old = b;
+        true
+    }
+
+    fn set_pointer_speed(&mut self, slot: u8, value: u16) {
+        let Some((index, _)) = self.slots.get(&slot).and_then(|k| k.info.pointer_speed) else {
+            warn!(slot, "pointer speed: the device has no POINTER_SPEED");
+            return;
+        };
+        match self.h.set_pointer_speed(slot, index, value) {
+            Ok(v) => {
+                info!(slot, value = v, "pointer speed set");
+                if let Some(k) = self.slots.get_mut(&slot) {
+                    k.info.pointer_speed = Some((index, v));
+                }
+            }
+            Err(e) => warn!(slot, "setting the pointer speed: {e}"),
+        }
+        self.publish();
+    }
+
+    fn set_fn_swap(&mut self, slot: u8, on: bool) {
+        let Some(k) = self.slots.get(&slot) else {
+            return;
+        };
+        let Some((index, _)) = k.info.fn_swap else {
+            warn!(slot, "Fn swap: the device has no 0x40A3");
+            return;
+        };
+        let host = k.info.current_host();
+        match self.h.set_fn_swap(slot, index, host, on) {
+            Ok(()) => {
+                info!(slot, on, "Fn swap set");
+                if let Some(k) = self.slots.get_mut(&slot) {
+                    k.info.fn_swap = Some((index, on));
+                }
+            }
+            Err(e) => warn!(slot, "setting the Fn swap: {e}"),
+        }
+        self.publish();
     }
 
     /// Survey `slot` again; false if it is empty.
@@ -267,6 +387,21 @@ impl<E: Events> Manager<E> {
 
     fn on_notification(&mut self, r: &[u8]) {
         let slot = r[1];
+        if is_feature_event(r) {
+            let battery = self
+                .slots
+                .get(&slot)
+                .and_then(|k| k.info.battery)
+                .is_some_and(|(i, _)| i == r[2]);
+            if battery && r[3] == 0x00 {
+                if let Some(b) = BatteryStatus::parse(&r[4..]) {
+                    if self.set_battery(slot, b) {
+                        self.publish();
+                    }
+                }
+            }
+            return;
+        }
         match r[2] {
             SUB_CONNECT if SLOTS.contains(&slot) => {
                 let up = r[4] & LINK_DOWN == 0;
@@ -416,12 +551,34 @@ impl<E: Events> Manager<E> {
                     OsKind::MacOs => Os::MacOs,
                     OsKind::Linux => Os::Linux,
                 }),
+                battery: k.info.battery.map(|(_, b)| battery(b)),
+                pointer_speed: k.info.pointer_speed.map(|(_, value)| PointerSpeed {
+                    value,
+                    min: POINTER_SPEED_MIN,
+                    max: POINTER_SPEED_MAX,
+                }),
+                fn_swap: k.info.fn_swap.map(|(_, on)| on),
             })
             .collect()
     }
 
     fn publish(&self) {
         self.events.devices(self.devices());
+    }
+}
+
+fn battery(b: BatteryStatus) -> Battery {
+    Battery {
+        percent: b.level,
+        next_percent: b.next_level,
+        charge: match b.status {
+            0 => Charge::Discharging,
+            1 => Charge::Charging,
+            2 => Charge::AlmostFull,
+            3 => Charge::Full,
+            4 => Charge::SlowCharging,
+            _ => Charge::Error,
+        },
     }
 }
 
@@ -486,15 +643,35 @@ mod tests {
     }
 
     /// The real receiver of the Pi, from `fixtures/hidpp/hidpp-list.txt`,
-    /// preceded by the notification enable.
+    /// preceded by the notification enable, with the Phase 4.1 features.
     fn real_receiver(extra: Vec<(Vec<u8>, Vec<Vec<u8>>)>) -> Arc<Scripted> {
         let mut script = vec![(
             hex("10 ff 80 00 00 09 00"),
             vec![hex("10 ff 80 00 00 00 00")],
         )];
         script.extend(trace("hidpp-list.txt"));
+        script.extend(phase41_features());
         script.extend(extra);
         Scripted::new(script)
+    }
+
+    /// BATTERY_STATUS as recorded (`bat-slot*-1000.txt`); POINTER_SPEED and
+    /// 0x40A3 at the indexes of `features-slot*.txt`, their values made up
+    /// (not recorded yet).
+    fn phase41_features() -> Vec<(Vec<u8>, Vec<Vec<u8>>)> {
+        let mut v = trace("bat-slot1-1000.txt");
+        v.extend(trace("bat-slot3-1000.txt"));
+        v.extend([
+            // MX Ergo: POINTER_SPEED at 13 (0x0d), 1x; no 0x40A3.
+            (hex("10 01 00 0c 22 05 00"), vec![long("11 01 00 0c 0d")]),
+            (hex("10 01 0d 0c 00 00 00"), vec![long("11 01 0d 0c 01 00")]),
+            (hex("10 01 00 0c 40 a3 00"), vec![long("11 01 00 0c 00")]),
+            // MX Keys: no POINTER_SPEED; 0x40A3 at 12 (0x0c), host 0, on.
+            (hex("10 03 00 0c 22 05 00"), vec![long("11 03 00 0c 00")]),
+            (hex("10 03 00 0c 40 a3 00"), vec![long("11 03 00 0c 0c")]),
+            (hex("10 03 0c 0c 00 00 00"), vec![long("11 03 0c 0c 00 01")]),
+        ]);
+        v
     }
 
     #[test]
@@ -526,6 +703,79 @@ mod tests {
         );
         assert_eq!(d[2].wireless_pid, 0x408a);
         assert_eq!(d[2].os_profile, Some(Os::MacOs));
+    }
+
+    #[test]
+    fn batteries_pointer_speed_and_fn_swap() {
+        let t = real_receiver(vec![
+            // setPointerSpeed(0x01ff): asked for 1000, clamped.
+            (hex("10 01 0d 1c 01 ff 00"), vec![long("11 01 0d 1c 01 ff")]),
+            // 0x40A3 setFnSwap(host 0, off).
+            (hex("10 03 0c 1c 00 00 00"), vec![long("11 03 0c 1c 00 00")]),
+            // The poll: the MX Keys is charging now; the MX Ergo is gone.
+            (
+                hex("10 03 07 0c 00 00 00"),
+                vec![long("11 03 07 0c 0a 05 01")],
+            ),
+            (
+                hex("10 01 08 0c 00 00 00"),
+                vec![hex("10 01 8f 08 0c 09 00")],
+            ),
+        ]);
+        let rec = Rec::default();
+        let mut m = Manager::new(t.attach(), rec.clone(), true);
+        m.start();
+        let d = rec.1.lock().unwrap().clone();
+        // Recorded: MX Ergo 50 % (next 20 %), MX Keys 5 %, both discharging.
+        assert_eq!(
+            d[0].battery,
+            Some(Battery {
+                percent: Some(50),
+                next_percent: Some(20),
+                charge: Charge::Discharging
+            })
+        );
+        assert_eq!(d[0].pointer_speed.map(|p| p.value), Some(0x100));
+        assert_eq!(d[0].fn_swap, None);
+        assert_eq!(d[1].battery, None, "the K230 is asleep");
+        assert_eq!(d[2].battery.and_then(|b| b.percent), Some(5));
+        assert_eq!(d[2].pointer_speed, None);
+        assert_eq!(d[2].fn_swap, Some(true));
+
+        m.handle(Cmd::SetPointerSpeed {
+            slot: 1,
+            value: 1000,
+        });
+        m.handle(Cmd::SetFnSwap { slot: 3, on: false });
+        // Not settable here: nothing is sent.
+        m.handle(Cmd::SetPointerSpeed {
+            slot: 3,
+            value: 300,
+        });
+        let d = rec.1.lock().unwrap().clone();
+        assert_eq!(d[0].pointer_speed.map(|p| p.value), Some(0x1ff));
+        assert_eq!(d[2].fn_swap, Some(false));
+
+        // A BATTERY_STATUS event (feature index 7 of slot 3, software id 0).
+        let event = hex("11 03 07 00 14 05 00 00 00 00 00 00 00 00 00 00 00 00 00 00");
+        assert!(is_notification(&event));
+        m.handle(Cmd::Notification(event));
+        assert_eq!(
+            rec.1.lock().unwrap()[2].battery.and_then(|b| b.percent),
+            Some(20)
+        );
+
+        m.tick(Instant::now() + BATTERY_POLL);
+        let d = rec.1.lock().unwrap().clone();
+        assert_eq!(
+            d[2].battery,
+            Some(Battery {
+                percent: Some(10),
+                next_percent: Some(5),
+                charge: Charge::Charging
+            })
+        );
+        assert!(!d[0].online, "an unreachable device goes offline");
     }
 
     #[test]
@@ -700,7 +950,10 @@ mod tests {
             ]
         );
         assert!(is_notification(&hex("10 ff 4a 00 03 00 00")));
-        assert!(!is_notification(&hex("10 03 10 00 00 00 03")));
+        // A feature event (software id 0) is for us; a reply to another
+        // program (its software id) is not.
+        assert!(is_notification(&hex("10 03 07 00 05 00 00")));
+        assert!(!is_notification(&hex("10 03 07 0b 05 00 00")));
     }
 
     #[test]
@@ -774,6 +1027,9 @@ mod tests {
                 vec![long("11 02 10 1c 01 01 20 00")],
             ),
             (hex("10 02 00 0c 45 30 00"), vec![long("11 02 00 0c 00")]),
+            (hex("10 02 00 0c 10 00 00"), vec![long("11 02 00 0c 00")]),
+            (hex("10 02 00 0c 22 05 00"), vec![long("11 02 00 0c 00")]),
+            (hex("10 02 00 0c 40 a3 00"), vec![long("11 02 00 0c 00")]),
             (hex("10 02 10 3c ff 00 00"), vec![long("11 02 10 3c ff 00")]),
         ]);
         let rec = Rec::default();

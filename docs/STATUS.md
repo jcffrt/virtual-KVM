@@ -462,3 +462,21 @@ Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario e
   - `install-edge.sh` comprueba su plist y `signing.sh` antes de tocar launchd.
   - Monitorización de entrada se da arrastrando desde el Finder (`open /usr/local/bin`).
   - El paquete del helper de Windows ya lo produce CI (job `edge-windows` de `ci.yml`, artefacto `rawkvm-edge-windows`). En `windows-borde.md` está cómo bajarlo con `gh`.
+
+## Fase 4.1: batería y ajustes por HID++ (2026-10-23)
+
+- Ajustado a lo que anuncian los dispositivos reales (ADR 0018): batería por `BATTERY_STATUS` 0x1000, velocidad del puntero por `POINTER_SPEED` 0x2205 (MX Ergo) y F1…F12 por 0x40A3 (MX Keys). No hay 0x1004 ni 0x2201. `BACKLIGHT2` queda fuera.
+- **Protocolo v5**: `PairedDevice.battery`, `pointer_speed` y `fn_swap`; `SetPointerSpeed` y `SetFnSwap`, solo de widgets.
+- **Hub**:
+  - `hidpp.rs` lee las tres features en la lectura de cada ranura.
+  - `receiver_ctl` lee la batería al conectar el dispositivo, cada 5 minutos y en los eventos de batería, y aplica los dos ajustes.
+  - `--hidpp-list` muestra las tres.
+- **Widget**: columna Batería (⚠︎ con 10 % o menos) y bloque «Ajustes de los dispositivos» (deslizador de velocidad con 1×, casilla de Fn).
+- **Verificado**:
+  - fmt, clippy `-D warnings` (macOS, Linux con zig, Windows gnu), tests del workspace y del widget, `npm run build`.
+  - Test nuevo `batteries_pointer_speed_and_fn_swap`, con las respuestas reales de batería (`bat-slot*-1000.txt`).
+- **Sin verificar en hardware**:
+  - lectura y escritura de 0x2205 y 0x40A3 (los valores del test son inventados);
+  - el evento de batería;
+  - si el dispositivo guarda los ajustes al apagarse.
+  - Para grabarlos: `--hidpp-call 1 0x2205 0`, `--hidpp-call 3 0x40a3 0 00` y `--hidpp-list` con `--hidpp-trace`.

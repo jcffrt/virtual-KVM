@@ -425,6 +425,20 @@ fn unpair(state: tauri::State<'_, Arc<AppState>>, slot: u8) -> Result<(), String
 }
 
 #[tauri::command]
+fn set_pointer_speed(
+    state: tauri::State<'_, Arc<AppState>>,
+    slot: u8,
+    value: u16,
+) -> Result<(), String> {
+    state.send(Control::SetPointerSpeed { slot, value })
+}
+
+#[tauri::command]
+fn set_fn_swap(state: tauri::State<'_, Arc<AppState>>, slot: u8, on: bool) -> Result<(), String> {
+    state.send(Control::SetFnSwap { slot, on })
+}
+
+#[tauri::command]
 fn get_autostart(app: AppHandle) -> Result<bool, String> {
     use tauri_plugin_autostart::ManagerExt;
     app.autolaunch().is_enabled().map_err(|e| e.to_string())
@@ -601,6 +615,8 @@ pub fn run() {
             pair_start,
             pair_stop,
             unpair,
+            set_pointer_speed,
+            set_fn_swap,
             canvas_view,
             canvas_drop,
             canvas_scale,

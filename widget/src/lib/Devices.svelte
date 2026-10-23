@@ -30,6 +30,19 @@
     confirmSlot = null;
     await run('unpair', { slot });
   }
+
+  // Pointer speed while the slider is held (slot -> value); sent on release.
+  let speedDraft = $state({});
+  const speedLabel = (v) => (v / 256).toFixed(2) + '×';
+
+  function batteryText(b) {
+    const pct = b.percent == null ? '?' : `${b.percent} %`;
+    return b.charge ? `${pct}, ${b.charge}` : pct;
+  }
+
+  let tunable = $derived(
+    (view.receiver_devices ?? []).filter((d) => d.pointer_speed || d.fn_swap != null),
+  );
 </script>
 
 {#if !view.paired}
@@ -46,7 +59,7 @@
       sistema del equipo activo (Alt y Cmd/Win en su sitio).
     </p>
     <table>
-      <thead><tr><th>Ranura</th><th>Nombre</th><th>Tipo</th><th>Estado</th><th>Disposición</th><th></th></tr></thead>
+      <thead><tr><th>Ranura</th><th>Nombre</th><th>Tipo</th><th>Estado</th><th>Batería</th><th>Disposición</th><th></th></tr></thead>
       <tbody>
         {#each view.receiver_devices as d (d.slot)}
           <tr>
@@ -54,6 +67,13 @@
             <td>{d.name} <span class="muted mono">{d.wpid}</span></td>
             <td>{d.kind}</td>
             <td>{#if d.online}<span class="ok">conectado</span>{:else}<span class="muted">dormido o apagado</span>{/if}</td>
+            <td>
+              {#if d.battery}
+                <span class:bad={d.battery.low} title="Por tramos: el dispositivo da el nivel en pasos, no un porcentaje exacto.">
+                  {d.battery.low ? '⚠︎ ' : ''}{batteryText(d.battery)}
+                </span>
+              {:else}<span class="muted">—</span>{/if}
+            </td>
             <td>
               {#if d.os_profiles}{d.profile ?? 'otra'}{:else}<span class="muted">—</span>{/if}
             </td>
@@ -68,10 +88,52 @@
             </td>
           </tr>
         {:else}
-          <tr><td colspan="6" class="muted">Ningún dispositivo emparejado.</td></tr>
+          <tr><td colspan="7" class="muted">Ningún dispositivo emparejado.</td></tr>
         {/each}
       </tbody>
     </table>
+
+    {#if tunable.length}
+      <h3>Ajustes de los dispositivos</h3>
+      {#each tunable as d (d.slot)}
+        <div class="tune">
+          <strong>{d.name}</strong>
+          {#if d.pointer_speed}
+            {@const p = d.pointer_speed}
+            <label>
+              Velocidad del puntero
+              <input
+                type="range"
+                min={p.min}
+                max={p.max}
+                step="1"
+                value={speedDraft[d.slot] ?? p.value}
+                disabled={!d.online}
+                oninput={(e) => (speedDraft[d.slot] = Number(e.currentTarget.value))}
+                onchange={async (e) => {
+                  await run('set_pointer_speed', { slot: d.slot, value: Number(e.currentTarget.value) });
+                  delete speedDraft[d.slot];
+                }}
+              />
+              <span class="mono">{speedLabel(speedDraft[d.slot] ?? p.value)}</span>
+              <button disabled={!d.online || p.value === 256} onclick={() => run('set_pointer_speed', { slot: d.slot, value: 256 })}>1×</button>
+            </label>
+          {/if}
+          {#if d.fn_swap != null}
+            <label>
+              <input
+                type="checkbox"
+                checked={d.fn_swap}
+                disabled={!d.online}
+                onchange={(e) => run('set_fn_swap', { slot: d.slot, on: e.currentTarget.checked })}
+              />
+              F1…F12 hacen su función especial (brillo, volumen…) sin pulsar Fn
+            </label>
+          {/if}
+          {#if !d.online}<span class="muted">(dormido: despiértalo para cambiarlo)</span>{/if}
+        </div>
+      {/each}
+    {/if}
 
     <div class="pairing">
       {#if view.pairing.until_ms}
@@ -116,6 +178,9 @@
   .actions { text-align: right; white-space: nowrap; }
   .actions button { margin-left: 4px; }
   .pairing { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+  .tune { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
+  .tune label { display: flex; gap: 6px; align-items: center; }
+  .tune input[type='range'] { width: 160px; }
   .ok { color: var(--ok); }
   .bad { color: var(--bad); }
 </style>

@@ -432,6 +432,9 @@ impl Hidpp {
             multiplatform: None,
             platforms: Vec::new(),
             dualplatform: None,
+            battery: None,
+            pointer_speed: None,
+            fn_swap: None,
             error: None,
         };
         let note = |e: Error, s: &mut SlotInfo| {
@@ -483,6 +486,30 @@ impl Hidpp {
         match self.feature_index(slot, FEATURE_DUALPLATFORM) {
             Ok(Some(i)) => match self.dualplatform(slot, i) {
                 Ok(v) => s.dualplatform = Some((i, v)),
+                Err(e) => note(e, &mut s),
+            },
+            Ok(None) => {}
+            Err(e) => note(e, &mut s),
+        }
+        match self.feature_index(slot, FEATURE_BATTERY_STATUS) {
+            Ok(Some(i)) => match self.battery_status(slot, i) {
+                Ok(b) => s.battery = Some((i, b)),
+                Err(e) => note(e, &mut s),
+            },
+            Ok(None) => {}
+            Err(e) => note(e, &mut s),
+        }
+        match self.feature_index(slot, FEATURE_POINTER_SPEED) {
+            Ok(Some(i)) => match self.pointer_speed(slot, i) {
+                Ok(v) => s.pointer_speed = Some((i, v)),
+                Err(e) => note(e, &mut s),
+            },
+            Ok(None) => {}
+            Err(e) => note(e, &mut s),
+        }
+        match self.feature_index(slot, FEATURE_FN_SWAP) {
+            Ok(Some(i)) => match self.fn_swap(slot, i, s.current_host()) {
+                Ok(v) => s.fn_swap = Some((i, v)),
                 Err(e) => note(e, &mut s),
             },
             Ok(None) => {}
@@ -804,6 +831,91 @@ impl Hidpp {
     }
 }
 
+/// Feature BATTERY_STATUS (0x1000).
+pub const FEATURE_BATTERY_STATUS: u16 = 0x1000;
+/// Feature POINTER_SPEED (0x2205).
+pub const FEATURE_POINTER_SPEED: u16 = 0x2205;
+/// Feature K375S_FN_INVERSION (0x40A3; the MX Keys has it).
+pub const FEATURE_FN_SWAP: u16 = 0x40A3;
+
+/// POINTER_SPEED range Solaar accepts (`PointerSpeed` setting): 256 = 1x.
+pub const POINTER_SPEED_MIN: u16 = 0x002E;
+pub const POINTER_SPEED_MAX: u16 = 0x01FF;
+
+/// BATTERY_STATUS function 0, getBatteryLevelStatus, and its event 0
+/// (Solaar `decipher_battery_status`): level %, next level %, status. A
+/// level of 0 means unknown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BatteryStatus {
+    pub level: Option<u8>,
+    pub next_level: Option<u8>,
+    /// 0 discharging, 1 recharging, 2 almost full, 3 full, 4 slow
+    /// recharge, 5 invalid battery, 6 thermal error, 7 other error
+    /// (Solaar `common.BatteryStatus`).
+    pub status: u8,
+}
+
+impl BatteryStatus {
+    pub fn parse(r: &[u8]) -> Option<Self> {
+        let nonzero = |b: u8| (b != 0).then_some(b);
+        Some(Self {
+            level: nonzero(*r.first()?),
+            next_level: nonzero(*r.get(1)?),
+            status: *r.get(2)?,
+        })
+    }
+
+    pub fn status_name(&self) -> &'static str {
+        match self.status {
+            0 => "discharging",
+            1 => "recharging",
+            2 => "almost full",
+            3 => "full",
+            4 => "slow recharge",
+            5 => "invalid battery",
+            6 => "thermal error",
+            _ => "charging error",
+        }
+    }
+}
+
+impl Hidpp {
+    pub fn battery_status(&self, device: u8, index: u8) -> Result<BatteryStatus, Error> {
+        let r = self.request(&Request::feature(device, index, 0, &[]))?;
+        BatteryStatus::parse(&r).ok_or(Error::Malformed)
+    }
+
+    /// POINTER_SPEED function 0, getPointerSpeed: u16 BE, 1/256 units.
+    pub fn pointer_speed(&self, device: u8, index: u8) -> Result<u16, Error> {
+        let r = self.request(&Request::feature(device, index, 0, &[]))?;
+        match r.get(..2) {
+            Some(b) => Ok(u16::from_be_bytes([b[0], b[1]])),
+            None => Err(Error::Malformed),
+        }
+    }
+
+    /// POINTER_SPEED function 1, setPointerSpeed, clamped to Solaar's range.
+    pub fn set_pointer_speed(&self, device: u8, index: u8, value: u16) -> Result<u16, Error> {
+        let value = value.clamp(POINTER_SPEED_MIN, POINTER_SPEED_MAX);
+        self.request(&Request::feature(device, index, 1, &value.to_be_bytes()))?;
+        Ok(value)
+    }
+
+    /// 0x40A3 function 0 for `host` (Solaar `K375sFnSwap`: the current
+    /// host from HOSTS_INFO, 0xFF without it): reply host, state; 1 = the
+    /// F-keys send their special function without Fn.
+    pub fn fn_swap(&self, device: u8, index: u8, host: u8) -> Result<bool, Error> {
+        let r = self.request(&Request::feature(device, index, 0, &[host]))?;
+        r.get(1).map(|&b| b & 0x01 != 0).ok_or(Error::Malformed)
+    }
+
+    /// 0x40A3 function 1: host, state.
+    pub fn set_fn_swap(&self, device: u8, index: u8, host: u8, on: bool) -> Result<(), Error> {
+        self.request(&Request::feature(device, index, 1, &[host, on as u8]))
+            .map(drop)
+    }
+}
+
 /// One paired device as [`Hidpp::survey`] found it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SlotInfo {
@@ -821,11 +933,23 @@ pub struct SlotInfo {
     pub platforms: Vec<PlatformDescriptor>,
     /// Feature index and value of DUALPLATFORM.
     pub dualplatform: Option<(u8, u8)>,
+    /// Feature index and reading of BATTERY_STATUS.
+    pub battery: Option<(u8, BatteryStatus)>,
+    /// Feature index and value of POINTER_SPEED.
+    pub pointer_speed: Option<(u8, u16)>,
+    /// Feature index and state of the Fn swap (0x40A3).
+    pub fn_swap: Option<(u8, bool)>,
     /// The first request that failed, if any.
     pub error: Option<Error>,
 }
 
 impl SlotInfo {
+    /// The host the device is connected to now (HOSTS_INFO), 0xFF if it
+    /// does not say (Solaar `K375sFnSwap.find_current_host`).
+    pub fn current_host(&self) -> u8 {
+        self.hosts.map_or(0xFF, |h| h.current_host)
+    }
+
     /// The MULTIPLATFORM platform for `os`. Linux falls back to the Windows
     /// layout: keyboards have no Linux platform (the MX Keys offers
     /// Windows, macOS, iOS, Android) and Linux uses the PC layout.
@@ -1161,6 +1285,9 @@ pub mod tests {
                 vec![long("11 01 0d 1c 01 01 20 00")],
             ),
             (hex("10 01 00 0c 45 30 00"), vec![long("11 01 00 0c 00")]),
+            (hex("10 01 00 0c 10 00 00"), vec![long("11 01 00 0c 00")]),
+            (hex("10 01 00 0c 22 05 00"), vec![long("11 01 00 0c 00")]),
+            (hex("10 01 00 0c 40 a3 00"), vec![long("11 01 00 0c 00")]),
             // set Windows: MULTIPLATFORM setCurrentPlatform(FF, 0)
             (hex("10 01 0d 3c ff 00 00"), vec![long("11 01 0d 3c ff 00")]),
         ]);
