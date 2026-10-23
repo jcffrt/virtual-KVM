@@ -47,7 +47,9 @@ sign() {
 # install_signed SRC DEST IDENTIFIER: copy SRC to a temporary file owned by
 # the signing user, sign it there and install it as DEST (root:wheel 0755).
 install_signed() {
-    tmpdir=$(mktemp -d)
+    # Under sudo, mktemp would use root's private $TMPDIR, which the signing
+    # user cannot even traverse: use /tmp.
+    tmpdir=$(mktemp -d /tmp/rawkvm-sign.XXXXXX)
     cp "$1" "$tmpdir/bin"
     chown "$(sign_user)" "$tmpdir" "$tmpdir/bin"
     sign "$tmpdir/bin" "$3"
