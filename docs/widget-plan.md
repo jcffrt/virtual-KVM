@@ -1,6 +1,6 @@
 # Widget (Tauri 2): plan para revisar
 
-Aprobado por el usuario el 2026-10-22, con estas respuestas: v3 sí; primera entrega solo en el Mac; Svelte; cambio rápido desde la bandeja. **Hechos**: paso 1 (`agent-core::canvas`, `agent-core::widget`), paso 2 (protocolo v3, desplegado) paso 3 (esqueleto Tauri, bandeja, pestaña Hub) paso 4 (pestaña Monitores) y paso 5 (Dispositivos y Opciones). Base: handoff §9, ADR 0009 (el layout vive en el hub) y la Fase 2 validada entre Mac y Windows.
+Aprobado por el usuario el 2026-10-22, con estas respuestas: v3 sí; primera entrega solo en el Mac; Svelte; cambio rápido desde la bandeja. **Hechos**: paso 1 (`agent-core::canvas`, `agent-core::widget`), paso 2 (protocolo v3, desplegado) paso 3 (esqueleto Tauri, bandeja, pestaña Hub) paso 4 (pestaña Monitores), paso 5 (Dispositivos y Opciones) y paso 6 (empaquetado y CI). Este último se fue haciendo en los anteriores: `.app` firmada ad hoc en el workflow `widget` (artefacto `rawkvm-widget-macos` con LEEME), arranque automático con LaunchAgent (paso 5) y `docs/widget-instalacion.md`. El widget para Windows queda para después. Base: handoff §9, ADR 0009 (el layout vive en el hub) y la Fase 2 validada entre Mac y Windows.
 
 ## Qué es
 

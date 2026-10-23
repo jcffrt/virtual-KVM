@@ -15,6 +15,35 @@ if ! id -nG | grep -qw input; then
     echo "Added $USER to group input: log out and back in before starting the agent."
 fi
 install -D -m 0755 "$bin" "$HOME/.local/bin/rawkvm-agent"
+
+# GNOME extension for screen-edge switching (docs/gnome-plan.md). Looked up
+# next to this script, in a sibling gnome-extension/ (copied with scp) or in
+# the repository's gnome-extension/ directory.
+ext=rawkvm@olitec.cc
+for d in "$here/$ext" "$here/../gnome-extension/$ext" "$here/../../gnome-extension/$ext"; do
+    [ -f "$d/metadata.json" ] && ext_src=$d && break
+done
+if [ -n "${ext_src:-}" ] && command -v gnome-shell >/dev/null 2>&1; then
+    dest="$HOME/.local/share/gnome-shell/extensions/$ext"
+    mkdir -p "$dest"
+    cp "$ext_src/metadata.json" "$ext_src/extension.js" "$dest/"
+    # Add it to the enabled list; gnome-shell loads new extensions only at
+    # the next login under Wayland.
+    python3 - "$ext" <<'PY'
+import ast, subprocess, sys
+ext = sys.argv[1]
+cur = subprocess.run(["gsettings", "get", "org.gnome.shell", "enabled-extensions"],
+                     capture_output=True, text=True).stdout.strip()
+items = ast.literal_eval(cur.replace("@as ", "")) if cur else []
+if ext not in items:
+    items.append(ext)
+    subprocess.run(["gsettings", "set", "org.gnome.shell", "enabled-extensions", str(items)], check=True)
+PY
+    gnome-extensions enable "$ext" 2>/dev/null || true
+    echo "GNOME extension $ext installed: log out and back in once to load it."
+else
+    echo "No GNOME Shell or extension sources found: edge switching disabled on this machine."
+fi
 install -D -m 0644 "$here/rawkvm-agent.service" "$HOME/.config/systemd/user/rawkvm-agent.service"
 systemctl --user daemon-reload
 systemctl --user enable rawkvm-agent.service

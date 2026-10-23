@@ -2,6 +2,7 @@
 //! device with the same report descriptor; the kernel and libinput then see
 //! the Logitech receiver as if it were plugged in locally.
 
+mod edge;
 mod uhid;
 
 use std::collections::HashMap;
@@ -48,6 +49,11 @@ struct Args {
 
     #[arg(long, default_value = "/dev/uhid")]
     uhid: PathBuf,
+
+    /// Do not run the edge helper (screen-edge switching through the GNOME
+    /// extension rawkvm@olitec.cc, docs/gnome-plan.md).
+    #[arg(long)]
+    no_edge: bool,
 }
 
 struct UhidSink {
@@ -138,16 +144,30 @@ fn main() -> Result<()> {
         },
         devices: HashMap::new(),
     };
+    let edge_config = config_path.clone();
     let opts = AgentOptions {
         config_path,
         os: Os::Linux,
     };
+    let no_edge = args.no_edge;
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
         .block_on(async {
+            // The edge helper never ends the agent: on a fatal error of its
+            // own it logs and stops, and the agent keeps the devices.
+            let edge = async {
+                if no_edge {
+                    return std::future::pending().await;
+                }
+                if let Err(e) = edge::run(&edge_config).await {
+                    tracing::error!("edge helper stopped: {e:#}");
+                }
+                std::future::pending::<()>().await
+            };
             tokio::select! {
                 r = agent_core::run(opts, &mut sink) => r,
+                _ = edge => Ok(()),
                 _ = agent_core::shutdown_signal() => Ok(()),
             }
         })

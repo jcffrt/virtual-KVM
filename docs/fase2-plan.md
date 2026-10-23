@@ -83,7 +83,7 @@ Lienzo de monitores que sustituye el `[[layout.link]]` manual y envía `Layout` 
 | 2 | `agent-core::edge` | 1 | tests de tabla | hecho (0015faa) |
 | 3 | helper macOS | 1 | Mac + atajo para volver | hecho (a0d80e4), validado |
 | 4 | helper Windows | 1–2 | ida y vuelta Mac ↔ Windows: **criterio de la fase** | hecho (2dc5694, d69e767), **validado**: Windows → Mac → Windows → Mac con el puntero a la altura correcta |
-| 5 | extensión GNOME | 2 | cuando haya Ubuntu | pendiente |
+| 5 | extensión GNOME | 2 | cuando haya Ubuntu | hecho (`docs/gnome-plan.md`), sin probar en el Ubuntu |
 | 6 | widget Tauri | 2–3 | — | plan en `docs/widget-plan.md` |
 
 Los pasos 1 a 4 dan el cambio por borde entre Mac y Windows sin widget.

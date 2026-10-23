@@ -336,6 +336,21 @@ Decisiones del usuario/orquestador sobre `docs/widget-plan.md`: (1) protocolo v3
 
 - Hub 75944b5 en la Orange Pi ("Volver a la semilla" por Layout vacío). RawKVM.app 75944b5 en el Mac. Usuario: la propuesta del lienzo aparece (Mac a la izquierda, GAMER a la derecha), **Aplicar** guarda el layout en el hub, y al mover un bloque y aplicar **el cambio por borde sigue la nueva disposición sin reiniciar nada**. Requisito del usuario (layout editable en caliente desde el widget) cumplido.
 
+## Fase 2, paso 5: GNOME (extensión + helper en el agente Linux) (2026-10-22, VS Code)
+
+- `gnome-extension/rawkvm@olitec.cc` (GNOME 46, ESM): objeto D-Bus `cc.olitec.RawKvm.Shell` con:
+  - `Monitors`, `Watch` (arrendamiento de 3 s) y la señal `Pointer` (cada 8 ms, solo si el puntero se movió);
+  - `GetPointer`, `Warp`, `MonitorsChanged` y la propiedad `Version`.
+- `crates/agent-linux/src/edge.rs`:
+  - zbus 5 (tokio) y una caché sincronizada por una tarea puente, sobre la que se implementa `EdgePlatform`;
+  - `Watch` solo mientras el helper pide el puntero;
+  - config derivada `~/.config/rawkvm/edge.toml` (node_id UUID v5 del agente, mismo hub, token y huella, `for_node` = el agente);
+  - espera a que el agente esté emparejado y la extensión presente (aviso una vez, reintento cada 10 s);
+  - `--no-edge` lo desactiva.
+- `deploy/linux/install.sh` instala la extensión y la añade a `enabled-extensions` (hay que volver a iniciar sesión).
+- `docs/gnome-plan.md`: instalación y comandos de verificación (`gdbus`) para copiar tal cual.
+- Verificado: tests (conversión de monitores, derivación de config, caché del puntero) y clippy en macOS y Linux. **Sin probar en el Ubuntu.**
+
 ## Convenciones
 
 Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario en castellano, `cargo fmt` y `cargo clippy -D warnings` limpios, un ADR por decisión nueva.
