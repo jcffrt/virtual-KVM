@@ -456,7 +456,7 @@ Decisiones del usuario/orquestador sobre `docs/widget-plan.md`: (1) protocolo v3
 
 ## R1: Monitorización de entrada tras pasar a «RawKVM Local» (2026-10-23)
 
-- Hallazgo del orquestador en el Mac: tras pasar el agente de ad hoc a «RawKVM Local», TCC conserva el requisito viejo y Monitorización de entrada queda denegada con el interruptor encendido; al ser un daemon, no hay diálogo. Solución única: `sudo tccutil reset ListenEvent`, volver a arrastrar el binario y `launchctl kickstart -k`. Documentado en `macos-instalacion.md` y ADR 0016. `install.sh` avisa de esos pasos cuando el binario anterior estaba firmado ad hoc y el nuevo no (`signed_adhoc` en `signing.sh`). Solo comprobado con `sh -n` y `signed_adhoc` sobre binarios locales; sin ejecutar `install.sh` con sudo. Pendiente: que el LED vuelva a funcionar tras el reset.
+- Hallazgo del orquestador en el Mac: tras pasar el agente de ad hoc a «RawKVM Local», TCC conserva el requisito viejo y Monitorización de entrada queda denegada con el interruptor encendido; al ser un daemon, no hay diálogo. Solución única: `sudo tccutil reset ListenEvent`, volver a arrastrar el binario y `launchctl kickstart -k`. Documentado en `macos-instalacion.md` y ADR 0016. `install.sh` avisa de esos pasos cuando el binario anterior estaba firmado ad hoc y el nuevo no (`signed_adhoc` en `signing.sh`). Solo comprobado con `sh -n` y `signed_adhoc` sobre binarios locales; sin ejecutar `install.sh` con sudo. Confirmado por el orquestador: tras el reset, volver a arrastrar el binario y `kickstart`, el agente registra `watching the keyboard LEDs`. El aviso de `install.sh` se queda.
 
 ## Convenciones
 
