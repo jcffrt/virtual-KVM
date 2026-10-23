@@ -28,15 +28,17 @@ Cuando el PC deja de leer (apagado, suspendido o cable fuera), el agente lo regi
 
 ### Alt y Win cruzadas en Windows (MX Keys)
 
-El MX Keys guarda en el canal del receptor de la Pi el perfil de macOS, así que en el Windows del gadget las teclas Alt y Win salen cambiadas. Mientras no esté el cambio de perfil por HID++ (Fase 3), el hub puede intercambiarlas para ese equipo. En `/etc/rawkvm/hub.toml` de la Pi, con el índice del gadget (`sudo rawkvm-hub --list-nodes`):
+Desde la Fase 3 (hub v4) no hace falta nada: al cambiar de equipo, el hub pone por HID++ la disposición de teclas del MX Keys en la del sistema del equipo activo (Windows en el gadget; Linux usa también la de Windows), igual que Fn+P / Fn+O. Ver ADR 0014. **Quitad `swap_alt_gui` de `/etc/rawkvm/hub.toml`**: con las dos cosas activas, Alt y Win vuelven a quedar cruzadas (el hub lo avisa al arrancar).
+
+Para forzar otra disposición en un equipo, con su índice (`sudo rawkvm-hub --list-nodes`):
 
 ```toml
 [[node_options]]
 index = 1
-swap_alt_gui = true
+os_profile = "windows"   # "macos", "linux" (= Windows) o "none" (no tocar)
 ```
 
-Después, `sudo systemctl restart rawkvm-hub`. Afecta a todos los teclados que entran por el receptor (también el K230) y solo cuando la entrada va a ese equipo. Ver ADR 0011.
+`[hidpp] os_profile = false` desactiva el cambio para todos. Teclados sin esa función HID++ (el K230) no cambian; para ellos sigue existiendo `swap_alt_gui = true` (ADR 0011), que afecta a todos los teclados del receptor cuando la entrada va a ese equipo. Después de editar, `sudo systemctl restart rawkvm-hub`.
 
 ### Logitech Options+ / G HUB en el PC
 

@@ -12,6 +12,7 @@ pub mod hotkey;
 pub mod layout;
 pub mod nodes;
 pub mod receiver;
+pub mod receiver_ctl;
 pub mod router;
 pub mod server;
 pub mod settings;

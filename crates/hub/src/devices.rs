@@ -277,8 +277,8 @@ fn scan_loop(router: Arc<Router>, m: ReceiverMatch) {
                 .then(|| writer.clone())
                 .flatten()
                 .map(|w| Arc::new(Hidpp::new(w)));
-            if hidpp.is_some() {
-                router.set_hidpp(hidpp.clone());
+            if let Some(h) = &hidpp {
+                router.attach_receiver(h.clone());
             }
             router.add_device_with_writer(dev, writer);
 
@@ -290,13 +290,20 @@ fn scan_loop(router: Arc<Router>, m: ReceiverMatch) {
                 .name(format!("hid-{id}"))
                 .spawn(move || {
                     let err = hidraw::read_loop(file, |r| {
-                        if !hidpp.as_ref().is_some_and(|h| h.on_report(r)) {
-                            router.on_report(id, r)
+                        let Some(h) = &hidpp else {
+                            return router.on_report(id, r);
+                        };
+                        if h.on_report(r) {
+                            return;
                         }
+                        if crate::receiver_ctl::is_notification(r) {
+                            router.receiver_notification(r);
+                        }
+                        router.on_report(id, r)
                     });
                     info!("{} closed: {err}", path.display());
                     if hidpp.is_some() {
-                        router.set_hidpp(None);
+                        router.detach_receiver();
                     }
                     router.remove_device(id);
                     open.lock().unwrap_or_else(|e| e.into_inner()).remove(&phys);

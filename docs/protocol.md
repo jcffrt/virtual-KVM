@@ -55,9 +55,12 @@ Mensajes en régimen:
 | `Settings(HubSettings { hysteresis_ms, hotkey })` | hub → widgets (al conectar y al cambiar); widget → hub | ajustes de conmutación; el hub los aplica y guarda en `/var/lib/rawkvm/settings.toml`, que manda sobre `[switching]` de `hub.toml` |
 | `DeviceList` | hub → nodos | al conectar y cuando cambia el conjunto de dispositivos |
 | `Activate { entry: Option<Entry> }` / `Deactivate` | hub → agente y sus helpers | este agente empieza / deja de recibir. Sin `entry` (atajo, caída del activo, menú del widget) el helper no mueve el puntero |
-| `PairingStart` / `PairingStop` | widget → hub | fase 3; hoy responde `PairingEvent(Failed)` |
-| `ReceiverDevices { devices: Vec<PairedDevice> }` | hub → widgets | v4. Dispositivos emparejados con el receptor (`slot`, `name`, `kind`, `wireless_pid`, `hosts_info`, `os_profile`), leídos por HID++; al conectar y al cambiar. Definido; el hub aún no lo envía (Fase 3 D) |
-| `Unpair { slot }` | widget → hub | v4. Desemparejar la ranura `slot` del receptor. Definido; aún sin implementar (Fase 3 D) |
+| `PairingStart { timeout_s }` / `PairingStop` | widget → hub | abre (registro `0xB2` `01 00 <s>`) o cierra (`02`) el emparejamiento del receptor. Sin la interfaz HID++ abierta, `PairingEvent(Failed)` |
+| `PairingEvent` | hub → widgets | `Started { timeout_s }`, `DeviceFound { name }` (notificación `0x41` de una ranura nueva), `Paired { name, kind }` o `TimedOut` (notificación `0x4A` de cierre), `Failed { reason }` (error en `0x4A` o en la petición) |
+| `ReceiverDevices { devices: Vec<PairedDevice> }` | hub → widgets | v4. Dispositivos emparejados con el receptor (`slot`, `name`, `kind`, `wireless_pid`, `online`, `os_profiles`, `os_profile`), leídos por HID++; al conectar y al cambiar (dispositivo que se conecta, duerme, se empareja o se olvida; disposición cambiada) |
+| `Unpair { slot }` | widget → hub | v4. Desemparejar la ranura `slot` del receptor (registro `0xB2` `03 <slot>`) |
+
+**Solo widgets**: el hub atiende `PairingStart`, `PairingStop`, `Unpair`, `Settings` y `Layout` únicamente de nodos `Widget` (que ya presentaron el token); de un agente o un helper los ignora. `ReceiverDevices` y `PairingEvent` solo van a widgets.
 
 ## Datagramas (informes HID)
 

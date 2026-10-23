@@ -502,13 +502,9 @@ impl Hidpp {
             if !m.settable() {
                 return Err(SetOsError::Unsupported("MULTIPLATFORM (not settable)"));
             }
-            let d = s
-                .platforms
-                .iter()
-                .find(|d| d.os_flags & os.multiplatform_bit() != 0)
-                .ok_or(SetOsError::NoPlatform(os))?;
-            self.set_platform(slot, i, d.platform)?;
-            Ok(format!("MULTIPLATFORM: platform {} ({:?})", d.platform, os))
+            let platform = s.platform_for(os).ok_or(SetOsError::NoPlatform(os))?;
+            self.set_platform(slot, i, platform)?;
+            Ok(format!("MULTIPLATFORM: platform {platform} ({os:?})"))
         };
         let hosts = || -> Result<String, SetOsError> {
             let (i, h) = s
@@ -829,6 +825,35 @@ pub struct SlotInfo {
     pub error: Option<Error>,
 }
 
+impl SlotInfo {
+    /// The MULTIPLATFORM platform for `os`. Linux falls back to the Windows
+    /// layout: keyboards have no Linux platform (the MX Keys offers
+    /// Windows, macOS, iOS, Android) and Linux uses the PC layout.
+    pub fn platform_for(&self, os: OsKind) -> Option<u8> {
+        let find = |bit: u16| {
+            self.platforms
+                .iter()
+                .find(|d| d.os_flags & bit != 0)
+                .map(|d| d.platform)
+        };
+        find(os.multiplatform_bit()).or_else(|| {
+            (os == OsKind::Linux)
+                .then(|| find(OsKind::Windows.multiplatform_bit()))
+                .flatten()
+        })
+    }
+
+    /// The OS of the current MULTIPLATFORM platform (Windows, macOS or
+    /// Linux; `None` for the others or without the feature).
+    pub fn current_os(&self) -> Option<OsKind> {
+        let (_, m) = self.multiplatform?;
+        let d = self.platforms.iter().find(|d| d.platform == m.current)?;
+        [OsKind::MacOs, OsKind::Windows, OsKind::Linux]
+            .into_iter()
+            .find(|o| d.os_flags & o.multiplatform_bit() != 0)
+    }
+}
+
 /// From a 0xB5 pairing information page (0x20 + slot - 1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PairingInfo {
@@ -902,7 +927,7 @@ pub mod tests {
     type Exchange = (Vec<u8>, Vec<Vec<u8>>);
 
     pub struct Scripted {
-        script: Mutex<VecDeque<Exchange>>,
+        pub script: Mutex<VecDeque<Exchange>>,
         hidpp: Mutex<Option<std::sync::Weak<Hidpp>>>,
         pub writes: Mutex<Vec<Vec<u8>>>,
     }
@@ -926,12 +951,13 @@ pub mod tests {
     impl ReportWriter for Scripted {
         fn write(&self, report: &[u8]) -> bool {
             self.writes.lock().unwrap().push(report.to_vec());
+            // The first exchange with this request (traces may hold extra
+            // requests a CLI made); none: no answer (timeout).
             let next = {
                 let mut s = self.script.lock().unwrap();
-                match s.front() {
-                    Some((req, _)) if req == report => s.pop_front(),
-                    _ => None, // unexpected: no answer (timeout)
-                }
+                s.iter()
+                    .position(|(req, _)| req == report)
+                    .and_then(|i| s.remove(i))
             };
             let h = self
                 .hidpp
@@ -1173,9 +1199,16 @@ pub mod tests {
             h.set_os(&s, OsKind::Windows, Via::Auto).unwrap(),
             "MULTIPLATFORM: platform 0 (Windows)"
         );
+        // No Linux platform: the Windows one (already set: same request).
+        assert_eq!(s.platform_for(OsKind::Linux), Some(0));
+        assert_eq!(s.current_os(), Some(OsKind::MacOs));
         assert_eq!(
-            h.set_os(&s, OsKind::Linux, Via::Auto),
-            Err(SetOsError::NoPlatform(OsKind::Linux))
+            SlotInfo {
+                platforms: vec![s.platforms[1]],
+                ..s.clone()
+            }
+            .platform_for(OsKind::Linux),
+            None
         );
         // HOSTS_INFO without the set-OS capability bit (flags 0x03).
         assert_eq!(

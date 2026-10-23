@@ -4,7 +4,7 @@
 use agent_core::widget::WidgetState;
 use agent_core::AgentConfig;
 use proto::descriptor::DescriptorInfo;
-use proto::{EdgeOptions, HubSettings, NodeKind, Os};
+use proto::{EdgeOptions, HubSettings, NodeKind, Os, PairingEvent};
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -23,6 +23,10 @@ pub struct View {
     pub active: Option<Uuid>,
     pub nodes: Vec<NodeView>,
     pub devices: Vec<DeviceView>,
+    /// Devices paired with the receiver; `None` while the hub has not read
+    /// them (old hub, receiver without HID++).
+    pub receiver_devices: Option<Vec<PairedView>>,
+    pub pairing: PairingView,
     /// Hysteresis and hotkey as the hub applies them (None until it says).
     pub settings: Option<HubSettings>,
     /// Edge options in force (from the hub's layout).
@@ -42,6 +46,84 @@ pub struct DeviceView {
     pub descriptor_len: usize,
     /// What the interface carries, e.g. ["teclado"], ["ratón", "multimedia"].
     pub kinds: Vec<String>,
+}
+
+/// One device paired with the receiver.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PairedView {
+    pub slot: u8,
+    pub name: String,
+    /// "teclado", "ratón", "trackball", ...
+    pub kind: String,
+    /// "408a".
+    pub wpid: String,
+    pub online: bool,
+    /// The hub sets its OS layout on every switch.
+    pub os_profiles: bool,
+    /// Its current layout: "Windows", "macOS", "Linux".
+    pub profile: Option<&'static str>,
+}
+
+/// The pairing session.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PairingView {
+    /// Open now; until this Unix time in milliseconds.
+    pub until_ms: Option<u64>,
+    /// What happened last, in Spanish.
+    pub message: Option<String>,
+    /// The last event was a success.
+    pub ok: bool,
+}
+
+fn device_kind(kind: &str) -> String {
+    match kind {
+        "keyboard" => "teclado".into(),
+        "mouse" => "ratón".into(),
+        "trackball" => "trackball".into(),
+        "touchpad" => "touchpad".into(),
+        "numpad" => "teclado numérico".into(),
+        "presenter" => "presentador".into(),
+        "remote" | "remote control" => "mando".into(),
+        other => other.into(),
+    }
+}
+
+pub fn paired(st: &WidgetState) -> Option<Vec<PairedView>> {
+    st.paired_devices.as_ref().map(|list| {
+        list.iter()
+            .map(|d| PairedView {
+                slot: d.slot,
+                name: d.name.clone(),
+                kind: device_kind(&d.kind),
+                wpid: format!("{:04x}", d.wireless_pid),
+                online: d.online,
+                os_profiles: d.os_profiles,
+                profile: d.os_profile.map(os_name),
+            })
+            .collect()
+    })
+}
+
+pub fn pairing(st: &WidgetState) -> PairingView {
+    let (message, ok) = match &st.pairing_last {
+        None => (None, false),
+        Some(PairingEvent::Started { .. }) => (
+            Some("Enciende el dispositivo nuevo (o apágalo y enciéndelo)…".into()),
+            false,
+        ),
+        Some(PairingEvent::DeviceFound { name }) => (Some(format!("Encontrado: {name}…")), false),
+        Some(PairingEvent::Paired { name, kind }) => (
+            Some(format!("Emparejado: {name} ({}).", device_kind(kind))),
+            true,
+        ),
+        Some(PairingEvent::Failed { reason }) => (Some(format!("Error: {reason}")), false),
+        Some(PairingEvent::TimedOut) => (Some("No apareció ningún dispositivo.".into()), false),
+    };
+    PairingView {
+        until_ms: st.pairing_until_ms,
+        message,
+        ok,
+    }
 }
 
 fn kind_name(page: u16, usage: u16) -> String {
@@ -164,6 +246,8 @@ pub fn view(st: &WidgetState, cfg: &AgentConfig) -> View {
         active,
         nodes,
         devices: devices(st),
+        receiver_devices: paired(st),
+        pairing: pairing(st),
         settings: st.settings,
         options: st.options,
         custom_layout: !st.canvas.is_empty(),
@@ -282,6 +366,35 @@ mod tests {
         assert!(d[1].kinds.contains(&"ratón".to_string()));
         assert!(d[1].kinds.contains(&"multimedia".to_string()));
         assert_eq!(d[2].kinds, ["HID++ (vendor)"]);
+    }
+
+    #[test]
+    fn paired_devices_and_pairing() {
+        let st = WidgetState {
+            paired_devices: Some(vec![proto::PairedDevice {
+                slot: 3,
+                name: "MX Keys".into(),
+                kind: "keyboard".into(),
+                wireless_pid: 0x408a,
+                online: true,
+                os_profiles: true,
+                os_profile: Some(Os::Windows),
+            }]),
+            pairing_last: Some(PairingEvent::Paired {
+                name: "K230".into(),
+                kind: "keyboard".into(),
+            }),
+            ..Default::default()
+        };
+        let p = paired(&st).unwrap();
+        assert_eq!(
+            (p[0].kind.as_str(), p[0].wpid.as_str(), p[0].profile),
+            ("teclado", "408a", Some("Windows"))
+        );
+        let v = pairing(&st);
+        assert!(v.ok && v.until_ms.is_none());
+        assert_eq!(v.message.as_deref(), Some("Emparejado: K230 (teclado)."));
+        assert!(paired(&WidgetState::default()).is_none());
     }
 
     #[test]

@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
 use proto::{
-    wire, Control, EdgeLink, EdgeOptions, HidDevice, HubSettings, HubStatus, NodeKind, Placement,
-    Screen,
+    wire, Control, EdgeLink, EdgeOptions, HidDevice, HubSettings, HubStatus, NodeKind,
+    PairedDevice, PairingEvent, Placement, Screen,
 };
 use serde::Serialize;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -41,7 +41,20 @@ pub struct WidgetState {
     pub canvas: Vec<Placement>,
     pub settings: Option<HubSettings>,
     pub devices: Vec<HidDevice>,
+    /// Devices paired with the receiver (`None` until the hub reads them
+    /// over HID++).
+    pub paired_devices: Option<Vec<PairedDevice>>,
+    /// A pairing session is open; its end as Unix milliseconds.
+    pub pairing_until_ms: Option<u64>,
+    /// The last pairing event.
+    pub pairing_last: Option<PairingEvent>,
     pub rtt_ms: Option<f64>,
+}
+
+fn unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 impl WidgetState {
@@ -75,6 +88,17 @@ impl WidgetState {
             }
             Control::Settings(s) => self.settings = Some(*s),
             Control::DeviceList { devices } => self.devices = devices.clone(),
+            Control::ReceiverDevices { devices } => self.paired_devices = Some(devices.clone()),
+            Control::PairingEvent(e) => {
+                match e {
+                    PairingEvent::Started { timeout_s } => {
+                        self.pairing_until_ms = Some(unix_ms() + *timeout_s as u64 * 1000)
+                    }
+                    PairingEvent::DeviceFound { .. } => {}
+                    _ => self.pairing_until_ms = None,
+                }
+                self.pairing_last = Some(e.clone());
+            }
             _ => {}
         }
         *self != before
@@ -304,5 +328,19 @@ mod tests {
         assert_eq!(st.screens.len(), 2);
         assert!(st.edges.is_empty());
         assert!(!st.apply(&Control::Ping(1)));
+
+        assert!(st.apply(&Control::PairingEvent(PairingEvent::Started {
+            timeout_s: 30
+        })));
+        assert!(st.pairing_until_ms.is_some_and(|t| t > unix_ms()));
+        st.apply(&Control::PairingEvent(PairingEvent::DeviceFound {
+            name: "K230".into(),
+        }));
+        assert!(st.pairing_until_ms.is_some());
+        st.apply(&Control::PairingEvent(PairingEvent::TimedOut));
+        assert_eq!(st.pairing_until_ms, None);
+        assert_eq!(st.pairing_last, Some(PairingEvent::TimedOut));
+        assert!(st.apply(&Control::ReceiverDevices { devices: vec![] }));
+        assert_eq!(st.paired_devices, Some(vec![]));
     }
 }

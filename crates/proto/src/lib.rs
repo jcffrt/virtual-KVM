@@ -238,9 +238,11 @@ pub struct PairedDevice {
     /// "keyboard", "mouse", "trackball", ... as the receiver reports it.
     pub kind: String,
     pub wireless_pid: u16,
-    /// The device supports the HID++ feature HOSTS_INFO (0x1815).
-    pub hosts_info: bool,
-    /// Keyboard layout profile the hub last set, if any.
+    /// Answered the hub (not off, asleep or out of range) last time.
+    pub online: bool,
+    /// The hub can set its OS layout (HID++ MULTIPLATFORM, 0x4531).
+    pub os_profiles: bool,
+    /// Its current OS layout, when it has one.
     pub os_profile: Option<Os>,
 }
 
@@ -529,7 +531,8 @@ mod tests {
                     name: "MX Keys".into(),
                     kind: "keyboard".into(),
                     wireless_pid: 0x408a,
-                    hosts_info: true,
+                    online: true,
+                    os_profiles: true,
                     os_profile: Some(Os::Windows),
                 }],
             },

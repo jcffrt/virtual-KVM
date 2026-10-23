@@ -1,6 +1,6 @@
 # ADR 0011 — Intercambio opcional de Alt y GUI por agente destino
 
-- Estado: aceptada (2026-10-22), como **parche provisional** hasta la Fase 3 (HID++).
+- Estado: aceptada (2026-10-22), como **parche provisional** hasta la Fase 3 (HID++). **Sustituida en la práctica por ADR 0014** (2026-10-23): queda para teclados sin MULTIPLATFORM.
 
 ## Contexto
 

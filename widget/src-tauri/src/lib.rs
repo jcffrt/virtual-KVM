@@ -403,6 +403,27 @@ fn set_edge_options(
     state.send(layout)
 }
 
+/// How long the receiver accepts a new device (Solaar uses 30 s too).
+const PAIRING_TIMEOUT_S: u8 = 30;
+
+#[tauri::command]
+fn pair_start(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
+    state.send(Control::PairingStart {
+        receiver: String::new(),
+        timeout_s: PAIRING_TIMEOUT_S,
+    })
+}
+
+#[tauri::command]
+fn pair_stop(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
+    state.send(Control::PairingStop)
+}
+
+#[tauri::command]
+fn unpair(state: tauri::State<'_, Arc<AppState>>, slot: u8) -> Result<(), String> {
+    state.send(Control::Unpair { slot })
+}
+
 #[tauri::command]
 fn get_autostart(app: AppHandle) -> Result<bool, String> {
     use tauri_plugin_autostart::ManagerExt;
@@ -577,6 +598,9 @@ pub fn run() {
             forget,
             switch_to,
             release_keys,
+            pair_start,
+            pair_stop,
+            unpair,
             canvas_view,
             canvas_drop,
             canvas_scale,

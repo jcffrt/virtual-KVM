@@ -21,10 +21,12 @@ use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use crate::config::NodeOptions;
+use crate::config::{NodeOptions, OsProfile};
+use crate::hidpp::OsKind;
 use crate::hotkey::Hotkey;
 use crate::layout::{self, LayoutFile, LinkSpec};
 use crate::nodes::NodeStore;
+use crate::receiver_ctl::Cmd;
 
 /// Agents get indices 1..=MAX_AGENTS (the emergency hotkey digits).
 pub const MAX_AGENTS: u8 = 4;
@@ -64,6 +66,8 @@ pub struct Options {
     pub version: String,
     /// Per-agent options by index (`[[node_options]]`).
     pub node_options: Vec<NodeOptions>,
+    /// Set the keyboards' OS layout on every switch (`[hidpp] os_profile`).
+    pub os_profile: bool,
 }
 
 impl Default for Options {
@@ -76,6 +80,7 @@ impl Default for Options {
             edge: EdgeOptions::default(),
             version: String::new(),
             node_options: Vec::new(),
+            os_profile: true,
         }
     }
 }
@@ -238,6 +243,9 @@ struct State {
     /// Screens of each agent (reported by the agent or its edge helper).
     screens: BTreeMap<Uuid, Vec<Screen>>,
     hotkey: Hotkey,
+    /// Devices paired with the receiver, as the receiver thread last
+    /// reported them; sent to widgets.
+    receiver_devices: Option<Vec<proto::PairedDevice>>,
     /// Last output report each agent sent, by device and report ID, to
     /// apply it again when that agent becomes active (the keyboard LEDs
     /// follow the active PC). Kept across reconnections.
@@ -258,6 +266,9 @@ pub struct Router {
     /// HID++ channel to the receiver, while its HID++ interface is open.
     /// Outside `state`: requests block for a reply.
     hidpp: Mutex<Option<Arc<crate::hidpp::Hidpp>>>,
+    /// The receiver thread (`receiver_ctl`), while the HID++ interface is
+    /// open. Locked after `state` when both are needed, never before.
+    ctl: Mutex<Option<std::sync::mpsc::Sender<Cmd>>>,
 }
 
 impl Router {
@@ -278,6 +289,7 @@ impl Router {
                 ..Default::default()
             }),
             hidpp: Mutex::new(None),
+            ctl: Mutex::new(None),
         }
     }
 
@@ -351,6 +363,100 @@ impl Router {
 
     pub fn set_hidpp(&self, h: Option<Arc<crate::hidpp::Hidpp>>) {
         *self.hidpp.lock().unwrap_or_else(|e| e.into_inner()) = h;
+    }
+
+    /// The receiver's HID++ interface is open: start the receiver thread
+    /// (paired devices, keyboard layout, pairing) on it.
+    pub fn attach_receiver(self: &Arc<Self>, h: Arc<crate::hidpp::Hidpp>) {
+        self.set_hidpp(Some(h.clone()));
+        let tx =
+            crate::receiver_ctl::spawn(h, RouterEvents(Arc::downgrade(self)), self.opts.os_profile);
+        self.attach_ctl(tx);
+    }
+
+    /// Use `tx` as the receiver thread (tests use a plain channel).
+    pub fn attach_ctl(&self, tx: std::sync::mpsc::Sender<Cmd>) {
+        let profile = {
+            let st = self.lock();
+            st.active
+                .and_then(|a| st.nodes.get(&a))
+                .map(|n| self.profile_for(n))
+        };
+        if let Some(p) = profile {
+            let _ = tx.send(Cmd::Profile(p));
+        }
+        *self.ctl.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
+    }
+
+    /// The HID++ interface closed (receiver unplugged).
+    pub fn detach_receiver(&self) {
+        self.set_hidpp(None);
+        self.ctl.lock().unwrap_or_else(|e| e.into_inner()).take();
+        self.set_receiver_devices(Vec::new());
+    }
+
+    /// A receiver notification read from the HID++ interface.
+    pub fn receiver_notification(&self, report: &[u8]) {
+        self.send_ctl(Cmd::Notification(report.to_vec()));
+    }
+
+    fn send_ctl(&self, cmd: Cmd) -> bool {
+        match &*self.ctl.lock().unwrap_or_else(|e| e.into_inner()) {
+            Some(tx) => tx.send(cmd).is_ok(),
+            None => false,
+        }
+    }
+
+    /// The keyboard layout for `node`: its `os_profile` option, else its OS.
+    fn profile_for(&self, node: &Node) -> Option<OsKind> {
+        let forced = self
+            .opts
+            .node_options
+            .iter()
+            .find(|o| o.index == node.index && node.is_agent())
+            .and_then(|o| o.os_profile);
+        match forced {
+            Some(OsProfile::Windows) => Some(OsKind::Windows),
+            Some(OsProfile::Macos) => Some(OsKind::MacOs),
+            Some(OsProfile::Linux) => Some(OsKind::Linux),
+            Some(OsProfile::None) => None,
+            None => match node.hello.os {
+                Os::Windows => Some(OsKind::Windows),
+                Os::MacOs => Some(OsKind::MacOs),
+                Os::Linux => Some(OsKind::Linux),
+                Os::Other => None,
+            },
+        }
+    }
+
+    /// The receiver thread's device list; sent to widgets on change.
+    pub fn set_receiver_devices(&self, devices: Vec<proto::PairedDevice>) {
+        let mut st = self.lock();
+        if st.receiver_devices.as_ref() == Some(&devices) {
+            return;
+        }
+        for w in st
+            .nodes
+            .values()
+            .filter(|n| n.hello.kind == NodeKind::Widget)
+        {
+            w.send(Control::ReceiverDevices {
+                devices: devices.clone(),
+            });
+        }
+        st.receiver_devices = Some(devices);
+    }
+
+    /// A pairing event, for every widget.
+    pub fn pairing_event(&self, event: proto::PairingEvent) {
+        let st = self.lock();
+        for w in st
+            .nodes
+            .values()
+            .filter(|n| n.hello.kind == NodeKind::Widget)
+        {
+            w.send(Control::PairingEvent(event.clone()));
+        }
     }
 
     pub fn add_device(&self, dev: HidDevice) {
@@ -443,6 +549,11 @@ impl Router {
         }
         if node.hello.kind == NodeKind::Widget {
             node.send(Control::Settings(st.settings));
+            if let Some(devices) = &st.receiver_devices {
+                node.send(Control::ReceiverDevices {
+                    devices: devices.clone(),
+                });
+            }
             for screens in st.screens.values() {
                 node.send(Control::Screens {
                     screens: screens.clone(),
@@ -643,12 +754,27 @@ impl Router {
                     w.send(Control::Settings(new));
                 }
             }
-            Control::PairingStart { .. } | Control::PairingStop => {
-                sender.send(Control::PairingEvent(proto::PairingEvent::Failed {
-                    reason: "pairing is not implemented yet".into(),
-                }));
+            Control::PairingStart { timeout_s, .. } if kind == NodeKind::Widget => {
+                info!(node = %from, timeout_s, "pairing requested by a widget");
+                self.receiver_cmd(sender, Cmd::PairingStart { timeout_s });
+            }
+            Control::PairingStop if kind == NodeKind::Widget => {
+                self.receiver_cmd(sender, Cmd::PairingStop);
+            }
+            Control::Unpair { slot } if kind == NodeKind::Widget => {
+                info!(node = %from, slot, "unpair requested by a widget");
+                self.receiver_cmd(sender, Cmd::Unpair { slot });
             }
             other => warn!(node = %from, msg = other.name(), "unexpected message"),
+        }
+    }
+
+    /// Hand `cmd` to the receiver thread, or tell `sender` why not.
+    fn receiver_cmd(&self, sender: &Node, cmd: Cmd) {
+        if !self.send_ctl(cmd) {
+            sender.send(Control::PairingEvent(proto::PairingEvent::Failed {
+                reason: "the receiver's HID++ interface is not open".into(),
+            }));
         }
     }
 
@@ -837,6 +963,7 @@ impl Router {
         st.last_switch = Some(now);
         let n = &st.nodes[&target];
         info!(node = %target, name = %n.hello.node_name, index = n.index, ?entry, "switched");
+        self.send_ctl(Cmd::Profile(self.profile_for(n)));
         let activate = Control::Activate { entry };
         for n in st
             .nodes
@@ -1030,6 +1157,22 @@ impl Router {
         let status = self.build_status(st);
         for n in st.nodes.values() {
             n.send(Control::Status(status.clone()));
+        }
+    }
+}
+
+/// [`crate::receiver_ctl::Events`] for the router.
+struct RouterEvents(std::sync::Weak<Router>);
+
+impl crate::receiver_ctl::Events for RouterEvents {
+    fn devices(&self, devices: Vec<proto::PairedDevice>) {
+        if let Some(r) = self.0.upgrade() {
+            r.set_receiver_devices(devices);
+        }
+    }
+    fn pairing(&self, event: proto::PairingEvent) {
+        if let Some(r) = self.0.upgrade() {
+            r.pairing_event(event);
         }
     }
 }
@@ -1798,6 +1941,7 @@ mod tests {
                 node_options: vec![NodeOptions {
                     index: 1,
                     swap_alt_gui: true,
+                    os_profile: None,
                 }],
                 ..Default::default()
             },
@@ -2037,6 +2181,156 @@ mod tests {
         assert_eq!(outs(&i0), vec![(None, 1)]);
         assert!(outs(&i1).is_empty());
         assert!(outs(&i2).is_empty());
+    }
+
+    fn join_os(r: &Router, os: Os) -> TestNode {
+        let id = Uuid::new_v4();
+        let link = Arc::new(FakeLink::default());
+        let (tx, rx) = unbounded_channel();
+        let reg = r
+            .register(
+                Hello {
+                    node_id: id,
+                    node_name: format!("{os:?}"),
+                    os,
+                    kind: NodeKind::Agent,
+                },
+                link.clone(),
+                tx,
+            )
+            .unwrap();
+        TestNode { id, link, rx, reg }
+    }
+
+    fn profiles(rx: &std::sync::mpsc::Receiver<Cmd>) -> Vec<Option<OsKind>> {
+        rx.try_iter()
+            .filter_map(|c| match c {
+                Cmd::Profile(p) => Some(p),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn switching_asks_for_the_keyboard_layout_of_the_agent() {
+        let r = Router::new(
+            Uuid::new_v4(),
+            "hub".into(),
+            Options {
+                node_options: vec![NodeOptions {
+                    index: 3,
+                    swap_alt_gui: false,
+                    os_profile: Some(OsProfile::Windows),
+                }],
+                ..Default::default()
+            },
+        );
+        let mac = join_os(&r, Os::MacOs);
+        let (tx, rx) = std::sync::mpsc::channel();
+        // Attaching tells the thread the active agent's layout at once.
+        r.attach_ctl(tx);
+        assert_eq!(profiles(&rx), [Some(OsKind::MacOs)]);
+        let win = join_os(&r, Os::Windows);
+        let linux = join_os(&r, Os::Linux); // index 3: forced to Windows
+        let other = join_os(&r, Os::Other);
+        force_switch(&r, win.id);
+        force_switch(&r, linux.id);
+        force_switch(&r, other.id);
+        force_switch(&r, mac.id);
+        assert_eq!(
+            profiles(&rx),
+            [
+                Some(OsKind::Windows),
+                Some(OsKind::Windows),
+                None,
+                Some(OsKind::MacOs)
+            ]
+        );
+    }
+
+    #[test]
+    fn pairing_is_for_widgets_and_devices_reach_widgets_only() {
+        let r = router();
+        r.add_device(device(0, BOOT_KEYBOARD));
+        let mut a = join(&r, NodeKind::Agent).unwrap();
+        let mut w = join(&r, NodeKind::Widget).unwrap();
+        // No receiver thread yet: the widget is told why.
+        r.on_control(
+            w.id,
+            Control::PairingStart {
+                receiver: String::new(),
+                timeout_s: 30,
+            },
+        );
+        assert!(w.msgs().iter().any(|m| matches!(
+            m,
+            Control::PairingEvent(proto::PairingEvent::Failed { reason }) if reason.contains("not open")
+        )));
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        r.attach_ctl(tx);
+        let _ = rx.try_iter().count();
+        // An agent cannot pair or unpair.
+        r.on_control(
+            a.id,
+            Control::PairingStart {
+                receiver: String::new(),
+                timeout_s: 30,
+            },
+        );
+        r.on_control(a.id, Control::Unpair { slot: 3 });
+        assert!(rx.try_iter().next().is_none());
+        r.on_control(
+            w.id,
+            Control::PairingStart {
+                receiver: String::new(),
+                timeout_s: 30,
+            },
+        );
+        r.on_control(w.id, Control::PairingStop);
+        r.on_control(w.id, Control::Unpair { slot: 3 });
+        assert_eq!(
+            rx.try_iter().collect::<Vec<_>>(),
+            [
+                Cmd::PairingStart { timeout_s: 30 },
+                Cmd::PairingStop,
+                Cmd::Unpair { slot: 3 }
+            ]
+        );
+
+        // Results go to widgets; the agents' device list does not change
+        // (mode A: a new keyboard types through the same interfaces).
+        let _ = a.msgs();
+        let _ = w.msgs();
+        let kb = proto::PairedDevice {
+            slot: 3,
+            name: "MX Keys".into(),
+            kind: "keyboard".into(),
+            wireless_pid: 0x408a,
+            online: true,
+            os_profiles: true,
+            os_profile: Some(Os::Windows),
+        };
+        r.pairing_event(proto::PairingEvent::Paired {
+            name: "MX Keys".into(),
+            kind: "keyboard".into(),
+        });
+        r.set_receiver_devices(vec![kb.clone()]);
+        r.set_receiver_devices(vec![kb.clone()]); // unchanged: not sent again
+        assert_eq!(a.events(), Vec::<&str>::new());
+        assert_eq!(w.events(), ["PairingEvent", "ReceiverDevices"]);
+        // A widget that connects later gets the list.
+        let mut w2 = join(&r, NodeKind::Widget).unwrap();
+        assert!(w2
+            .msgs()
+            .contains(&Control::ReceiverDevices { devices: vec![kb] }));
+
+        // The receiver goes away: an empty list.
+        r.detach_receiver();
+        assert!(w
+            .msgs()
+            .contains(&Control::ReceiverDevices { devices: vec![] }));
+        assert!(r.hidpp().is_none());
     }
 
     #[derive(Default)]

@@ -412,6 +412,14 @@ Decisiones del usuario/orquestador sobre `docs/widget-plan.md`: (1) protocolo v3
 - Estado dejado: `hub.toml` con `swap_alt_gui = true` restaurado y el hub v3 en marcha (7 nodos). **Vía libre al bloque C** (perfil al conmutar por MULTIPLATFORM, con 0x1815 como alternativa) y al D. Al entregar C, redespliegue conjunto v4 (hub, gadget, agentes, widget) y retirada de `swap_alt_gui` del `hub.toml` de la Pi.
 - Fase 3 A (LED) sigue sin probar en hardware: se probará con el redespliegue v4.
 
+## Fase 3 C y D: disposición del teclado al conmutar y emparejamiento desde el widget (2026-10-23, VS Code)
+
+- C (ADR 0014): hilo `receiver_ctl`, dueño del canal HID++. Lee las ranuras al abrir la interfaz y activa las notificaciones del receptor (`0x00` = `00 09 00`). En cada conmutación pone `MULTIPLATFORM` en la plataforma del SO del agente activo: Linux → Windows en el MX Keys, que no tiene plataforma Linux; `Other` → no tocar. No escribe si ya está; un dispositivo dormido la recibe al conectarse; los fallos se avisan una vez. `[hidpp] os_profile` (por defecto `true`) y `[[node_options]] os_profile = "windows"|"macos"|"linux"|"none"`. El hub avisa si `swap_alt_gui` sigue activo.
+- D (ADR 0015): `ReceiverDevices` a widgets (ranura, nombre, tipo, PID, conectado, si admite disposición, disposición actual). `PairingStart`/`PairingStop`/`Unpair` solo de widgets: registro `0xB2` y notificaciones `0x41`/`0x4A`/`0x40`, con eventos `Started`, `DeviceFound`, `Paired`, `Failed` y `TimedOut`. `DeviceList` no cambia al emparejar (test).
+- Widget: la pestaña Dispositivos lista los emparejados, con Olvidar (doble clic), Emparejar (30 s, cuenta atrás) y disposición actual. `proto::PairedDevice`: `hosts_info` pasa a `os_profiles` y se añade `online` (v4 aún sin desplegar).
+- Tests: `receiver_ctl` reproduce las **trazas reales** de `fixtures/hidpp/` (lista de ranuras, Linux → Windows, escritura única, vuelta a macOS). Además: sesión de emparejamiento completa con cancelación, errores y silencio del receptor; teclado dormido que despierta; router (disposición por SO y por opción, órdenes solo de widgets, listas solo a widgets).
+- Verificado: fmt, clippy `-D warnings` (macOS, Linux con zig, Windows gnu), tests del workspace y del widget, build del frontend sin avisos. **Sin probar en hardware**: el cambio al conmutar con el hub en servicio, el emparejamiento real y la pestaña Dispositivos. Al desplegar v4, quitar `swap_alt_gui` de `hub.toml`.
+
 ## Convenciones
 
 Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario en castellano, `cargo fmt` y `cargo clippy -D warnings` limpios, un ADR por decisión nueva.

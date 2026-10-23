@@ -173,6 +173,13 @@ async fn serve(args: Args) -> Result<()> {
             index = o.index,
             "Alt and GUI are swapped in the keyboard reports sent to this agent (ADR 0011)"
         );
+        if cfg.hidpp.os_profile {
+            warn!(
+                index = o.index,
+                "swap_alt_gui and [hidpp] os_profile are both on: the keyboard layout already \
+                 follows the agent (ADR 0014), so Alt and GUI end up crossed; remove swap_alt_gui"
+            );
+        }
     }
     let router = Arc::new(
         Router::new(
@@ -187,6 +194,7 @@ async fn serve(args: Args) -> Result<()> {
                 edge: cfg.edge,
                 version: VERSION.to_string(),
                 node_options: cfg.node_options.clone(),
+                os_profile: cfg.hidpp.os_profile,
             },
         )
         .with_store(store, RESTORE_GRACE)

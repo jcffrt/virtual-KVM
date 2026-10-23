@@ -41,6 +41,35 @@ pub struct HubConfig {
     /// Per-agent options, by agent index (`[[node_options]]`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub node_options: Vec<NodeOptions>,
+    /// HID++ with the receiver's devices (`[hidpp]`).
+    pub hidpp: HidppConfig,
+}
+
+/// `[hidpp]`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct HidppConfig {
+    /// Set the keyboards' OS layout (MULTIPLATFORM) to the OS of the agent
+    /// that becomes active (ADR 0014).
+    pub os_profile: bool,
+}
+
+impl Default for HidppConfig {
+    fn default() -> Self {
+        Self { os_profile: true }
+    }
+}
+
+/// Keyboard layout profile forced for one agent (`os_profile` in
+/// `[[node_options]]`).
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum OsProfile {
+    Windows,
+    Macos,
+    Linux,
+    /// Leave the keyboards as they are when this agent becomes active.
+    None,
 }
 
 /// Options for one agent, by its index (stable, see `nodes.toml`).
@@ -52,6 +81,9 @@ pub struct NodeOptions {
     /// (ADR 0011). A deviation from raw forwarding, off by default.
     #[serde(default)]
     pub swap_alt_gui: bool,
+    /// Keyboard profile for this agent instead of the one of its OS.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub os_profile: Option<OsProfile>,
 }
 
 /// Which hidraw nodes are forwarded. See ADR 0003.
@@ -114,6 +146,7 @@ impl Default for HubConfig {
             edge: proto::EdgeOptions::default(),
             layout: Vec::new(),
             node_options: Vec::new(),
+            hidpp: HidppConfig::default(),
         }
     }
 }
@@ -283,9 +316,18 @@ mod tests {
             c.node_options,
             [NodeOptions {
                 index: 1,
-                swap_alt_gui: true
+                swap_alt_gui: true,
+                os_profile: None,
             }]
         );
+        let c = HubConfig::parse(
+            "[hidpp]\nos_profile = false\n[[node_options]]\nindex = 3\nos_profile = \"windows\"\n",
+        )
+        .unwrap();
+        assert!(!c.hidpp.os_profile);
+        assert_eq!(c.node_options[0].os_profile, Some(OsProfile::Windows));
+        assert!(HubConfig::default().hidpp.os_profile);
+        assert!(HubConfig::parse("[[node_options]]\nindex = 1\nos_profile = \"dos\"\n").is_err());
         assert!(HubConfig::parse("[[node_options]]\nindex = 1\nswap = true\n").is_err());
         assert!(HubConfig::default().node_options.is_empty());
     }
