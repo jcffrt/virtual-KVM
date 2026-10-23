@@ -2,11 +2,15 @@
 //! touches the protocol lives in `agent-core` (`widget`, `canvas`) and here;
 //! the Svelte front end only renders [`view::View`] and calls commands.
 //!
-//! Local config: `~/Library/Application Support/rawkvm/widget.toml` (hub,
-//! token, pinned certificate only; the layout lives in the hub). Log:
-//! `~/Library/Logs/rawkvm-widget.log`.
+//! Local config (hub, token, pinned certificate only; the layout lives in
+//! the hub) and log:
+//! - macOS: `~/Library/Application Support/rawkvm/widget.toml`,
+//!   `~/Library/Logs/rawkvm-widget.log`;
+//! - Windows: `%LOCALAPPDATA%\rawkvm\widget.toml`,
+//!   `%LOCALAPPDATA%\rawkvm\rawkvm-widget.log`.
 
 mod canvas_view;
+mod tray_icon;
 mod view;
 
 use std::path::PathBuf;
@@ -18,7 +22,7 @@ use agent_core::{AgentConfig, AgentOptions};
 use proto::Control;
 use serde::Serialize;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
-use tauri::tray::TrayIconBuilder;
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, Runtime, WindowEvent};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use tracing::{error, info, warn};
@@ -210,18 +214,34 @@ fn refresh(app: &AppHandle) {
             }
             Err(e) => warn!("tray menu: {e}"),
         }
-        let title = v
-            .nodes
-            .iter()
-            .find(|n| n.active)
-            .map(|n| n.index.to_string());
-        let _ = tray.set_title(title);
+        let active = v.nodes.iter().find(|n| n.active).map(|n| n.index);
+        if cfg!(windows) {
+            let _ = tray.set_icon(Some(windows_tray_icon(active)));
+        } else {
+            let _ = tray.set_title(active.map(|i| i.to_string()));
+        }
         let tip = match &v.hub_name {
             Some(h) if v.connected => format!("RawKVM: {h}"),
             _ => "RawKVM: sin conexión".into(),
         };
         let _ = tray.set_tooltip(Some(tip));
     });
+}
+
+const TRAY_PNG: &[u8] = include_bytes!("../icons/tray.png");
+
+/// The Windows tray icon: the menu bar glyph, or the active agent's number.
+fn windows_tray_icon(active: Option<u8>) -> tauri::image::Image<'static> {
+    let (glyph, w, h) = match tauri::image::Image::from_bytes(TRAY_PNG) {
+        Ok(img) => (
+            img.rgba().to_vec(),
+            img.width() as usize,
+            img.height() as usize,
+        ),
+        Err(_) => (Vec::new(), 0, 0),
+    };
+    let size = tray_icon::SIZE as u32;
+    tauri::image::Image::new_owned(tray_icon::render(&glyph, w, h, active), size, size)
 }
 
 fn show_settings(app: &AppHandle) {
@@ -540,7 +560,11 @@ fn canvas_reset(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
 fn init_logging() {
     let filter =
         tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
-    let path = dirs::home_dir().map(|h| h.join("Library/Logs/rawkvm-widget.log"));
+    let path = if cfg!(target_os = "macos") {
+        dirs::home_dir().map(|h| h.join("Library/Logs/rawkvm-widget.log"))
+    } else {
+        dirs::data_local_dir().map(|d| d.join("rawkvm").join("rawkvm-widget.log"))
+    };
     let file = path.as_ref().and_then(|p| {
         if let Some(d) = p.parent() {
             let _ = std::fs::create_dir_all(d);
@@ -561,9 +585,18 @@ fn init_logging() {
 }
 
 fn config_path() -> PathBuf {
-    AgentConfig::default_path()
-        .map(|p| p.with_file_name("widget.toml"))
-        .unwrap_or_else(|_| PathBuf::from("widget.toml"))
+    // Next to the agent's config on macOS (Application Support); on
+    // Windows under %LOCALAPPDATA%, not the roaming %APPDATA%: the pinned
+    // hub certificate belongs to this PC.
+    let dir = if cfg!(windows) {
+        dirs::data_local_dir().map(|d| d.join("rawkvm"))
+    } else {
+        AgentConfig::default_path()
+            .ok()
+            .and_then(|p| p.parent().map(PathBuf::from))
+    };
+    dir.map(|d| d.join("widget.toml"))
+        .unwrap_or_else(|| PathBuf::from("widget.toml"))
 }
 
 pub fn run() {
@@ -573,6 +606,11 @@ pub fn run() {
         "rawkvm-widget starting"
     );
     tauri::Builder::default()
+        // First plugin: a second launch (autostart plus a manual one) only
+        // shows the running instance's window.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_settings(app)
+        }))
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
@@ -594,15 +632,30 @@ pub fn run() {
 
             let v = state.view();
             let menu = build_menu(app.handle(), &v)?;
-            TrayIconBuilder::with_id(TRAY)
-                .icon(tauri::image::Image::from_bytes(include_bytes!(
-                    "../icons/tray.png"
-                ))?)
-                .icon_as_template(true)
+            let tray = TrayIconBuilder::with_id(TRAY)
                 .tooltip("RawKVM")
                 .menu(&menu)
-                .on_menu_event(|app, event| on_menu(app, event.id().as_ref()))
-                .build(app)?;
+                .on_menu_event(|app, event| on_menu(app, event.id().as_ref()));
+            let tray = if cfg!(windows) {
+                // Windows convention: left click opens the window, right
+                // click the menu.
+                tray.icon(windows_tray_icon(None))
+                    .show_menu_on_left_click(false)
+                    .on_tray_icon_event(|tray, event| {
+                        if let TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        } = event
+                        {
+                            show_settings(tray.app_handle());
+                        }
+                    })
+            } else {
+                tray.icon(tauri::image::Image::from_bytes(TRAY_PNG)?)
+                    .icon_as_template(true)
+            };
+            tray.build(app)?;
 
             state.restart();
             if !v.paired {

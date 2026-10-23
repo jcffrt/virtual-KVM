@@ -497,3 +497,14 @@ Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario e
   - Tests nuevos: `previous_and_release_keys`, `other_modifiers` y `hotkey_previous_and_release_keys` (router, con informes boot), y la lectura del `settings.toml` de v5.
 - **Sin verificar en hardware**: el atajo con cada modificador en los tres PCs, y que el menú de la barra y la columna se actualicen al cambiarlo.
 - Extensión de GNOME v2: `session-modes` con `unlock-dialog`, para que el helper de borde de Linux siga activo con la pantalla bloqueada (antes gnome-shell la dejaba INACTIVE). Hay que reinstalarla y cerrar sesión una vez. Sin verificar en el Ubuntu.
+
+## Fase 4.3: widget para Windows (2026-10-23)
+
+- El mismo `widget/` compila para Windows (ADR 0020). Sin cambio de protocolo.
+- **Bandeja**: cuadro azul con el número activo, dibujado en tiempo de ejecución (`tray_icon.rs`). Clic izquierdo abre la ventana, clic derecho el menú.
+- **Ficheros**: config y log en `%LOCALAPPDATA%\rawkvm\`. Inicio automático con la clave `Run` de HKCU.
+- **Una sola instancia**, en los dos sistemas.
+- **Textos**: «Este PC» en Windows.
+- **CI**: job `windows` en `widget.yml`, artefacto `RawKVM-windows` (`RawKVM.exe`, LEEME y COMMIT).
+- **Verificado en el Mac**: clippy `-D warnings` del widget para macOS y para `x86_64-pc-windows-gnu` (solo comprobación, sin enlazar), tests (incluido `tray_icon`) y `npm run build`. El enlazado y el exe los hace el job de CI.
+- **Sin verificar en el GAMER**: bandeja y número, clics, cambio rápido, pestaña Monitores con las 4 pantallas y Aplicar, inicio automático, aviso del cortafuegos.

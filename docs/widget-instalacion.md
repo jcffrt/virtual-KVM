@@ -1,4 +1,4 @@
-# Widget de RawKVM (Mac)
+# Widget de RawKVM (Mac y Windows)
 
 App de la barra de menús:
 - muestra el hub y los equipos;
@@ -34,6 +34,34 @@ npm ci
 npx tauri build --bundles app      # src-tauri/target/release/bundle/macos/RawKVM.app
 cd .. && deploy/macos/install-widget.sh
 ```
+
+## Instalar en Windows
+
+Del artefacto de CI **RawKVM-windows** (workflow `widget`, job `windows`): `RawKVM.exe`, este `LEEME.md` y `COMMIT.txt`. Desde el Mac:
+
+```sh
+gh run download -R jcffrt/virtual-KVM $(gh run list -R jcffrt/virtual-KVM -w widget -b main -s success -L 1 --json databaseId -q '.[0].databaseId') -n RawKVM-windows -D RawKVM-windows
+```
+
+1. Copiar `RawKVM.exe` a una carpeta fija, por ejemplo `%LOCALAPPDATA%\Programs\RawKVM\`. El inicio automático apunta a esa ruta: si se mueve el exe, desactivar y volver a activar «Abrir RawKVM al iniciar sesión».
+2. Abrirlo con doble clic. No está firmado, así que **SmartScreen** avisa la primera vez: **Más información → Ejecutar de todas formas**.
+3. La primera vez que busca el hub, el **Firewall de Windows** puede preguntar si permite a RawKVM comunicarse en redes privadas: **Permitir** (mDNS y la conexión al hub). Si se cancela, «Buscar hubs» no encuentra nada, pero escribir la IP del hub funciona.
+4. Necesita **WebView2**, que ya viene con Windows 10 (actualizado) y 11.
+5. No pide permisos de administrador ni instala drivers. El helper de borde de Windows (`rawkvm-edge`, [windows-borde.md](windows-borde.md)) sigue siendo otro programa: el widget no mueve el puntero.
+
+Compilar en Windows (Node 22 y Rust con MSVC):
+
+```powershell
+cd widget
+npm ci
+npx tauri build --no-bundle      # src-tauri\target\release\rawkvm-widget.exe
+```
+
+Diferencias con el Mac:
+- **Bandeja** (área de notificación, junto al reloj): el icono es un cuadro azul con el número del equipo activo (en el Mac, el número va al lado del icono en la barra de menús). Sin equipo activo muestra los dos monitores. Puede quedar en el menú desplegable **^** de la bandeja: arrastrarlo a la barra para tenerlo siempre a la vista.
+- **Clic izquierdo** en el icono abre la ventana; el **clic derecho** abre el menú (equipos, «Liberar teclas», «Ajustes…», «Salir»).
+- **Opciones → Este PC**: «Abrir RawKVM al iniciar sesión» usa la clave `Run` del usuario (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`).
+- Abrir el exe otra vez con RawKVM ya en marcha solo muestra su ventana (no arranca un segundo icono). Lo mismo en el Mac.
 
 ## Usar
 
@@ -77,8 +105,8 @@ cd .. && deploy/macos/install-widget.sh
 
 ## Ficheros
 
-- `~/Library/Application Support/rawkvm/widget.toml`: hub, token y certificado fijado. Nunca guarda el layout: lo guarda el hub.
-- `~/Library/Logs/rawkvm-widget.log`: log.
+- Mac: `~/Library/Application Support/rawkvm/widget.toml` (hub, token y certificado fijado; el layout nunca, lo guarda el hub) y `~/Library/Logs/rawkvm-widget.log` (log).
+- Windows: `%LOCALAPPDATA%\rawkvm\widget.toml` y `%LOCALAPPDATA%\rawkvm\rawkvm-widget.log`. Los guarda en el perfil local, no en el móvil (`%APPDATA%`): el certificado fijado es de este PC.
 
 ## Problemas
 

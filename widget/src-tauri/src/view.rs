@@ -29,6 +29,8 @@ pub struct View {
     pub pairing: PairingView,
     /// Hysteresis and hotkey as the hub applies them (None until it says).
     pub settings: Option<HubSettings>,
+    /// "macos" or "windows": wording in the front end ("Este Mac").
+    pub platform: &'static str,
     /// "Ctrl, Ctrl" (the hotkey's double tap) while the hotkey is on; the
     /// agent's index follows it.
     pub hotkey: Option<String>,
@@ -296,6 +298,7 @@ pub fn view(st: &WidgetState, cfg: &AgentConfig) -> View {
         receiver_devices: paired(st),
         pairing: pairing(st),
         settings: st.settings,
+        platform: if cfg!(windows) { "windows" } else { "macos" },
         hotkey: st.settings.and_then(|s| hotkey_prefix(&s.hotkey)),
         options: st.options,
         custom_layout: !st.canvas.is_empty(),

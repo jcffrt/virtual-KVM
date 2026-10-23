@@ -136,7 +136,7 @@
   </div>
 
   <div class="card">
-    <h3>Este Mac</h3>
+    <h3>{view.platform === 'windows' ? 'Este PC' : 'Este Mac'}</h3>
     <label>
       <input type="checkbox" bind:checked={autostart} onchange={saveAutostart} />
       Abrir RawKVM al iniciar sesión
