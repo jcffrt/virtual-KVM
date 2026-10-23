@@ -444,6 +444,12 @@ Decisiones del usuario/orquestador sobre `docs/widget-plan.md`: (1) protocolo v3
 - Comprobado antes: con el Ubuntu bloqueado la extensión v1 quedaba INACTIVE (`LockedHint=yes`); motivo del cambio a v2.
 - Pendiente de validar: F4.2 (modificadores, 0 = anterior, Esc = liberar; columna Atajo y bandeja), extensión v2 con pantalla bloqueada (tras re-login), F4.3 en el GAMER, y que los permisos del Mac sobrevivan a la actualización v6.
 
+## v6 desplegado en todo; R1 confirmado; widget de Windows instalado (2026-10-23 17:05)
+
+- Mac v6: agente, helper y widget firmados con "RawKVM Local". **El widget conectó al instante tras la actualización sin volver a conceder Red local: R1 cumple su objetivo.** Monitorización de entrada del agente sigue "not permitted"; sin saber aún si se perdió con la firma o nunca se volvió a dar tras v5.
+- Windows: helper v6 y widget (d67c7c5, F4.3) instalados por el usuario; el hub registra "GAMER" como Widget. Sin rechazos de protocolo en el hub.
+- Pendiente de probar por el usuario: F4.2 (modificador, 0 = anterior, Esc = liberar, columna Atajo, bandeja), widget de Windows (bandeja con número, clics, cambio rápido, Monitores con 4 pantallas, Aplicar, autostart), extensión GNOME v2 (re-login y bloqueo), LED del Mac tras volver a dar el permiso.
+
 ## Convenciones
 
 Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario en castellano, `cargo fmt` y `cargo clippy -D warnings` limpios, un ADR por decisión nueva.
