@@ -454,6 +454,10 @@ Decisiones del usuario/orquestador sobre `docs/widget-plan.md`: (1) protocolo v3
 
 - Widget: el texto de la columna Batería se construye en `view.rs` (`BatteryView.text`, con test). Si el dispositivo da nivel 0 (desconocido, lo hace mientras carga) muestra solo "cargando", sin "?" ni porcentaje. Antes salía "?, cargando". Sin cambio de protocolo ni del hub: solo hay que reinstalar el widget. Sin probar en hardware.
 
+## R1: Monitorización de entrada tras pasar a «RawKVM Local» (2026-10-23)
+
+- Hallazgo del orquestador en el Mac: tras pasar el agente de ad hoc a «RawKVM Local», TCC conserva el requisito viejo y Monitorización de entrada queda denegada con el interruptor encendido; al ser un daemon, no hay diálogo. Solución única: `sudo tccutil reset ListenEvent`, volver a arrastrar el binario y `launchctl kickstart -k`. Documentado en `macos-instalacion.md` y ADR 0016. `install.sh` avisa de esos pasos cuando el binario anterior estaba firmado ad hoc y el nuevo no (`signed_adhoc` en `signing.sh`). Solo comprobado con `sh -n` y `signed_adhoc` sobre binarios locales; sin ejecutar `install.sh` con sudo. Pendiente: que el LED vuelva a funcionar tras el reset.
+
 ## Convenciones
 
 Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario en castellano, `cargo fmt` y `cargo clippy -D warnings` limpios, un ADR por decisión nueva.

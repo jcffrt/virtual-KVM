@@ -32,7 +32,10 @@ Si se copia la carpeta a otro sitio, copiar `deploy/macos` **entera**: el instal
 **Firma estable** ([ADR 0016](adr/0016-firma-local-estable.md)). macOS liga los permisos (Monitorización de entrada del agente, Red local del widget) a la firma del programa. Con firma ad hoc cada versión es "otro programa" y los permisos dejan de valer al actualizar. `make-signing-identity.sh` crea en tu llavero de inicio de sesión un certificado autofirmado **RawKVM Local**, y `install.sh`, `install-edge.sh` e `install-widget.sh` firman con él si lo tienes (si no, ad hoc y lo avisan). Así los permisos se dan una vez y sobreviven a las versiones siguientes.
 
 - La primera firma, macOS pregunta si `codesign` puede usar la clave «RawKVM Local»: **Permitir siempre**.
-- Al pasar de firma ad hoc a «RawKVM Local» hay que dar los permisos **una última vez** (quitar la entrada vieja con **−** y añadir la nueva).
+- Al pasar de firma ad hoc a «RawKVM Local» hay que dar los permisos **una última vez**. Red local del widget se renueva sola con aceptar el diálogo. **Monitorización de entrada del agente no**: macOS guarda en la entrada el requisito de la firma ad hoc y, como el agente es un daemon, no vuelve a preguntar. Queda denegado aunque el interruptor esté encendido y aunque se vuelva a arrastrar el binario (en el log de `tccd`: `Failed to match existing code requirement for subject /usr/local/bin/rawkvm-agent and service kTCCServiceListenEvent`). Una sola vez, `install.sh` lo avisa:
+  1. `sudo tccutil reset ListenEvent`. Borra la Monitorización de entrada de **todas** las apps; habrá que volver a darla a las otras que la usen.
+  2. Arrastrar de nuevo `/usr/local/bin/rawkvm-agent` a la lista y encender su interruptor.
+  3. `sudo launchctl kickstart -k system/cc.olitec.rawkvm.agent`.
 - Comprobar: `codesign -dr - /usr/local/bin/rawkvm-agent` debe mostrar `certificate leaf = H"…"`; con firma ad hoc muestra `cdhash`.
 - Los artefactos de CI siguen firmados ad hoc; la firma estable se pone al instalar en el Mac.
 
@@ -67,7 +70,7 @@ Para el teclado y el ratón no hacen falta permisos de Monitorización de entrad
 1. Abrir la carpeta en el Finder con `open /usr/local/bin` y **arrastrar** `rawkvm-agent` a la lista de Ajustes del Sistema → Privacidad y seguridad → Monitorización de entrada, y activar su interruptor. (El botón **+** no deja entrar en `/usr/local/bin` desde su diálogo; ⌘⇧G y pegar la ruta funciona a veces.)
 2. `sudo launchctl kickstart -k system/cc.olitec.rawkvm.agent` para que lo vuelva a intentar ya (si no, lo reintenta cada 5 s).
 
-En el log debe aparecer `watching the keyboard LEDs of the Karabiner virtual keyboard`. Sin el permiso sale `keyboard LEDs not watched: not permitted` y todo lo demás funciona igual. Limitaciones: el estado se conoce desde el **primer cambio** después de abrir el teclado virtual (hasta entonces el hub deja el LED apagado al cambiar al Mac), y Karabiner solo devuelve Bloq Num y Bloq Mayús. Con firma ad hoc el permiso hay que darlo de nuevo tras cada reinstalación (quitar la entrada vieja y añadir la nueva); con «RawKVM Local» (paso 2) se conserva.
+En el log debe aparecer `watching the keyboard LEDs of the Karabiner virtual keyboard`. Sin el permiso sale `keyboard LEDs not watched: not permitted` y todo lo demás funciona igual. Limitaciones: el estado se conoce desde el **primer cambio** después de abrir el teclado virtual (hasta entonces el hub deja el LED apagado al cambiar al Mac), y Karabiner solo devuelve Bloq Num y Bloq Mayús. Con firma ad hoc el permiso hay que darlo de nuevo tras cada reinstalación (quitar la entrada vieja y añadir la nueva); con «RawKVM Local» (paso 2) se conserva. El paso de ad hoc a «RawKVM Local» necesita reiniciar el permiso una vez (ver «Firma estable», arriba).
 
 ## 4. Diagnóstico sin Karabiner
 

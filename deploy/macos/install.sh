@@ -24,6 +24,8 @@ done
 # Binary, signed with "RawKVM Local" if the user has it (keeps the Input
 # Monitoring grant across versions), ad hoc otherwise.
 install -d -m 0755 /usr/local/bin
+was_adhoc=no
+signed_adhoc /usr/local/bin/rawkvm-agent && was_adhoc=yes
 install_signed "$bin" /usr/local/bin/rawkvm-agent "$agent_label"
 
 # System config: reuse the invoking user's pairing if there is one.
@@ -55,6 +57,19 @@ fi
 reload "$agent_label" "$here/$agent_label.plist"
 
 echo "installed; log: tail -f /var/log/rawkvm-agent.log"
+
+# Ad hoc -> "RawKVM Local": TCC keeps the old code requirement for the
+# Input Monitoring entry and never asks a daemon again, so the grant stays
+# denied with the switch on (ADR 0016). One-time manual reset.
+if [ "$was_adhoc" = yes ] && ! signed_adhoc /usr/local/bin/rawkvm-agent; then
+    cat >&2 <<'MSG'
+note: the agent was signed ad hoc before; its Input Monitoring grant (Caps Lock LED)
+      no longer matches and macOS will not ask again. Once:
+        sudo tccutil reset ListenEvent   (clears Input Monitoring for every app)
+        drag /usr/local/bin/rawkvm-agent into Input Monitoring again, switch on
+        sudo launchctl kickstart -k system/cc.olitec.rawkvm.agent
+MSG
+fi
 
 # Flush to disk now: boards fed from a PC lose power abruptly, and the SD
 # card may otherwise keep these writes in its cache for minutes.

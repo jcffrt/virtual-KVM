@@ -44,6 +44,11 @@ sign() {
     fi
 }
 
+# signed_adhoc PATH: true if PATH exists and carries an ad hoc signature.
+signed_adhoc() {
+    [ -e "$1" ] && codesign -dv "$1" 2>&1 | grep -q '^Signature=adhoc'
+}
+
 # install_signed SRC DEST IDENTIFIER: copy SRC to a temporary file owned by
 # the signing user, sign it there and install it as DEST (root:wheel 0755).
 install_signed() {

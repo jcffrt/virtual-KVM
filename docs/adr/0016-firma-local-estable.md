@@ -23,6 +23,7 @@ Un Developer ID de Apple resolvería esto y la cuarentena, pero cuesta una cuent
 ## Consecuencias
 
 - Los permisos se dan una vez por Mac y sobreviven a las actualizaciones. Al pasar de ad hoc a «RawKVM Local» hay que darlos una última vez.
+- Ese último paso no es igual para los dos permisos (comprobado en el Mac del usuario con v6). Red local del widget se renovó con una sola concesión. Monitorización de entrada del agente quedó denegada con el interruptor encendido, incluso volviendo a arrastrar el binario. `tccd` registra `Failed to match existing code requirement for subject /usr/local/bin/rawkvm-agent and service kTCCServiceListenEvent`: la entrada conserva el csreq de la firma ad hoc y a un daemon no se le muestra el diálogo de reautorización. Solución, una vez: `sudo tccutil reset ListenEvent` (afecta a todas las apps), volver a arrastrar el binario y `launchctl kickstart -k`. `install.sh` lo avisa cuando el agente instalado antes estaba firmado ad hoc y el nuevo no.
 - Si se borra el certificado y se crea otro, el requisito cambia y hay que volver a dar los permisos.
 - La cuarentena sigue: los artefactos descargados se abren con `xattr -dr com.apple.quarantine` (lo hace `install-widget.sh`) o clic derecho → Abrir.
 - Comprobado en el Mac de desarrollo: `codesign` firma con un certificado así aunque aún no sea de confianza, y el requisito sale por certificado. Falta comprobar con el usuario que Red local y Monitorización de entrada sobreviven a una reinstalación.
