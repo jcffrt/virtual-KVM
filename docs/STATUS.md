@@ -371,7 +371,16 @@ Decisiones del usuario/orquestador sobre `docs/widget-plan.md`: (1) protocolo v3
 - Única diferencia: cómo llegar al seat. `Clutter.get_default_backend()` desaparece en 51 y `actor.get_context()` existe desde la 47. Se detecta en tiempo de ejecución (`global.stage.get_context?.()?.get_backend?.() ?? Clutter.get_default_backend?.()`), sin ramas por versión.
 - `shell-version` de la 45 a la 51.
 - `install.sh` avisa si `gnome-shell --version` no está en la lista; `gnome-plan.md` explica `OUT OF DATE`, `INITIALIZED` y `ERROR`.
-- **Sin probar en el Ubuntu.**
+- Verificado en el Ubuntu: ver la sección siguiente.
+
+## Borde GNOME verificado en el Ubuntu (2026-10-23 03:54, Linux-JCF)
+
+- Extensión 720f975 copiada por SSH a `~/.local/share/gnome-shell/extensions/rawkvm@olitec.cc`; tras cerrar y abrir sesión (Wayland solo relee `metadata.json` al arrancar) `gnome-extensions info` pasa de `OUT OF DATE` a **ACTIVE** en GNOME Shell 50.1.
+- D-Bus comprobado a mano: `Monitors` → `[(0, 0, 1536, 960, 1.667, primario)]`, `GetPointer` → `(768, 480)` (puntero aparcado por el helper). Ojo: la interfaz se llama `cc.olitec.RawKvm.Shell1` (con el `1`); el nombre de bus y la ruta son `cc.olitec.RawKvm.Shell` / `/cc/olitec/RawKvm/Shell`. Los comandos de `gnome-plan.md` ya usan `Shell1` en `--method`; `verificar-gnome.sh` no está en el repositorio (es del paquete del usuario) y debe hacer lo mismo.
+- El agente (f66d895, ya en marcha) la detectó solo a los 10 s: "GNOME extension found version=1", "edge helper connected", pantalla 1536×960 escala 1.0, layout links=3, puntero aparcado al quedar inactivo.
+- Hub: "Linux-JCF (edge)" registrado como EdgeHelper, `screens reported … screens=1`, **layout screens=4 links=8** (2 Mac + Windows + Ubuntu). Antes de conectar el helper ya se conmutaba *hacia* Linux por el borde superior de GAMER (03:49 y 03:53); salir de Linux por el borde requiere el helper, ahora presente.
+- Lienzo actual en `layout.toml`: Linux encima de GAMER (y = -920) y pegado a la derecha del monitor externo del Mac; no es la disposición Mac → Windows → Linux en fila que pidió el usuario. Se recoloca desde el widget (Monitores → Aplicar) sin tocar nada más.
+- Pendiente: prueba del usuario del cruce Windows↔Ubuntu y Mac↔Ubuntu con el puntero; reinstalar el agente macOS 5464fb4.
 
 ## Convenciones
 

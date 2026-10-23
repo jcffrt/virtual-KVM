@@ -1,6 +1,6 @@
 # Ubuntu: cambio por el borde con GNOME
 
-Paso 5 de la Fase 2 (`fase2-plan.md`), aprobado el 2026-10-22: helper dentro del agente Linux y el Ubuntu a la derecha del Windows (semilla `from = 1, edge = "right", to = 3`). **Implementado; sin probar en el Ubuntu.** Destino: el Ubuntu del usuario es **26.04.1 LTS con GNOME Shell 50.1**, en Wayland. La extensión declara de la 45 a la 51.
+Paso 5 de la Fase 2 (`fase2-plan.md`), aprobado el 2026-10-22: helper dentro del agente Linux y el Ubuntu a la derecha del Windows (semilla `from = 1, edge = "right", to = 3`). **Implementado y verificado en el Ubuntu el 2026-10-23** (extensión ACTIVE, helper conectado, hub con el Ubuntu en el layout; falta la prueba física del cruce). Destino: el Ubuntu del usuario es **26.04.1 LTS con GNOME Shell 50.1**, en Wayland. La extensión declara de la 45 a la 51.
 
 ## Por qué hace falta una extensión
 
@@ -16,7 +16,7 @@ La lógica sigue en Rust, como en macOS y Windows: el agente Linux implementa `E
 | `MonitorsChanged` | señal | `Main.layoutManager` `monitors-changed` |
 | `Watch(b)` | método | activa o desactiva el sondeo del puntero |
 | `Pointer(ii)` | señal | con `Watch(true)`, la posición (`global.get_pointer()`) cada ~8 ms (`GLib.timeout_add`), **solo si cambió** |
-| `Warp(ii)` | método | `Clutter.get_default_backend().get_default_seat().warp_pointer(x, y)` |
+| `Warp(ii)` | método | `warp_pointer(x, y)` del seat de Clutter, obtenido de `global.stage.get_context().get_backend()` (47+) o de `Clutter.get_default_backend()` (45, 46) |
 | `GetPointer()` → `(ii)` | método | una muestra, para diagnóstico |
 | `Version` | propiedad `u` | versión del puente (1) |
 
