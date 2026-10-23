@@ -15,12 +15,16 @@ agent_cfg="/Library/Application Support/rawkvm/agent.toml"
 
 [ -f "$bin" ] || { echo "binary not found: $bin (cargo build --release -p rawkvm-edge-macos)" >&2; exit 1; }
 [ -f "$agent_cfg" ] || { echo "$agent_cfg not found: install and pair the agent first" >&2; exit 1; }
+# Check the folder before stopping anything (see install.sh).
+[ -f "$here/signing.sh" ] || { echo "missing $here/signing.sh: copy the whole deploy/macos folder" >&2; exit 1; }
+[ -f "$here/$label.plist" ] || { echo "missing $here/$label.plist: copy the whole deploy/macos folder" >&2; exit 1; }
+plutil -lint -s "$here/$label.plist" || { echo "invalid plist: $here/$label.plist" >&2; exit 1; }
+. "$here/signing.sh"
 uid=$(id -u "$user")
 home=$(dscl . -read "/Users/$user" NFSHomeDirectory | awk '{print $2}')
 
 install -d -m 0755 /usr/local/bin
-install -m 0755 "$bin" /usr/local/bin/rawkvm-edge
-codesign --force --sign - /usr/local/bin/rawkvm-edge
+install_signed "$bin" /usr/local/bin/rawkvm-edge "$label"
 
 # Helper config, owned by the user (the agent's is root-only).
 cfg_dir="$home/Library/Application Support/rawkvm"

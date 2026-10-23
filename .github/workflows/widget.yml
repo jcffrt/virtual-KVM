@@ -55,6 +55,8 @@ jobs:
           mkdir -p ../package
           ditto -c -k --keepParent "$app" ../package/RawKVM.app.zip
           cp ../docs/widget-instalacion.md ../package/LEEME.md
+          # Local stable signing happens at install time (ADR 0016).
+          cp ../deploy/macos/install-widget.sh ../deploy/macos/signing.sh ../deploy/macos/make-signing-identity.sh ../package/
           git rev-parse HEAD > ../package/COMMIT.txt
       - uses: actions/upload-artifact@v4
         with:

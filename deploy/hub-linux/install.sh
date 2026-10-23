@@ -37,6 +37,30 @@ for d in /sys/bus/usb/devices/*; do
 done
 [ "$found" -eq 1 ] || echo "WARNING: no Logitech USB device found; plug the receiver in (host port)." >&2
 
+# Persistent journal, so that a crash of the board leaves its log behind.
+install -d -m 0755 /etc/systemd/journald.conf.d
+install -m 0644 "$here/journald-rawkvm.conf" /etc/systemd/journald.conf.d/rawkvm.conf
+ramlog=
+for svc in armbian-ramlog orangepi-ramlog; do
+    if systemctl cat "$svc.service" >/dev/null 2>&1; then ramlog=$svc; break; fi
+done
+if [ -n "$ramlog" ] && [ -d /var/log.hdd ]; then
+    echo "/var/log is in RAM ($ramlog): binding /var/log/journal to /var/log.hdd/journal"
+    install -d -m 2755 -g systemd-journal /var/log.hdd/journal
+    sed "s/@RAMLOG@/$ramlog/g" "$here/var-log-journal.mount.in" > /etc/systemd/system/var-log-journal.mount
+    systemctl daemon-reload
+    systemctl enable var-log-journal.mount
+    if ! mountpoint -q /var/log/journal; then
+        install -d /var/log/journal
+        systemctl start var-log-journal.mount
+    fi
+else
+    install -d -m 2755 -g systemd-journal /var/log/journal
+fi
+systemd-tmpfiles --create --prefix /var/log/journal 2>/dev/null || true
+systemctl restart systemd-journald
+journalctl --flush
+
 systemctl daemon-reload
 systemctl enable --now rawkvm-hub.service
 sleep 2

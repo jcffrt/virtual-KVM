@@ -444,3 +444,21 @@ Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario e
 
 - `deploy/macos/install.sh` comprueba que existen (y son válidos, `plutil -lint`) los dos plists antes de cualquier `bootout`; si falta alguno sale sin tocar launchd. Sin verificar con sudo en el Mac (solo `sh -n` y `plutil` local).
 - Gadget: nueva opción `--host-os windows|macos|linux` (por defecto `windows`): el nodo anuncia en Hello el sistema del PC enchufado, no el de la placa, y el hub elige la disposición por eso. Avisa si `--host-os linux` va sin `--no-hidpp`. Sin cambio de protocolo; requiere redesplegar el binario del gadget para que el hub vea `os=Windows`.
+
+## Bloque R (robustez) (2026-10-23)
+
+- **R1, firma estable en el Mac** (ADR 0016):
+  - `deploy/macos/make-signing-identity.sh` crea una vez el certificado autofirmado «RawKVM Local» en el llavero de inicio de sesión y lo hace de confianza para firma de código (sudo).
+  - `signing.sh` es compartido por `install.sh`, `install-edge.sh` y el nuevo `install-widget.sh` (que instala en `~/Applications` y relanza). Firma con esa identidad, o ad hoc avisando.
+  - Identificadores fijos: `cc.olitec.rawkvm.agent` y `cc.olitec.rawkvm.edge`.
+  - El artefacto del widget incluye los tres scripts.
+  - Verificado en el Mac de desarrollo, en un llavero temporal: `codesign` firma con un certificado así y el requisito designado pasa a `certificate leaf = H"…"`; el camino ad hoc de `signing.sh` también funciona.
+  - **Sin verificar**: `make-signing-identity.sh` en el llavero real (pide sudo y el diálogo «Permitir siempre»), y que Red local y Monitorización de entrada sobrevivan a una reinstalación.
+- **R2, journal persistente** (ADR 0017):
+  - `deploy/hub-linux/install.sh` instala `journald-rawkvm.conf` y, si detecta `armbian-ramlog` u `orangepi-ramlog`, `var-log-journal.mount`, generado desde `.mount.in`.
+  - Lo que mirar tras una caída está en `docs/hub-linux-instalacion.md`.
+  - **Sin ejecutar en la Pi.** La unidad está escrita de nuevo: hay que compararla con la que dejó el orquestador.
+- **R3**:
+  - `install-edge.sh` comprueba su plist y `signing.sh` antes de tocar launchd.
+  - Monitorización de entrada se da arrastrando desde el Finder (`open /usr/local/bin`).
+  - El paquete del helper de Windows ya lo produce CI (job `edge-windows` de `ci.yml`, artefacto `rawkvm-edge-windows`). En `windows-borde.md` está cómo bajarlo con `gh`.

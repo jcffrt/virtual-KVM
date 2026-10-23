@@ -20,7 +20,7 @@ sudo rawkvm-hub --list-nodes      # el node_id del gadget (índice 1)
 
 ## 2. Instalar
 
-Del artefacto de CI **rawkvm-edge-windows**: descomprimir y, en una PowerShell normal (no hace falta administrador), dentro de la carpeta:
+Del artefacto de CI **rawkvm-edge-windows** (job `edge-windows` del workflow `ci`, en cada push: `rawkvm-edge.exe`, `install-edge.ps1`, `uninstall-edge.ps1`, `LEEME.md` y `COMMIT.txt`; desde el Mac, `gh run download -R jcffrt/virtual-KVM $(gh run list -R jcffrt/virtual-KVM -w ci -b main -s success -L 1 --json databaseId -q '.[0].databaseId') -n rawkvm-edge-windows -D rawkvm-edge-windows`): descomprimir y, en una PowerShell normal (no hace falta administrador), dentro de la carpeta:
 
 ```powershell
 .\install-edge.ps1 -Hub 192.168.1.28 -Token <64 hex> -ForNode <node_id del gadget>

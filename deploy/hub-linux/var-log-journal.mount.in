@@ -1,0 +1,22 @@
+# Armbian and Orange Pi OS keep /var/log in zram (@RAMLOG@.service) and only
+# copy it to the SD card (/var/log.hdd) now and then, so a crash loses the
+# journal. Bind the journal directory straight onto the SD card instead.
+# install.sh fills in @RAMLOG@ and installs this as
+# /etc/systemd/system/var-log-journal.mount. systemd-journal-flush.service
+# has RequiresMountsFor=/var/log/journal, so the journal moves here at boot.
+[Unit]
+Description=Persistent journal on the SD card (RawKVM)
+DefaultDependencies=no
+After=@RAMLOG@.service
+Requires=@RAMLOG@.service
+Before=systemd-journal-flush.service sysinit.target umount.target
+Conflicts=umount.target
+
+[Mount]
+What=/var/log.hdd/journal
+Where=/var/log/journal
+Type=none
+Options=bind
+
+[Install]
+WantedBy=sysinit.target

@@ -16,14 +16,29 @@ No hace falta Karabiner-Elements. Si ya está instalado, funciona igual (el inst
 
 ## 2. Compilar e instalar el agente
 
+Una sola vez, crear la identidad de firma local (ver más abajo):
+
+```sh
+deploy/macos/make-signing-identity.sh      # sin sudo; pide sudo solo para confiar en el certificado
+```
+
 ```sh
 cargo build --release -p rawkvm-agent-macos
 sudo deploy/macos/install.sh
 ```
 
+Si se copia la carpeta a otro sitio, copiar `deploy/macos` **entera**: el instalador comprueba que tiene al lado los plists y `signing.sh` antes de parar nada, y si falta algo sale sin tocar los servicios.
+
+**Firma estable** ([ADR 0016](adr/0016-firma-local-estable.md)). macOS liga los permisos (Monitorización de entrada del agente, Red local del widget) a la firma del programa. Con firma ad hoc cada versión es "otro programa" y los permisos dejan de valer al actualizar. `make-signing-identity.sh` crea en tu llavero de inicio de sesión un certificado autofirmado **RawKVM Local**, y `install.sh`, `install-edge.sh` e `install-widget.sh` firman con él si lo tienes (si no, ad hoc y lo avisan). Así los permisos se dan una vez y sobreviven a las versiones siguientes.
+
+- La primera firma, macOS pregunta si `codesign` puede usar la clave «RawKVM Local»: **Permitir siempre**.
+- Al pasar de firma ad hoc a «RawKVM Local» hay que dar los permisos **una última vez** (quitar la entrada vieja con **−** y añadir la nueva).
+- Comprobar: `codesign -dr - /usr/local/bin/rawkvm-agent` debe mostrar `certificate leaf = H"…"`; con firma ad hoc muestra `cdhash`.
+- Los artefactos de CI siguen firmados ad hoc; la firma estable se pone al instalar en el Mac.
+
 El instalador:
 
-- copia el binario a `/usr/local/bin/rawkvm-agent` y lo firma ad hoc;
+- copia el binario a `/usr/local/bin/rawkvm-agent` y lo firma con «RawKVM Local» (o ad hoc si no existe);
 - copia el emparejamiento de `~/Library/Application Support/rawkvm/agent.toml`, si existe, a `/Library/Application Support/rawkvm/agent.toml`;
 - registra y arranca dos LaunchDaemons: `org.pqrs.service.daemon.Karabiner-VirtualHIDDevice-Daemon` (el daemon de Karabiner, que no arranca solo) y `cc.olitec.rawkvm.agent`.
 
@@ -49,10 +64,10 @@ Para el teclado y el ratón no hacen falta permisos de Monitorización de entrad
 
 **LED de Bloq Mayús (Fase 3).** El daemon de Karabiner no avisa a sus clientes de los LED, pero su driver devuelve el estado que macOS fija en el teclado virtual como un informe de entrada. El agente lo lee abriendo ese teclado virtual (sin capturarlo, como hace Karabiner-Elements) y se lo manda al hub, que enciende el LED del teclado real. Para abrirlo, macOS pide **Monitorización de entrada** para el binario del agente:
 
-1. Ajustes del Sistema → Privacidad y seguridad → Monitorización de entrada → **+** → `/usr/local/bin/rawkvm-agent` (en el diálogo de archivos, ⌘⇧G y pegar la ruta).
+1. Abrir la carpeta en el Finder con `open /usr/local/bin` y **arrastrar** `rawkvm-agent` a la lista de Ajustes del Sistema → Privacidad y seguridad → Monitorización de entrada, y activar su interruptor. (El botón **+** no deja entrar en `/usr/local/bin` desde su diálogo; ⌘⇧G y pegar la ruta funciona a veces.)
 2. `sudo launchctl kickstart -k system/cc.olitec.rawkvm.agent` para que lo vuelva a intentar ya (si no, lo reintenta cada 5 s).
 
-En el log debe aparecer `watching the keyboard LEDs of the Karabiner virtual keyboard`. Sin el permiso sale `keyboard LEDs not watched: not permitted` y todo lo demás funciona igual. Limitaciones: el estado se conoce desde el **primer cambio** después de abrir el teclado virtual (hasta entonces el hub deja el LED apagado al cambiar al Mac), y Karabiner solo devuelve Bloq Num y Bloq Mayús. El binario va firmado ad hoc: es probable que macOS ligue el permiso a esa firma y haya que volver a darlo tras cada reinstalación (quitar la entrada vieja y añadirla de nuevo); sin comprobar todavía.
+En el log debe aparecer `watching the keyboard LEDs of the Karabiner virtual keyboard`. Sin el permiso sale `keyboard LEDs not watched: not permitted` y todo lo demás funciona igual. Limitaciones: el estado se conoce desde el **primer cambio** después de abrir el teclado virtual (hasta entonces el hub deja el LED apagado al cambiar al Mac), y Karabiner solo devuelve Bloq Num y Bloq Mayús. Con firma ad hoc el permiso hay que darlo de nuevo tras cada reinstalación (quitar la entrada vieja y añadir la nueva); con «RawKVM Local» (paso 2) se conserva.
 
 ## 4. Diagnóstico sin Karabiner
 
@@ -81,7 +96,8 @@ sudo deploy/macos/install-edge.sh
 ```
 
 El instalador:
-- Copia el binario a `/usr/local/bin/rawkvm-edge` con firma ad hoc.
+- Comprueba que tiene al lado su plist y `signing.sh` antes de tocar nada.
+- Copia el binario a `/usr/local/bin/rawkvm-edge` firmado con «RawKVM Local» (o ad hoc).
 - Crea `~/Library/Application Support/rawkvm/edge.toml` (0600, tuyo) con el hub, el token y el certificado del agente, y su `node_id` como `for_node`.
 - Instala el LaunchAgent `~/Library/LaunchAgents/cc.olitec.rawkvm.edge.plist`.
 

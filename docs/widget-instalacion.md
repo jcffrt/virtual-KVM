@@ -10,14 +10,21 @@ No mueve el teclado ni el ratón: eso lo hacen el agente y el helper de borde. D
 
 ## Instalar
 
-Del artefacto de CI **rawkvm-widget-macos**:
+Del artefacto de CI **rawkvm-widget-macos** (trae `install-widget.sh`, `signing.sh` y `make-signing-identity.sh` junto a la app):
 
-1. Descomprimir `RawKVM.app.zip` y mover `RawKVM.app` a `/Applications`.
-2. La app no está firmada con Developer ID. La primera vez, abrirla con clic derecho → **Abrir** → **Abrir**, o quitar la cuarentena desde el Terminal:
-   ```sh
-   xattr -dr com.apple.quarantine /Applications/RawKVM.app
-   ```
-3. No pide permisos de macOS.
+```sh
+unzip RawKVM.app.zip
+./make-signing-identity.sh                     # una sola vez por Mac; sin sudo
+./install-widget.sh RawKVM.app                 # sin sudo
+```
+
+Desde el repositorio, lo mismo con `deploy/macos/install-widget.sh` (por defecto instala la app compilada, abajo).
+
+El script quita la cuarentena, firma la app con la identidad local **RawKVM Local** si existe (`deploy/macos/make-signing-identity.sh`, ver [macos-instalacion.md](macos-instalacion.md) §2 y [ADR 0016](adr/0016-firma-local-estable.md)), cierra la que esté abierta, la copia a `~/Applications/RawKVM.app` y la abre. Si queda una copia antigua en `/Applications`, borrarla para que no haya dos.
+
+**Red local**: la primera vez que la app busca o conecta con el hub, macOS pide permiso de **Red local**: aceptarlo (Ajustes del Sistema → Privacidad y seguridad → Red local). Firmada con «RawKVM Local», el permiso se conserva al instalar versiones nuevas. Firmada ad hoc, macOS la trata como otra app en cada versión: el interruptor sigue activo pero no vale, y la app no llega al hub (`No route to host`) hasta quitar la entrada y volver a darlo. Al pasar de ad hoc a «RawKVM Local» hace falta darlo una última vez. No pide más permisos.
+
+Si se instala a mano (sin el script): mover `RawKVM.app` a `~/Applications`, `xattr -dr com.apple.quarantine ~/Applications/RawKVM.app`, y abrirla.
 
 Compilar en el Mac (necesita Node 22 y Rust):
 
@@ -25,6 +32,7 @@ Compilar en el Mac (necesita Node 22 y Rust):
 cd widget
 npm ci
 npx tauri build --bundles app      # src-tauri/target/release/bundle/macos/RawKVM.app
+cd .. && deploy/macos/install-widget.sh
 ```
 
 ## Usar
