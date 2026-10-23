@@ -6,6 +6,7 @@
 //! token, pinned certificate only; the layout lives in the hub). Log:
 //! `~/Library/Logs/rawkvm-widget.log`.
 
+mod canvas_view;
 mod view;
 
 use std::path::PathBuf;
@@ -303,6 +304,75 @@ fn switch_to(state: tauri::State<'_, Arc<AppState>>, node: Uuid) -> Result<(), S
     })
 }
 
+// ---- monitors canvas ---------------------------------------------------
+
+/// What to draw for `draft` (or, without one, the hub's arrangement or a
+/// proposal from the links in force).
+#[tauri::command]
+fn canvas_view(
+    state: tauri::State<'_, Arc<AppState>>,
+    draft: Option<Vec<proto::Placement>>,
+) -> canvas_view::CanvasView {
+    canvas_view::build(&state.shared.snapshot(), draft.as_deref())
+}
+
+/// A block was dropped at (x, y): move it, snap it, return the new view.
+#[tauri::command]
+fn canvas_drop(
+    state: tauri::State<'_, Arc<AppState>>,
+    draft: Vec<proto::Placement>,
+    node: Uuid,
+    x: f64,
+    y: f64,
+) -> canvas_view::CanvasView {
+    let st = state.shared.snapshot();
+    let placed = canvas_view::drop_block(&st, &draft, node, x, y);
+    canvas_view::build(&st, Some(&placed))
+}
+
+#[tauri::command]
+fn canvas_scale(
+    state: tauri::State<'_, Arc<AppState>>,
+    draft: Vec<proto::Placement>,
+    node: Uuid,
+    scale: Option<f32>,
+) -> canvas_view::CanvasView {
+    let st = state.shared.snapshot();
+    let placed = canvas_view::set_scale(&st, &draft, node, scale);
+    canvas_view::build(&st, Some(&placed))
+}
+
+/// Send the arrangement and its links to the hub, which keeps them.
+#[tauri::command]
+fn canvas_apply(
+    state: tauri::State<'_, Arc<AppState>>,
+    draft: Vec<proto::Placement>,
+) -> Result<(), String> {
+    let st = state.shared.snapshot();
+    let placed = canvas_view::arrangement(&st, Some(&draft));
+    let layout = canvas_view::layout_for(&st, &placed);
+    if let Control::Layout { edges, .. } = &layout {
+        info!(
+            links = edges.len(),
+            blocks = placed.len(),
+            "applying the canvas"
+        );
+    }
+    state.send(layout)
+}
+
+/// Drop the widget's layout: the hub goes back to its `[[layout]]` seed.
+#[tauri::command]
+fn canvas_reset(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
+    info!("back to the hub seed");
+    state.send(Control::Layout {
+        screens: Vec::new(),
+        edges: Vec::new(),
+        options: state.shared.snapshot().options,
+        canvas: Vec::new(),
+    })
+}
+
 // ---- start -------------------------------------------------------------
 
 fn init_logging() {
@@ -383,7 +453,16 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
-            get_view, discover, pair, forget, switch_to
+            get_view,
+            discover,
+            pair,
+            forget,
+            switch_to,
+            canvas_view,
+            canvas_drop,
+            canvas_scale,
+            canvas_apply,
+            canvas_reset
         ])
         .run(tauri::generate_context!())
         .expect("running the RawKVM widget");

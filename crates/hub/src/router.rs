@@ -506,6 +506,20 @@ impl Router {
                 canvas,
                 ..
             } if kind == NodeKind::Widget => {
+                if edges.is_empty() && canvas.is_empty() {
+                    // "Back to the seed": a real canvas always has blocks.
+                    info!(node = %from, "widget reset the layout to the config seed");
+                    if let Some(path) = &st.layout_path {
+                        match std::fs::remove_file(path) {
+                            Ok(()) => {}
+                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                            Err(e) => warn!("removing {}: {e}", path.display()),
+                        }
+                    }
+                    st.custom_layout = None;
+                    self.update_layout(&mut st);
+                    return;
+                }
                 info!(node = %from, links = edges.len(), blocks = canvas.len(), "layout set by a widget");
                 let file = LayoutFile {
                     options,
@@ -1555,6 +1569,23 @@ mod tests {
             _ => None,
         });
         assert_eq!(got, Some(canvas));
+
+        // Empty edges and canvas: back to the config seed, file removed.
+        r.on_control(
+            w.id,
+            Control::Layout {
+                screens: vec![],
+                edges: vec![],
+                options: EdgeOptions::default(),
+                canvas: vec![],
+            },
+        );
+        assert!(!LayoutFile::path_in(&dir).exists());
+        let got = w.msgs().into_iter().rev().find_map(|m| match m {
+            Control::Layout { canvas, edges, .. } => Some((canvas, edges)),
+            _ => None,
+        });
+        assert_eq!(got, Some((vec![], vec![])));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1648,7 +1679,12 @@ mod tests {
                 screens: vec![screen],
                 edges: vec![],
                 options: EdgeOptions::default(),
-                canvas: vec![],
+                canvas: vec![proto::Placement {
+                    node: a.id,
+                    x: 0.0,
+                    y: 0.0,
+                    scale: None,
+                }],
             },
         );
         let mut late = join(&r, NodeKind::Agent).unwrap();

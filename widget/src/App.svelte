@@ -2,6 +2,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import Hub from './lib/Hub.svelte';
+  import Monitors from './lib/Monitors.svelte';
 
   const tabs = [
     { id: 'hub', label: 'Hub' },
@@ -27,6 +28,8 @@
       <p class="muted">Cargando…</p>
     {:else if tab === 'hub'}
       <Hub {view} />
+    {:else if tab === 'monitors'}
+      <Monitors {view} />
     {:else}
       <p class="muted">Próximamente.</p>
     {/if}

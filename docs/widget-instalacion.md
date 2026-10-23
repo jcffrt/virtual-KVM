@@ -4,7 +4,7 @@ App de la barra de menús:
 - muestra el hub y los equipos;
 - cambia de equipo con un clic;
 - empareja con el hub;
-- más adelante, coloca los monitores de todos los equipos (pestaña Monitores, en desarrollo).
+- coloca los monitores de todos los equipos (pestaña Monitores).
 
 No mueve el teclado ni el ratón: eso lo hacen el agente y el helper de borde. Diseño: [ADR 0010](adr/0010-widget-y-protocolo-v3.md).
 
@@ -37,6 +37,17 @@ npx tauri build --bundles app      # src-tauri/target/release/bundle/macos/RawKV
 - **Pestaña Hub**:
   - **Sin emparejar**: «Buscar hubs en la red» (mDNS), elegir el hub o escribir su dirección, pegar el token (`sudo rawkvm-hub --show-token` en la Pi) y pulsar **Emparejar**. El certificado del hub se fija en la primera conexión, como en los agentes.
   - **Emparejado**: estado, latencia, versión del hub y lista de equipos: número, sistema, tipo y pantallas conocidas. Un agente sin helper de borde sale **en gris** («sin helper»): se puede cambiar a él por el menú o con el atajo, pero no por el borde. «Usar» cambia a ese equipo. «Olvidar hub» borra el emparejamiento.
+
+- **Pestaña Monitores**:
+  - un bloque por equipo con sus pantallas reales (Mac: integrada y externa; Windows: sus dos monitores), en unidades lógicas;
+  - un equipo sin helper de borde sale como bloque gris discontinuo de 1920×1080;
+  - **arrastra** cada bloque: al soltarlo cerca de otro, se pega a su lado y alinea los bordes superiores;
+  - las **líneas azules** marcan dónde el puntero pasará de un equipo a otro (solo en el tramo en que los lados se tocan);
+  - **Aplicar** envía la disposición al hub, que la guarda (`/var/lib/rawkvm/layout.toml`) y la aplica al instante en los helpers, sin reiniciar nada;
+  - **Descartar cambios** vuelve a lo que tiene el hub;
+  - **Volver a la semilla del hub** borra la disposición guardada y el hub vuelve al `[[layout]]` de `hub.toml`;
+  - **Escala**: cada equipo se dibuja dividiendo sus medidas por la escala que informa su helper (macOS ya informa en puntos, 1; Windows, su escalado de pantalla). Si un bloque sale de tamaño equivocado, se corrige a mano; vacío = la informada. La corrección se guarda en el hub con la disposición.
+  - Mientras el hub use la semilla, la pestaña muestra una propuesta hecha a partir de ella. Hasta pulsar Aplicar no cambia nada.
 
 ## Ficheros
 

@@ -304,6 +304,24 @@ Decisiones del usuario/orquestador sobre `docs/widget-plan.md`: (1) protocolo v3
 - Tests con informes boot de 8 B y con el layout DJ de 7 B (K230), y test del router (solo el destino configurado; ratón y release-all intactos).
 - ADR 0011; nota en `gadget-instalacion.md`. **Primer objetivo de la Fase 3**: cambio de perfil por HID++ `HOSTS_INFO` 0x1815 `setHostOsVersion` (anotado en `fase2-plan.md`).
 
+## Widget paso 3 en el Mac y llegada del Ubuntu (2026-10-23 00:00)
+
+- RawKVM.app (4be4002) instalada en `~/Applications`, pre-emparejada por el orquestador (widget.toml con hub y token), permiso de Red local concedido por el usuario; conectada al hub como nodo Widget (índice 0), huella fijada. Pendiente de la prueba de bandeja y pestaña Hub por el usuario.
+- Hub dc62461 con `[[node_options]] index = 1, swap_alt_gui = true` activo en la Orange Pi (ADR 0011).
+- **El usuario ya dispone del Ubuntu**: siguiente, instalar el agente Linux (uhid, nunca probado en hardware) con `deploy/linux/install.sh`, validar con `evtest`, y después la extensión GNOME (paso 5 de la Fase 2). Binario x86-64 compilado con `cargo zigbuild --target x86_64-unknown-linux-gnu`.
+
+## Widget, paso 4: pestaña Monitores (2026-10-22, VS Code)
+
+- `widget/src-tauri/src/canvas_view.rs` (puro, con tests) calcula todo lo que dibuja el SVG:
+  - **qué equipos**: los agentes de `Status`, más los nodos con pantallas o con bloque guardado aunque estén apagados;
+  - **disposición**: la del hub, completando los nodos nuevos a la derecha, o una propuesta (`canvas::initial`) mientras el hub usa la semilla;
+  - **bloques** con escala informada y corregida, **rectángulos** con su tamaño nativo y **tramos de enlace** (uno por par);
+  - **acciones**: `drop_block` (imán de 40 unidades), `set_scale` y `layout_for` (enlaces + opciones + lienzo).
+- Comandos: `canvas_view`, `canvas_drop`, `canvas_scale`, `canvas_apply`, `canvas_reset`.
+- `Monitors.svelte`: SVG que se arrastra con el puntero (traslado local mientras se arrastra; el imán y los enlaces los calcula Rust al soltar), líneas de enlace, botones Aplicar / Descartar / Volver a la semilla, tabla de escala con corrección manual.
+- Hub: un `Layout` de widget con `edges` y `canvas` vacíos vuelve a la semilla y borra `layout.toml`. Sin cambio de protocolo, pero **hay que redesplegar el hub** para que «Volver a la semilla» funcione: el hub `dc62461` lo guardaría como layout vacío.
+- **Sin probar en la app real** (geometría cubierta por tests; la interfaz solo compilada).
+
 ## Convenciones
 
 Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario en castellano, `cargo fmt` y `cargo clippy -D warnings` limpios, un ADR por decisión nueva.
