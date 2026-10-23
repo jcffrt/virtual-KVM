@@ -24,6 +24,13 @@ for d in "$here/$ext" "$here/../gnome-extension/$ext" "$here/../../gnome-extensi
     [ -f "$d/metadata.json" ] && ext_src=$d && break
 done
 if [ -n "${ext_src:-}" ] && command -v gnome-shell >/dev/null 2>&1; then
+    # GNOME refuses an extension whose metadata lacks its major version
+    # ("OUT OF DATE"): say so instead of installing it silently.
+    shell_major=$(gnome-shell --version | sed -n 's/^GNOME Shell \([0-9]*\).*/\1/p')
+    if ! grep -q "\"$shell_major\"" "$ext_src/metadata.json"; then
+        echo "WARNING: GNOME Shell $shell_major is not in shell-version of $ext_src/metadata.json:" >&2
+        echo "         the extension would show as OUT OF DATE and stay off (docs/gnome-plan.md)." >&2
+    fi
     dest="$HOME/.local/share/gnome-shell/extensions/$ext"
     mkdir -p "$dest"
     cp "$ext_src/metadata.json" "$ext_src/extension.js" "$dest/"

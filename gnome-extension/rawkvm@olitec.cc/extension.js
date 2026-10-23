@@ -1,4 +1,11 @@
-// RawKVM edge bridge for GNOME Shell 46 (ESM).
+// RawKVM edge bridge for GNOME Shell 45 to 51 (ESM).
+//
+// API check against the sources (mutter / gnome-shell tags 45.0 .. 51.0,
+// 50.1): global.get_pointer, global.display.get_n_monitors /
+// get_primary_monitor / get_monitor_geometry / get_monitor_scale,
+// ClutterSeat.warp_pointer, Main.layoutManager 'monitors-changed' and the
+// ESM Extension class exist in all of them; only the way to the Clutter
+// seat changes (see defaultSeat).
 //
 // Under Wayland only the compositor knows and moves the pointer. This
 // extension exports a minimal D-Bus object on the session bus so the RawKVM
@@ -48,6 +55,15 @@ const INTERFACE = `
 </node>`;
 
 const SAMPLE_MS = 8;
+
+// The Clutter seat, found by feature test rather than by version: the
+// stage's context (mutter 47+; the only way from 51 on, which removed
+// Clutter.get_default_backend) or the default backend (45, 46).
+function defaultSeat() {
+    const backend = global.stage.get_context?.()?.get_backend?.() ??
+        Clutter.get_default_backend?.();
+    return backend?.get_default_seat?.() ?? null;
+}
 const WATCH_LEASE_US = 3 * 1000 * 1000;
 
 class Bridge {
@@ -91,8 +107,7 @@ class Bridge {
     }
 
     Warp(x, y) {
-        const seat = Clutter.get_default_backend().get_default_seat();
-        seat.warp_pointer(x, y);
+        defaultSeat()?.warp_pointer(x, y);
         this._last = null; // report the new position on the next sample
     }
 

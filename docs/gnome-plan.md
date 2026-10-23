@@ -1,6 +1,6 @@
 # Ubuntu: cambio por el borde con GNOME
 
-Paso 5 de la Fase 2 (`fase2-plan.md`), aprobado el 2026-10-22: helper dentro del agente Linux y el Ubuntu a la derecha del Windows (semilla `from = 1, edge = "right", to = 3`). **Implementado; sin probar en el Ubuntu.** Destino: Ubuntu 24.04, GNOME Shell 46, Wayland.
+Paso 5 de la Fase 2 (`fase2-plan.md`), aprobado el 2026-10-22: helper dentro del agente Linux y el Ubuntu a la derecha del Windows (semilla `from = 1, edge = "right", to = 3`). **Implementado; sin probar en el Ubuntu.** Destino: el Ubuntu del usuario es **26.04.1 LTS con GNOME Shell 50.1**, en Wayland. La extensión declara de la 45 a la 51.
 
 ## Por qué hace falta una extensión
 
@@ -35,7 +35,7 @@ La lógica sigue en Rust, como en macOS y Windows: el agente Linux implementa `E
 
 ## Extensión
 
-- `gnome-extension/rawkvm@olitec.cc/`: `metadata.json` (`shell-version: ["46"]`, ampliable a 47/48 tras probar) y `extension.js` (ESM, clase `Extension` con `enable()`/`disable()` que exporta y retira el objeto D-Bus con `Gio.DBusExportedObject`).
+- `gnome-extension/rawkvm@olitec.cc/`: `metadata.json` (`shell-version` de la 45 a la 51: las APIs usadas se comprobaron en el código fuente de mutter y gnome-shell 45.0 … 51.0 y 50.1; solo cambia la forma de llegar al seat de Clutter, que se detecta en tiempo de ejecución) y `extension.js` (ESM, clase `Extension` con `enable()`/`disable()` que exporta y retira el objeto D-Bus con `Gio.DBusExportedObject`).
 - Instalación en `deploy/linux/install.sh`: copiar a `~/.local/share/gnome-shell/extensions/`, `gnome-extensions enable rawkvm@olitec.cc`. **En Wayland hay que cerrar sesión y volver a entrar** la primera vez: gnome-shell no recarga extensiones nuevas en caliente.
 - Sin firmar ni pasar por extensions.gnome.org (uso personal).
 
@@ -80,7 +80,10 @@ Por SSH, primero apuntar al bus de la sesión gráfica del mismo usuario:
 export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus
 ```
 
-1. La extensión está cargada (debe decir `State: ACTIVE`; si dice `INITIALIZED` o no aparece, falta cerrar sesión):
+1. La extensión está cargada. Debe decir `State: ACTIVE` (en español, `Estado: ACTIVE`). Si dice:
+   - `INITIALIZED` o no aparece: falta cerrar sesión y volver a entrar.
+   - `OUT OF DATE`: la versión de GNOME Shell (`gnome-shell --version`) no está en `shell-version` de `metadata.json`, así que GNOME no la carga aunque esté activada. Hay que instalar una versión de la extensión que la incluya. Hoy son de la 45 a la 51, comprobadas contra el código fuente de cada versión, y el instalador avisa si la tuya no está.
+   - `ERROR`: `journalctl --user -b | grep -i rawkvm` muestra el fallo de JavaScript.
    ```sh
    gnome-extensions info rawkvm@olitec.cc
    ```

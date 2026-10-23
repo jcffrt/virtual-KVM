@@ -359,6 +359,20 @@ Decisiones del usuario/orquestador sobre `docs/widget-plan.md`: (1) protocolo v3
 - Watchdog: `HidSink::tick` (cada segundo) avisa una vez si una tecla o un modificador lleva más de 10 s pulsado sin ningún informe de teclado nuevo. No dice qué tecla y no suelta nada.
 - «Liberar teclas»: en la bandeja del widget y en Opciones. Es un `SwitchTo` del widget al nodo ya activo; el hub envía `RELEASE_ALL` por dispositivo a todos los agentes, dos veces. Sin cambio de protocolo; requiere el hub nuevo.
 
+## Agente Linux en hardware (2026-10-23 01:34, Ubuntu "Linux-JCF")
+
+- Instalación manual por el usuario con el paquete `rawkvm-linux.zip` (f66d895). Primer arranque sin permiso en `/dev/uhid` (grupo `input` sin re-login, como avisa el instalador); tras reiniciar sesión, **uhid crea los cuatro dispositivos** (teclado, ratón, consumer, system control) con nombre "Logitech USB Receiver" en bus 0006 (virtual), `event14..17`. **Confirmado por el usuario (2026-10-23): teclado y trackball funcionan en el Ubuntu tras Ctrl,Ctrl,3. Criterio de la Fase 0 para Linux cumplido; los tres SO reciben entrada nativa (Fase 1 completa).**
+- Nodo "Linux-JCF" registrado como índice 3. **El Ubuntu es 26.04.1 LTS con GNOME Shell 50.1** (no 24.04/46): la extensión queda en estado OUT OF DATE por `shell-version ["46"]`. Encargado a VS Code adaptar y verificar la extensión contra GNOME 50 y ampliar las versiones declaradas; después, paquete solo con la extensión y re-login en el Ubuntu.
+
+## Extensión GNOME: de la 45 a la 51 (2026-10-23, VS Code)
+
+- El Ubuntu del usuario es 26.04.1 LTS con GNOME Shell 50.1: la extensión salía `OUT OF DATE` porque solo declaraba la 46.
+- APIs comprobadas en el código fuente (mutter y gnome-shell, tags 45.0 … 51.0 y 50.1): `global.get_pointer`, `global.display` (n/primario/geometría/escala de monitores), `ClutterSeat.warp_pointer`, `'monitors-changed'` y la clase ESM `Extension`.
+- Única diferencia: cómo llegar al seat. `Clutter.get_default_backend()` desaparece en 51 y `actor.get_context()` existe desde la 47. Se detecta en tiempo de ejecución (`global.stage.get_context?.()?.get_backend?.() ?? Clutter.get_default_backend?.()`), sin ramas por versión.
+- `shell-version` de la 45 a la 51.
+- `install.sh` avisa si `gnome-shell --version` no está en la lista; `gnome-plan.md` explica `OUT OF DATE`, `INITIALIZED` y `ERROR`.
+- **Sin probar en el Ubuntu.**
+
 ## Convenciones
 
 Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario en castellano, `cargo fmt` y `cargo clippy -D warnings` limpios, un ADR por decisión nueva.
