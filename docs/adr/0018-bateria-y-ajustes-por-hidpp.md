@@ -39,4 +39,4 @@ Formatos contrastados con Solaar (`hidpp20.py`, `settings_templates.py`, `settin
 
 - El widget muestra la batería por tramos (no un porcentaje fino) y deja ajustar la velocidad del MX Ergo y las F del MX Keys.
 - No sabemos si el dispositivo guarda la velocidad del puntero y el Fn al apagarse. Solaar los vuelve a aplicar al conectar. Si se pierden, el siguiente paso es guardarlos en el hub y reaplicarlos al conectar.
-- Los valores de 0x2205 y 0x40A3 de los tests son inventados (los índices sí son los reales). Falta grabarlos con `--hidpp-trace`.
+- 0x40A3 grabado en el MX Keys (`mxkeys-40a3-0.txt`): `00 01 01 01`, es decir, host 0 y estado 1 (los dos bytes siguientes no se usan). El valor de 0x2205 en los tests sigue siendo inventado (el índice sí es el real): falta grabarlo con el MX Ergo despierto.

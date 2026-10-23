@@ -655,21 +655,21 @@ mod tests {
         Scripted::new(script)
     }
 
-    /// BATTERY_STATUS as recorded (`bat-slot*-1000.txt`); POINTER_SPEED and
-    /// 0x40A3 at the indexes of `features-slot*.txt`, their values made up
-    /// (not recorded yet).
+    /// BATTERY_STATUS and the MX Keys' 0x40A3 as recorded
+    /// (`bat-slot*-1000.txt`, `mxkeys-40a3-0.txt`); POINTER_SPEED at the
+    /// MX Ergo's index (`features-slot1.txt`), its value made up (not
+    /// recorded yet).
     fn phase41_features() -> Vec<(Vec<u8>, Vec<Vec<u8>>)> {
         let mut v = trace("bat-slot1-1000.txt");
         v.extend(trace("bat-slot3-1000.txt"));
+        v.extend(trace("mxkeys-40a3-0.txt"));
         v.extend([
             // MX Ergo: POINTER_SPEED at 13 (0x0d), 1x; no 0x40A3.
             (hex("10 01 00 0c 22 05 00"), vec![long("11 01 00 0c 0d")]),
             (hex("10 01 0d 0c 00 00 00"), vec![long("11 01 0d 0c 01 00")]),
             (hex("10 01 00 0c 40 a3 00"), vec![long("11 01 00 0c 00")]),
-            // MX Keys: no POINTER_SPEED; 0x40A3 at 12 (0x0c), host 0, on.
+            // MX Keys: no POINTER_SPEED.
             (hex("10 03 00 0c 22 05 00"), vec![long("11 03 00 0c 00")]),
-            (hex("10 03 00 0c 40 a3 00"), vec![long("11 03 00 0c 0c")]),
-            (hex("10 03 0c 0c 00 00 00"), vec![long("11 03 0c 0c 00 01")]),
         ]);
         v
     }
