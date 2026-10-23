@@ -17,6 +17,7 @@ use proto::HidDevice;
 use tracing::{error, info, warn};
 
 use crate::config::{MatchMode, ReceiverMatch};
+use crate::hidpp::Hidpp;
 use crate::hidraw::{self, RawInterface, BUS_USB};
 use crate::receiver;
 use crate::router::{ReportWriter, Router};
@@ -271,6 +272,14 @@ fn scan_loop(router: Arc<Router>, m: ReceiverMatch) {
                 .map(|w| Arc::new(w) as Arc<dyn ReportWriter>)
                 .map_err(|e| warn!("{}: no output reports: {e}", iface.hidraw.display()))
                 .ok();
+            // The HID++ interface: our requests' replies stay in the hub.
+            let hidpp = (receiver::is_dj_interface(&DescriptorInfo::parse(&iface.descriptor)))
+                .then(|| writer.clone())
+                .flatten()
+                .map(|w| Arc::new(Hidpp::new(w)));
+            if hidpp.is_some() {
+                router.set_hidpp(hidpp.clone());
+            }
             router.add_device_with_writer(dev, writer);
 
             let router = router.clone();
@@ -280,8 +289,15 @@ fn scan_loop(router: Arc<Router>, m: ReceiverMatch) {
             let spawned = thread::Builder::new()
                 .name(format!("hid-{id}"))
                 .spawn(move || {
-                    let err = hidraw::read_loop(file, |r| router.on_report(id, r));
+                    let err = hidraw::read_loop(file, |r| {
+                        if !hidpp.as_ref().is_some_and(|h| h.on_report(r)) {
+                            router.on_report(id, r)
+                        }
+                    });
                     info!("{} closed: {err}", path.display());
+                    if hidpp.is_some() {
+                        router.set_hidpp(None);
+                    }
                     router.remove_device(id);
                     open.lock().unwrap_or_else(|e| e.into_inner()).remove(&phys);
                 });

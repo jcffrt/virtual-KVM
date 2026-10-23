@@ -397,6 +397,13 @@ Decisiones del usuario/orquestador sobre `docs/widget-plan.md`: (1) protocolo v3
 - Formatos contrastados con el código: `hidraw.rst`/`hidraw.c`/usbhid (byte 0 en escrituras sin IDs), `uhid.h`/`uhid.c`/`hid-core.c`/`hid-input.c` (LEDs por `UHID_OUTPUT`), `f_hid.c` (read con endpoint OUT), Karabiner-DriverKit-VirtualHIDDevice v8.6.0 y Karabiner-Elements.
 - Verificado: fmt, clippy `-D warnings` (macOS, Linux con zig, Windows gnu), tests del workspace (router: filtro por activo, longitud, HID++, reaplicación, límite; e2e agente → hub → escritor). **Sin probar en hardware**: Bloq Mayús en el Ubuntu, el Windows (gadget) y el Mac, y que el LED siga al PC activo. Hay que redesplegar todo a la vez (v4).
 
+## Fase 3 B: transporte HID++ y CLI de perfil de SO (2026-10-23, VS Code)
+
+- `hub::hidpp`: correlación petición/respuesta como Solaar y el kernel (B1..B3, más B4 en 0xB5), errores 1.0/2.0, software id 0x0C, 300 ms y 2 reintentos, transporte falso con guion para los tests. En el hub en marcha las respuestas a nuestras peticiones no se reenvían a los agentes; el resto de la interfaz HID++ igual que antes (`Router::hidpp()` para C y D).
+- Ranuras por `0xB5` (`0x20+n-1`, `0x30+n-1`, `0x40+n-1`), ping, `getFeature`. Perfil de SO: **Solaar no implementa** `getHostOsVersion`/`setHostOsVersion` de 0x1815; sus números (7 y 8) y tipos (1 Windows, 3 Linux, 6 macOS) vienen de OpenLogi (ingeniería inversa de Logi Options+), sin verificar en hardware. Se añadió `MULTIPLATFORM` 0x4531 (Solaar «Set OS» y parche del kernel), que es lo que cambia Fn+P/Fn+O, y `DUALPLATFORM` 0x4530. ADR 0013.
+- CLI: `--hidpp-list`, `--hidpp-set-os <ranura> <windows|macos|linux> [--hidpp-via ...]`, `--hidpp-call`, `--hidpp-trace`. Guía en `docs/hidpp-validacion.md`.
+- Verificado: tests (7 de `hidpp`, con bytes de Solaar/kernel), clippy macOS y Linux, build aarch64-musl. **Pendiente: validación en la Pi** con el hub parado y el usuario mirando el Windows; según el resultado, bloque C o se queda ADR 0011.
+
 ## Convenciones
 
 Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario en castellano, `cargo fmt` y `cargo clippy -D warnings` limpios, un ADR por decisión nueva.

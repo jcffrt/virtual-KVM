@@ -255,6 +255,9 @@ pub struct Router {
     started: Instant,
     runtime: Option<tokio::runtime::Handle>,
     state: Mutex<State>,
+    /// HID++ channel to the receiver, while its HID++ interface is open.
+    /// Outside `state`: requests block for a reply.
+    hidpp: Mutex<Option<Arc<crate::hidpp::Hidpp>>>,
 }
 
 impl Router {
@@ -274,6 +277,7 @@ impl Router {
                 settings,
                 ..Default::default()
             }),
+            hidpp: Mutex::new(None),
         }
     }
 
@@ -339,6 +343,15 @@ impl Router {
     }
 
     // ---- devices -------------------------------------------------------
+
+    /// The receiver's HID++ channel, if its interface is open.
+    pub fn hidpp(&self) -> Option<Arc<crate::hidpp::Hidpp>> {
+        self.hidpp.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    pub fn set_hidpp(&self, h: Option<Arc<crate::hidpp::Hidpp>>) {
+        *self.hidpp.lock().unwrap_or_else(|e| e.into_inner()) = h;
+    }
 
     pub fn add_device(&self, dev: HidDevice) {
         self.add_device_with_writer(dev, None);

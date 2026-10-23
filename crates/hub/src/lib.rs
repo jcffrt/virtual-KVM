@@ -4,6 +4,7 @@
 pub mod config;
 #[cfg(target_os = "linux")]
 pub mod devices;
+pub mod hidpp;
 #[cfg(target_os = "linux")]
 pub mod hidraw;
 pub mod hidrec;

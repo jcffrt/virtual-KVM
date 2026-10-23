@@ -1190,6 +1190,7 @@ dependencies = [
  "rcgen",
  "rustls",
  "serde",
+ "thiserror",
  "tokio",
  "toml",
  "tracing",

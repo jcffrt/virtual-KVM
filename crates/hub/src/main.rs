@@ -74,6 +74,36 @@ struct Args {
     /// on `systemctl reload rawkvm-hub` (SIGHUP).
     #[arg(long, value_name = "FILE")]
     load_layout: Option<PathBuf>,
+
+    /// List the devices paired with the receiver over HID++ (slot, name,
+    /// kind, wireless PID, HID++ version, HOSTS_INFO) and exit. Stop the
+    /// hub service first.
+    #[arg(long)]
+    hidpp_list: bool,
+
+    /// Call HID++ 2.0 function FUNCTION (0..15) of feature FEATURE (hex,
+    /// e.g. 1815) on receiver slot SLOT with parameter bytes PARAMS (hex)
+    /// and print the reply, then exit. For probing: a function may change
+    /// the device. Stop the hub service first.
+    #[arg(long, num_args = 3.., value_names = ["SLOT", "FEATURE", "FUNCTION", "PARAMS"])]
+    hidpp_call: Option<Vec<String>>,
+
+    /// Set the keyboard layout profile of receiver slot SLOT to OS
+    /// (windows, macos, linux) on the host it is connected to now, print
+    /// the state before and after, and exit. Stop the hub service first.
+    #[arg(long, num_args = 2, value_names = ["SLOT", "OS"])]
+    hidpp_set_os: Option<Vec<String>>,
+
+    /// With --hidpp-set-os: the feature to use: auto (MULTIPLATFORM 0x4531,
+    /// else HOSTS_INFO 0x1815, else DUALPLATFORM 0x4530), multiplatform,
+    /// hostsinfo or dualplatform.
+    #[arg(long, default_value = "auto", requires = "hidpp_set_os")]
+    hidpp_via: String,
+
+    /// With --hidpp-*: print every HID++ report sent (>) and read (<), to
+    /// record fixtures.
+    #[arg(long)]
+    hidpp_trace: bool,
 }
 
 fn main() -> Result<()> {
@@ -98,6 +128,9 @@ fn main() -> Result<()> {
     }
     if args.dump_layout || args.load_layout.is_some() {
         return manage_layout(&args);
+    }
+    if args.hidpp_list || args.hidpp_call.is_some() || args.hidpp_set_os.is_some() {
+        return hidpp_cli(&args);
     }
     if args.show_token {
         let (cfg, _) = HubConfig::load_or_init(&args.config)?;
@@ -416,6 +449,218 @@ fn dump(args: &Args) -> Result<()> {
         let _ = t.join();
     }
     Ok(())
+}
+
+/// Open the receiver's HID++ interface for the `--hidpp-*` commands.
+#[cfg(target_os = "linux")]
+fn open_hidpp(args: &Args) -> Result<Arc<rawkvm_hub::hidpp::Hidpp>> {
+    use proto::descriptor::DescriptorInfo;
+    use rawkvm_hub::hidpp::Hidpp;
+    use rawkvm_hub::receiver;
+    let cfg = HubConfig::load_or_default(&args.config)?;
+    let iface = hidraw::enumerate()?
+        .into_iter()
+        .filter(|i| devices::is_forwarded(i, &cfg.receiver))
+        .find(|i| receiver::is_dj_interface(&DescriptorInfo::parse(&i.descriptor)))
+        .ok_or_else(|| anyhow::anyhow!("no HID++ interface of the receiver found; try --list"))?;
+    eprintln!(
+        "HID++ on {} ({}); the hub service should be stopped",
+        iface.hidraw.display(),
+        iface.phys
+    );
+    let file = hidraw::open(&iface.hidraw)?;
+    let writer = devices::HidrawWriter::spawn(file.try_clone()?, iface.hidraw.clone(), true)?;
+    let mut h = Hidpp::new(Arc::new(writer));
+    if args.hidpp_trace {
+        let t0 = std::time::Instant::now();
+        h = h.with_trace(move |dir, r| {
+            println!(
+                "{:>9.3} {dir} {}",
+                t0.elapsed().as_secs_f64() * 1000.0,
+                r.iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
+        });
+    }
+    let h = Arc::new(h);
+    let reader = h.clone();
+    std::thread::spawn(move || {
+        let err = hidraw::read_loop(file, |r| {
+            reader.on_report(r);
+        });
+        eprintln!("HID++ interface closed: {err}");
+    });
+    Ok(h)
+}
+
+#[cfg(target_os = "linux")]
+fn hidpp_cli(args: &Args) -> Result<()> {
+    use rawkvm_hub::hidpp::{OsKind, Request, Via};
+    let h = open_hidpp(args)?;
+    if let Some(call) = &args.hidpp_call {
+        let byte = |s: &str| {
+            u8::from_str_radix(s.trim_start_matches("0x"), 16)
+                .map_err(|_| anyhow::anyhow!("{s:?} is not a hex byte"))
+        };
+        let slot: u8 = call[0].parse()?;
+        let feature = u16::from_str_radix(call[1].trim_start_matches("0x"), 16)
+            .map_err(|_| anyhow::anyhow!("{:?} is not a hex feature id", call[1]))?;
+        let function: u8 = call[2].parse()?;
+        anyhow::ensure!(function < 16, "FUNCTION is 0..15");
+        let params = call[3..]
+            .iter()
+            .map(|p| byte(p))
+            .collect::<Result<Vec<_>>>()?;
+        let index = h
+            .feature_index(slot, feature)?
+            .ok_or_else(|| anyhow::anyhow!("slot {slot} has no feature {feature:04x}"))?;
+        let reply = h.request(&Request::feature(slot, index, function, &params))?;
+        println!(
+            "slot {slot} feature {feature:04x} (index {index}) function {function}: {}",
+            hex::encode(&reply)
+        );
+        return Ok(());
+    }
+    if let Some(set) = &args.hidpp_set_os {
+        let slot: u8 = set[0].parse()?;
+        let os = OsKind::parse(&set[1])
+            .ok_or_else(|| anyhow::anyhow!("OS is windows, macos or linux, not {:?}", set[1]))?;
+        let via = Via::parse(&args.hidpp_via).ok_or_else(|| {
+            anyhow::anyhow!("--hidpp-via is auto, multiplatform, hostsinfo or dualplatform")
+        })?;
+        let before = h
+            .survey(slot)?
+            .ok_or_else(|| anyhow::anyhow!("slot {slot} is empty"))?;
+        println!("before: {}", describe_slot(&h, &before));
+        let done = h.set_os(&before, os, via)?;
+        println!("written: {done}");
+        std::thread::sleep(Duration::from_millis(300));
+        match h.survey(slot)? {
+            Some(after) => println!("after:  {}", describe_slot(&h, &after)),
+            None => println!("after:  slot {slot} is empty"),
+        }
+        println!(
+            "check now whether Alt and Win/Cmd changed places on the PC the keyboard is \
+             connected to; if not, it may only apply after the keyboard reconnects \
+             (switch it off and on)"
+        );
+        return Ok(());
+    }
+    for slot in 1..=6u8 {
+        match h.survey(slot) {
+            Ok(Some(s)) => println!("{}", describe_slot(&h, &s)),
+            Ok(None) => println!("slot {slot}: empty"),
+            Err(e) => println!("slot {slot}: {e}"),
+        }
+    }
+    Ok(())
+}
+
+/// One slot for `--hidpp-list` / `--hidpp-set-os`.
+#[cfg(target_os = "linux")]
+fn describe_slot(h: &rawkvm_hub::hidpp::Hidpp, s: &rawkvm_hub::hidpp::SlotInfo) -> String {
+    use rawkvm_hub::hidpp::{hosts_os_name, multiplatform_os_names, HOSTS_CAN_SET_OS};
+    use std::fmt::Write;
+    let p = &s.pairing;
+    let mut o = format!(
+        "slot {}: {:?} {} wpid {:04x}",
+        s.slot,
+        p.name.as_deref().unwrap_or("?"),
+        p.kind_name(),
+        p.wireless_pid
+    );
+    if let Some(serial) = p.serial {
+        let _ = write!(o, " serial {serial:08x}");
+    }
+    match s.protocol {
+        Some((major, minor)) => {
+            let _ = write!(o, " HID++ {major}.{minor}");
+        }
+        None => o.push_str(" not reachable"),
+    }
+    if let (Some(i), Some(hi)) = (s.hosts_info, s.hosts) {
+        let _ = write!(
+            o,
+            "\n    HOSTS_INFO 1815 (index {i}): {} hosts, current {}, flags {:#04x}{}",
+            hi.num_hosts,
+            hi.current_host,
+            hi.flags,
+            if hi.flags & HOSTS_CAN_SET_OS != 0 {
+                " (can set OS)"
+            } else {
+                ""
+            }
+        );
+        if let Some(os) = s.host_os {
+            let _ = write!(
+                o,
+                "\n      current host OS: {} ({}) {}.{}.{}",
+                os.os_type,
+                hosts_os_name(os.os_type),
+                os.major,
+                os.minor,
+                os.patch
+            );
+        }
+        for host in 0..hi.num_hosts {
+            match h.host_info(s.slot, i, host) {
+                Ok(r) => {
+                    let _ = write!(o, "\n      host {host}: getHostInfo {}", hex::encode(&r));
+                }
+                Err(e) => {
+                    let _ = write!(o, "\n      host {host}: {e}");
+                }
+            }
+        }
+    } else if let Some(i) = s.hosts_info {
+        let _ = write!(o, "\n    HOSTS_INFO 1815 (index {i})");
+    }
+    if let Some((i, m)) = s.multiplatform {
+        let _ = write!(
+            o,
+            "\n    MULTIPLATFORM 4531 (index {i}): flags {:#04x}{}, current platform {}",
+            m.flags,
+            if m.settable() { " (settable)" } else { "" },
+            m.current
+        );
+        for d in &s.platforms {
+            let _ = write!(
+                o,
+                "\n      platform {}: {}",
+                d.platform,
+                multiplatform_os_names(d.os_flags).join(", ")
+            );
+        }
+    }
+    if let Some((i, v)) = s.dualplatform {
+        let _ = write!(
+            o,
+            "\n    DUALPLATFORM 4530 (index {i}): {v} ({})",
+            if v == 0 {
+                "iOS, macOS"
+            } else {
+                "Android, Windows"
+            }
+        );
+    }
+    if s.protocol.is_some_and(|(m, _)| m >= 2)
+        && s.hosts_info.is_none()
+        && s.multiplatform.is_none()
+        && s.dualplatform.is_none()
+    {
+        o.push_str("\n    no HOSTS_INFO, MULTIPLATFORM or DUALPLATFORM");
+    }
+    if let Some(e) = &s.error {
+        let _ = write!(o, "\n    (a request failed: {e})");
+    }
+    o
+}
+
+#[cfg(not(target_os = "linux"))]
+fn hidpp_cli(_args: &Args) -> Result<()> {
+    anyhow::bail!("--hidpp-* needs Linux (hidraw)")
 }
 
 #[cfg(not(target_os = "linux"))]
