@@ -6,7 +6,7 @@ RawKVM comparte un receptor de Logitech (teclado y ratón) entre varios equipos 
 - un **agente** en cada equipo que recibe la entrada (o una placa **gadget** conectada por USB al equipo);
 - el **widget**, opcional, para cambiar de equipo con un clic y ver los dispositivos.
 
-Las descargas son las de la última release del repositorio (`SHA256SUMS` incluido para comprobarlas). Mientras el repositorio sea privado, se descargan con `gh release download --repo jcffrt/virtual-KVM` (sesión de GitHub iniciada) o desde el navegador ([ADR 0021](adr/0021-distribucion-por-releases.md)).
+Las descargas son las de la [última release](https://github.com/jcffrt/virtual-KVM/releases/latest), sin cuenta de GitHub, con `SHA256SUMS` para comprobarlas ([ADR 0021](adr/0021-distribucion-por-releases.md)). Cada guía trae el comando de descarga.
 
 El **token de emparejamiento** se escribe en cada equipo una vez. Se ve en el hub con `sudo rawkvm-hub --show-token`. No lo pases nunca en la línea de comandos (queda en el historial): los instaladores lo piden sin mostrarlo, o lo leen de un fichero con `--token-file`.
 

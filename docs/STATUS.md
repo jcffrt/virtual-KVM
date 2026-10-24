@@ -490,7 +490,7 @@ Decisiones del usuario/orquestador sobre `docs/widget-plan.md`: (1) protocolo v3
   - Job `shellcheck` para todos los scripts.
   - Los jobs `hub-aarch64` y `gadget` de `ci.yml` desaparecen: `debs.yml` los sustituye.
 - Docs: `docs/instalacion.md` (página de entrada), `README.md`, y `hub-linux-instalacion.md` y `gadget-instalacion.md` con el paquete primero y la instalación manual como anexo.
-- Repositorio **privado**: la descarga de las releases necesita `gh` autenticado, o el navegador y después `scp`. Hacerlo público es una decisión pendiente del usuario; el ADR 0021 lista qué revisar antes en el historial.
+- Repositorio **público** desde el 2026-10-24 (decisión del usuario, historial revisado; ADR 0021). La descarga principal es `curl` anónimo de `releases/latest` comprobando `SHA256SUMS`, con `gh` y `scp` como alternativas. `releases/latest` da 404 hasta la etiqueta `v0.5.0`.
 - Sin probar en hardware: la migración en la Pi real, con el servicio bajo systemd, el reenchufado del receptor y el montaje del journal; `--pair` del gadget contra el hub real.
 
 ## Convenciones

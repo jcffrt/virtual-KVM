@@ -60,7 +60,7 @@ Sistema: Raspberry Pi OS Bookworm (64 bits recomendado; 32 bits también) o Armb
 
 ## 1. Instalar
 
-Con el paquete `.deb` de la release ([ADR 0022](adr/0022-paquetes-deb.md)): `arm64` para la Orange Pi, la Pi Zero 2 W, la Pi 3 A+ y la Pi 4 con sistema de 64 bits; `armhf` para Raspberry Pi OS de 32 bits. Descargarlo igual que el del hub ([hub-linux-instalacion.md](hub-linux-instalacion.md#instalar)), con `-p 'rawkvm-agent-gadget_*_arm64.deb'`, y en la placa:
+Con el paquete `.deb` de la release ([ADR 0022](adr/0022-paquetes-deb.md)): `arm64` para la Orange Pi, la Pi Zero 2 W, la Pi 3 A+ y la Pi 4 con sistema de 64 bits; `armhf` para Raspberry Pi OS de 32 bits. Descargarlo igual que el del hub ([hub-linux-instalacion.md](hub-linux-instalacion.md#instalar)), cambiando el nombre del paquete por `rawkvm-agent-gadget_${v}_arm64.deb`, y en la placa:
 
 ```sh
 sha256sum -c --ignore-missing SHA256SUMS

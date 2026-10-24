@@ -6,14 +6,15 @@ Sistemas: Armbian, Orange Pi OS o Raspberry Pi OS. Placas de 64 bits (Orange Pi 
 
 ## Instalar
 
-1. Descargar el paquete y `SHA256SUMS` de la última release ([ADR 0021](adr/0021-distribucion-por-releases.md)). Mientras el repositorio sea privado, la descarga necesita sesión de GitHub. Hay dos formas:
-   - en la placa, con `gh` autenticado:
+1. Descargar el paquete y `SHA256SUMS` de la última release ([ADR 0021](adr/0021-distribucion-por-releases.md)):
 
-     ```sh
-     gh release download --repo jcffrt/virtual-KVM -p 'rawkvm-hub_*_arm64.deb' -p SHA256SUMS
-     ```
+   ```sh
+   v=$(curl -fsSL https://api.github.com/repos/jcffrt/virtual-KVM/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
+   base=https://github.com/jcffrt/virtual-KVM/releases/download/v$v
+   curl -fL -O "$base/rawkvm-hub_${v}_arm64.deb" -O "$base/SHA256SUMS"
+   ```
 
-   - o desde el navegador en otro equipo, y después `scp rawkvm-hub_*_arm64.deb SHA256SUMS orangepi@<placa>:`.
+   Alternativas: `gh release download --repo jcffrt/virtual-KVM -p 'rawkvm-hub_*_arm64.deb' -p SHA256SUMS`, o descargarlos en otro equipo y copiarlos con `scp`.
 2. Comprobar e instalar:
 
    ```sh
