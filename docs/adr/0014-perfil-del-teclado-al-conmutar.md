@@ -26,3 +26,14 @@ La prueba de la Fase 3 B en la Pi (`fixtures/hidpp/`) dio estos resultados con e
 - El MX Keys sigue al equipo activo sin tocar los informes, que vuelven a reenviarse crudos.
 - Teclados sin MULTIPLATFORM (el K230) no cambian.
 - Logi Options+ en un PC no ve el teclado (sigue fuera de alcance).
+
+## Revisión (2026-10-23): "desconectado" ya no es definitivo
+
+Visto en la Pi con el hub v6 (778f633). Un sondeo de batería falló mientras el MX Keys estaba dormido para HID++. El hub lo marcó como no conectado, sin aviso en el journal. Su enlace con el receptor seguía activo, así que no llegó ninguna `0x41`, y desde entonces el hub dejó de cambiarle la disposición al conmutar Mac↔Windows. Era una trampa de un solo sentido: los cambios y los sondeos solo atendían a los dispositivos conectados, y la única salida era una `0x41` con el enlace activo.
+
+Ahora "conectado" significa "respondió a la última petición", y deja de ser algo que solo puede deshacer una `0x41`:
+
+- Al conmutar se escribe la disposición también en los dispositivos marcados como desconectados. Si responde, vuelve a estar conectado. Si no, queda igual, solo se registra en debug y se reintenta en el siguiente cambio.
+- El sondeo de batería (cada 5 min) también lee los dispositivos desconectados. Si uno responde, vuelve a estar conectado (registro info) y recibe la disposición que se perdió. Las ranuras que estaban dormidas en el arranque, sin índices de funciones, se vuelven a leer en cada sondeo.
+- Cuando un dispositivo conectado no responde al sondeo, se avisa con warn, una vez hasta que vuelva.
+- Coste: un dispositivo de verdad apagado recibe una petición por cambio y una por sondeo. Cada una cuesta como mucho el tiempo de espera de HID++ (300 ms por intento) en el hilo del receptor, fuera del camino de los informes.

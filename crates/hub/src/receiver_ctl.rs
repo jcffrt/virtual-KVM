@@ -228,31 +228,72 @@ impl<E: Events> Manager<E> {
         }
     }
 
+    /// Read every battery, offline slots included: a device that missed one
+    /// poll (asleep for HID++ while its link stays up, so no 0x41 comes) is
+    /// back online when it answers. Slots surveyed while unreachable have
+    /// no feature indexes yet: survey them again.
     fn poll_batteries(&mut self) {
         let mut changed = false;
+        let resurvey: Vec<u8> = self
+            .slots
+            .iter()
+            .filter(|(_, k)| !k.online && k.info.protocol.is_none())
+            .map(|(&s, _)| s)
+            .collect();
+        for slot in resurvey {
+            if self.read_slot(slot) && self.slots.get(&slot).is_some_and(|k| k.online) {
+                info!(slot, name = %self.slot_name(slot), "device answers again; back online");
+                changed = true;
+            }
+        }
         let slots: Vec<(u8, u8)> = self
             .slots
             .iter()
-            .filter(|(_, k)| k.online)
             .filter_map(|(&s, k)| k.info.battery.map(|(i, _)| (s, i)))
             .collect();
         for (slot, index) in slots {
             match self.h.battery_status(slot, index) {
-                Ok(b) => changed |= self.set_battery(slot, b),
+                Ok(b) => {
+                    changed |= self.set_battery(slot, b);
+                    changed |= self.mark_online(slot);
+                }
                 Err(e) => {
-                    if e.is_unreachable() {
+                    let was_online = self.slots.get(&slot).is_some_and(|k| k.online);
+                    if e.is_unreachable() && was_online {
                         if let Some(k) = self.slots.get_mut(&slot) {
                             k.online = false;
-                            changed = true;
                         }
+                        changed = true;
+                        let name = self.slot_name(slot);
+                        self.warn_once(
+                            slot,
+                            format!(
+                                "slot {slot} ({name}) did not answer the battery poll ({e}); \
+                                 offline until it answers"
+                            ),
+                        );
+                    } else {
+                        debug!(slot, "reading the battery: {e}");
                     }
-                    debug!(slot, "reading the battery: {e}");
                 }
             }
         }
         if changed {
             self.publish();
         }
+    }
+
+    /// `slot` answered a request: if it was offline, it is online again and
+    /// gets the layout it missed. True if it was offline.
+    fn mark_online(&mut self, slot: u8) -> bool {
+        let Some(k) = self.slots.get_mut(&slot).filter(|k| !k.online) else {
+            return false;
+        };
+        k.online = true;
+        self.warned.retain(|(s, _)| *s != slot);
+        info!(slot, name = %self.slot_name(slot), "device answers again; back online");
+        self.apply(slot);
+        true
     }
 
     /// Store a battery reading; true if it changed.
@@ -347,9 +388,10 @@ impl<E: Events> Manager<E> {
         let Some((index, mp)) = k.info.multiplatform.filter(|(_, m)| m.settable()) else {
             return;
         };
-        if !k.online {
-            return; // applied when it connects
-        }
+        // Offline (missed a poll, or went down while switching): try anyway.
+        // A device that answers is online again; one that does not is
+        // tried again on the next switch and the next battery poll.
+        let was_online = k.online;
         let Some(platform) = k.info.platform_for(want) else {
             self.warn_once(
                 slot,
@@ -365,11 +407,18 @@ impl<E: Events> Manager<E> {
             Ok(()) => {
                 info!(slot, %name, ?want, platform, "keyboard layout set");
                 if let Some(k) = self.slots.get_mut(&slot) {
+                    k.online = true;
                     if let Some((_, m)) = &mut k.info.multiplatform {
                         m.current = platform;
                     }
                 }
+                if !was_online {
+                    info!(slot, %name, "device answers again; back online");
+                }
                 self.warned.retain(|(s, _)| *s != slot);
+            }
+            Err(e) if e.is_unreachable() && !was_online => {
+                debug!(slot, %name, "setting the layout while offline: {e}");
             }
             Err(e) => {
                 if e.is_unreachable() {
@@ -674,6 +723,23 @@ mod tests {
         v
     }
 
+    /// The K230 (slot 2) surveyed again as recorded: paired, asleep. The
+    /// battery poll surveys slots that were unreachable at start.
+    fn k230_resurvey() -> Vec<(Vec<u8>, Vec<Vec<u8>>)> {
+        let wanted = [
+            hex("10 ff 83 b5 21 00 00"),
+            hex("10 ff 83 b5 31 00 00"),
+            hex("10 ff 83 b5 41 00 00"),
+            hex("10 02 00 1c 00 00 5a"),
+        ];
+        let v: Vec<_> = trace("hidpp-list.txt")
+            .into_iter()
+            .filter(|(req, _)| wanted.contains(req))
+            .collect();
+        assert_eq!(v.len(), wanted.len());
+        v
+    }
+
     #[test]
     fn real_slots_become_paired_devices() {
         let t = real_receiver(vec![]);
@@ -707,21 +773,26 @@ mod tests {
 
     #[test]
     fn batteries_pointer_speed_and_fn_swap() {
-        let t = real_receiver(vec![
-            // setPointerSpeed(0x01ff): asked for 1000, clamped.
-            (hex("10 01 0d 1c 01 ff 00"), vec![long("11 01 0d 1c 01 ff")]),
-            // 0x40A3 setFnSwap(host 0, off).
-            (hex("10 03 0c 1c 00 00 00"), vec![long("11 03 0c 1c 00 00")]),
-            // The poll: the MX Keys is charging now; the MX Ergo is gone.
-            (
-                hex("10 03 07 0c 00 00 00"),
-                vec![long("11 03 07 0c 0a 05 01")],
-            ),
-            (
-                hex("10 01 08 0c 00 00 00"),
-                vec![hex("10 01 8f 08 0c 09 00")],
-            ),
-        ]);
+        let t = real_receiver(
+            vec![
+                // setPointerSpeed(0x01ff): asked for 1000, clamped.
+                (hex("10 01 0d 1c 01 ff 00"), vec![long("11 01 0d 1c 01 ff")]),
+                // 0x40A3 setFnSwap(host 0, off).
+                (hex("10 03 0c 1c 00 00 00"), vec![long("11 03 0c 1c 00 00")]),
+                // The poll: the MX Keys is charging now; the MX Ergo is gone.
+                (
+                    hex("10 03 07 0c 00 00 00"),
+                    vec![long("11 03 07 0c 0a 05 01")],
+                ),
+                (
+                    hex("10 01 08 0c 00 00 00"),
+                    vec![hex("10 01 8f 08 0c 09 00")],
+                ),
+            ]
+            .into_iter()
+            .chain(k230_resurvey())
+            .collect(),
+        );
         let rec = Rec::default();
         let mut m = Manager::new(t.attach(), rec.clone(), true);
         m.start();
@@ -776,6 +847,85 @@ mod tests {
             })
         );
         assert!(!d[0].online, "an unreachable device goes offline");
+    }
+
+    #[test]
+    fn a_missed_battery_poll_does_not_stop_the_layout_switches() {
+        // On the Pi: the MX Keys, asleep for HID++ during one poll, went
+        // offline; its link never dropped, so no 0x41 came, and every later
+        // switch skipped it.
+        let asleep = |req: &str| {
+            let r = hex(req);
+            let err = hex(&format!("10 03 8f {:02x} {:02x} 09 00", r[2], r[3]));
+            (r, vec![err])
+        };
+        let mx_ergo_battery = || trace("bat-slot1-1000.txt").pop().unwrap();
+        let set_windows = (hex("10 03 10 3c ff 00 00"), vec![long("11 03 10 3c ff 00")]);
+        let set_macos = (hex("10 03 10 3c ff 01 00"), vec![long("11 03 10 3c ff 01")]);
+        let mut extra = vec![
+            // Poll 1: the MX Keys does not answer.
+            mx_ergo_battery(),
+            asleep("10 03 07 0c 00 00 00"),
+            // A switch while still asleep, then one it answers.
+            asleep("10 03 10 3c ff 00 00"),
+            set_windows,
+            // Poll 2: asleep again; a switch it misses.
+            mx_ergo_battery(),
+            asleep("10 03 07 0c 00 00 00"),
+            asleep("10 03 10 3c ff 01 00"),
+            // Poll 3: it answers, and gets the layout it missed.
+            mx_ergo_battery(),
+            (
+                hex("10 03 07 0c 00 00 00"),
+                vec![long("11 03 07 0c 05 00 00")],
+            ),
+            set_macos,
+        ];
+        for _ in 0..3 {
+            extra.extend(k230_resurvey());
+        }
+        let t = real_receiver(extra);
+        let rec = Rec::default();
+        let mut m = Manager::new(t.attach(), rec.clone(), true);
+        m.start();
+        let mx_keys = || rec.1.lock().unwrap()[2].clone();
+        assert!(mx_keys().online);
+        assert_eq!(mx_keys().os_profile, Some(Os::MacOs));
+        let mut now = Instant::now();
+        let mut poll = |m: &mut Manager<Rec>| {
+            now += BATTERY_POLL;
+            m.tick(now);
+        };
+
+        poll(&mut m);
+        assert!(!mx_keys().online);
+        m.handle(Cmd::Profile(Some(OsKind::Windows)));
+        assert!(!mx_keys().online);
+        assert_eq!(mx_keys().os_profile, Some(Os::MacOs));
+        m.handle(Cmd::Profile(None));
+        m.handle(Cmd::Profile(Some(OsKind::Windows)));
+        assert!(mx_keys().online, "it answered the switch");
+        assert_eq!(mx_keys().os_profile, Some(Os::Windows));
+
+        poll(&mut m);
+        m.handle(Cmd::Profile(Some(OsKind::MacOs)));
+        assert!(!mx_keys().online);
+        assert_eq!(mx_keys().os_profile, Some(Os::Windows));
+        poll(&mut m);
+        assert!(mx_keys().online, "it answered the poll");
+        assert_eq!(mx_keys().os_profile, Some(Os::MacOs));
+        // Every scripted request was made: only the trace's extras are left.
+        let left = |t: &Scripted| -> Vec<Vec<u8>> {
+            t.script
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(r, _)| r.clone())
+                .collect()
+        };
+        let base = real_receiver(vec![]);
+        Manager::new(base.attach(), Rec::default(), true).start();
+        assert_eq!(left(&t), left(&base));
     }
 
     #[test]

@@ -464,6 +464,17 @@ Decisiones del usuario/orquestador sobre `docs/widget-plan.md`: (1) protocolo v3
 - Pendiente menor: redesplegar los widgets con a9918fa ("cargando" sin "?") en el próximo ciclo; emparejar desde el widget (D de la Fase 3) sin probar por falta de dispositivo libre.
 - Limpieza: `TOKEN.txt` de `~/Downloads/RawKVM-windows` borrado en el Mac; el usuario debe borrar su copia en el Windows.
 
+## Disposición del MX Keys tras un sondeo de batería fallido (2026-10-23)
+
+- Fallo visto en la Pi (hub 778f633): un sondeo de batería falló con el MX Keys dormido y el hub lo marcó como desconectado sin avisar. No llegó ninguna `0x41`, así que dejó de cambiarle la disposición al conmutar Mac↔Windows (Alt/Win cruzadas).
+- Corregido en `receiver_ctl.rs`:
+  - Al conmutar se intenta también con los dispositivos desconectados.
+  - El sondeo también lee los desconectados y vuelve a leer las ranuras dormidas en el arranque.
+  - Un dispositivo que responde vuelve a conectado y recibe la disposición que se perdió.
+  - Registro: warn al pasar a desconectado por el sondeo, info al volver.
+- Test `a_missed_battery_poll_does_not_stop_the_layout_switches`. Revisión en ADR 0014.
+- Sin cambio de protocolo; hay que redesplegar el hub. Sin probar en hardware.
+
 ## Convenciones
 
 Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario en castellano, `cargo fmt` y `cargo clippy -D warnings` limpios, un ADR por decisión nueva.

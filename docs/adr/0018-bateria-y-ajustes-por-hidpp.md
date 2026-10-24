@@ -17,7 +17,7 @@ Formatos contrastados con Solaar (`hidpp20.py`, `settings_templates.py`, `settin
 - **Batería, 0x1000**:
   - Función 0 `getBatteryLevelStatus` → nivel %, siguiente nivel %, estado. Un nivel 0 es desconocido. Estados: 0 descargando, 1 cargando, 2 casi llena, 3 llena, 4 carga lenta, 5–7 errores.
   - El evento 0 (B3 = `0x00`, id de software 0) tiene el mismo formato.
-  - El hub la lee al conectarse el dispositivo (en la lectura de la ranura), cada 5 minutos de los conectados y en cada evento. Todo en el hilo del receptor, nunca en el camino de los informes.
+  - El hub la lee al conectarse el dispositivo (en la lectura de la ranura), cada 5 minutos (también de los marcados como desconectados, que vuelven a conectado si responden; ver la revisión del ADR 0014) y en cada evento. Todo en el hilo del receptor, nunca en el camino de los informes.
   - Grabado: MX Ergo `32 14 00` (50 %, siguiente 20 %, descargando), MX Keys `05 00 00` (5 %).
 - **Velocidad del puntero, 0x2205**:
   - Función 0 lee un u16 BE en 1/256 (256 = 1×). La función 1 lo escribe.
