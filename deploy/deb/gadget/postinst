@@ -1,0 +1,100 @@
+#!/bin/sh
+# postinst of rawkvm-agent-gadget: what deploy/gadget/install.sh does by
+# hand, plus the move from that manual install to the package (ADR 0022).
+# It does not pair (no network is guaranteed here): `--pair` does, later.
+set -e
+
+[ "$1" = configure ] || exit 0
+reboot_needed=0
+defaults=/etc/default/rawkvm-agent-gadget
+config=/etc/rawkvm/agent.toml
+
+systemd_running() { [ -d /run/systemd/system ]; }
+
+# Before the package: binary in /usr/local/bin and a unit in
+# /etc/systemd/system whose ExecStart may carry --host-os / --no-hidpp.
+# Those move to $defaults; agent.toml (pairing) stays.
+migrate_manual_install() {
+    old_unit=/etc/systemd/system/rawkvm-agent-gadget.service
+    if [ -f "$old_unit" ] && ! [ -L "$old_unit" ]; then
+        echo "rawkvm-agent-gadget: replacing the manual install ($old_unit)"
+        extra=$(sed -n 's/^ExecStart=[^ ]*rawkvm-agent-gadget//p' "$old_unit" |
+            sed -e 's|--config /etc/rawkvm/agent.toml||' -e 's|--udc-wait 60||' \
+                -e 's/  */ /g' -e 's/^ //' -e 's/ $//')
+        if [ -n "$extra" ] && ! grep -q '^RAWKVM_GADGET_ARGS=' "$defaults" 2>/dev/null; then
+            echo "rawkvm-agent-gadget: keeping its options in $defaults: $extra"
+            printf 'RAWKVM_GADGET_ARGS="%s"\n' "$extra" >> "$defaults"
+        fi
+        if systemd_running; then
+            systemctl disable rawkvm-agent-gadget.service >/dev/null 2>&1 || true
+        fi
+        rm -f "$old_unit" /etc/systemd/system/multi-user.target.wants/rawkvm-agent-gadget.service
+    fi
+    rm -f /usr/local/bin/rawkvm-agent-gadget
+}
+
+# The OTG port in device mode, and the modules at boot.
+setup_usb_device_mode() {
+    model=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || echo unknown)
+    case "$model" in
+    *"Raspberry Pi 3 Model B"*)
+        echo "rawkvm-agent-gadget: WARNING: on the Pi 3 B/B+ the OTG port sits behind the USB hub; gadget mode cannot work." >&2 ;;
+    esac
+    case "$model" in
+    *"Raspberry Pi"*)
+        cfg=/boot/firmware/config.txt
+        [ -f "$cfg" ] || cfg=/boot/config.txt
+        if [ -f "$cfg" ] && ! grep -q '^dtoverlay=dwc2' "$cfg"; then
+            printf '\n[all]\ndtoverlay=dwc2,dr_mode=peripheral\n' >> "$cfg"
+            echo "rawkvm-agent-gadget: added dtoverlay=dwc2,dr_mode=peripheral to $cfg"
+            reboot_needed=1
+        fi
+        modules="dwc2 libcomposite" ;;
+    *)
+        # Armbian / Orange Pi OS (Allwinner): the UDC (musb) is built in
+        # and the OTG port is already in peripheral mode. Do NOT apply the
+        # usb0-host overlay: it turns the OTG port into a host.
+        modules="libcomposite" ;;
+    esac
+    # shellcheck disable=SC2086 # one module per line
+    printf '%s\n' $modules > /etc/modules-load.d/rawkvm-gadget.conf
+    if command -v modprobe >/dev/null 2>&1; then
+        for m in $modules; do
+            modprobe "$m" 2>/dev/null || reboot_needed=1
+        done
+    fi
+    if [ -d /sys/kernel/config ] && ! mountpoint -q /sys/kernel/config; then
+        mount -t configfs none /sys/kernel/config || true
+    fi
+}
+
+migrate_manual_install
+setup_usb_device_mode
+[ -d /etc/rawkvm ] || install -d -m 0700 /etc/rawkvm
+
+paired=0
+grep -Eq '^token = "[0-9a-f]{64}"' "$config" 2>/dev/null && paired=1
+
+if systemd_running; then
+    systemctl daemon-reload
+    if [ "$paired" -eq 1 ]; then
+        systemctl enable rawkvm-agent-gadget.service >/dev/null 2>&1
+        if [ "$reboot_needed" -eq 0 ]; then
+            systemctl restart rawkvm-agent-gadget.service
+        fi
+    fi
+fi
+
+if [ "$paired" -eq 0 ]; then
+    echo "rawkvm-agent-gadget: not paired yet. Pair with the hub (the token is asked for, hidden), then start it:"
+    echo "  sudo rawkvm-agent-gadget --pair --hub <hub-ip>"
+    echo "  sudo systemctl enable --now rawkvm-agent-gadget"
+fi
+if [ "$reboot_needed" -eq 1 ]; then
+    echo "rawkvm-agent-gadget: reboot needed (dwc2 overlay / modules); the service starts after it."
+fi
+echo "rawkvm-agent-gadget: options for the PC on the cable: $defaults; log: journalctl -u rawkvm-agent-gadget -f"
+
+# Flush to disk now: boards fed from a PC lose power abruptly.
+sync
+exit 0

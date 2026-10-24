@@ -1,0 +1,42 @@
+# RawKVM hub configuration: /etc/rawkvm/hub.toml
+#
+# The hub creates /etc/rawkvm/hub.toml on its first start with a new hub id
+# and pairing token (show it with `sudo rawkvm-hub --show-token`). Every
+# key is optional: a missing key takes the default shown here. Copy only
+# the lines you want to change, then `sudo systemctl restart rawkvm-hub`.
+# Do not copy `hub_id` or `token` from another hub.
+
+# name = "<hostname>"                 # shown by the agents and the widget
+# listen = "0.0.0.0:4433"             # QUIC, UDP
+# state_dir = "/var/lib/rawkvm"       # certificate, layout, settings
+# mdns = true                         # advertise the hub on the LAN
+
+# [receiver]
+# match = "receiver"                  # or "dj-children" (ADR 0003)
+# vid = 1133                          # 0x046d, Logitech
+# pids = [50475, 50482, 50484, 50489, 50495, 50503, 50504]
+# grab_evdev = true
+# force_normal_mode = true
+# require_hid_generic = true
+
+# [switching]
+# hysteresis_ms = 150
+# resend_ms = 15
+# hotkey = true                       # modifier, modifier, 1..4
+# hotkey_modifier = "ctrl"            # "ctrl", "shift", "alt" or "gui"
+# hotkey_previous = true              # modifier, modifier, 0
+# hotkey_release_keys = true          # modifier, modifier, Esc
+
+# [edge]
+# push_ms = 0
+# corner_pct = 3
+# dead_zone_px = 2
+
+# [hidpp]
+# os_profile = true                   # keyboard layout follows the agent's OS
+
+# Per-agent options, by agent index (`rawkvm-hub --list-nodes`):
+# [[node_options]]
+# index = 1
+# swap_alt_gui = false
+# os_profile = "macos"                # "windows", "macos", "linux" or "none"

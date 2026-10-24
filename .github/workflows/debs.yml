@@ -1,0 +1,69 @@
+# Hub and gadget .debs (ADR 0022), for ci.yml (every push) and release.yml
+# (tags). Builds static musl binaries with zig, packages them with
+# cargo-deb, runs lintian, and installs the arm64 packages in an arm64
+# Debian container under QEMU (deploy/deb/test-install.sh).
+name: debs
+
+on:
+  workflow_call:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-unknown-linux-musl
+            arch: arm64
+          - target: armv7-unknown-linux-musleabihf
+            arch: armhf
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: debs-${{ matrix.target }}
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: 0.13.0
+      - run: cargo install cargo-zigbuild cargo-deb --locked
+      - run: cargo zigbuild --release --target ${{ matrix.target }} -p rawkvm-hub -p rawkvm-agent-gadget
+      # --no-strip: the release profile already strips, and the host strip
+      # does not know ARM binaries.
+      - run: |
+          cargo deb --no-build --no-strip --target ${{ matrix.target }} -p rawkvm-hub
+          cargo deb --no-build --no-strip --target ${{ matrix.target }} -p rawkvm-agent-gadget
+          mkdir -p out
+          cp target/debian/*_${{ matrix.arch }}.deb out/
+          ls -l out
+      - name: lintian (warnings only)
+        run: |
+          sudo apt-get install -y --no-install-recommends lintian >/dev/null
+          lintian --no-tag-display-limit out/*.deb || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: debs-${{ matrix.arch }}
+          path: out/*.deb
+
+  install-test:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: debs-arm64
+          path: debs
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+      - run: >
+          docker run --rm --platform linux/arm64
+          -v "$PWD:/repo:ro"
+          debian:bookworm
+          sh /repo/deploy/deb/test-install.sh /repo/debs /repo

@@ -40,3 +40,28 @@ nix.workspace = true
 
 [dev-dependencies]
 proto = { workspace = true, features = ["test-fixtures"] }
+
+# `cargo deb --no-build --target aarch64-unknown-linux-musl -p rawkvm-hub`
+# after `cargo zigbuild --release --target ...` (release.yml, ADR 0022).
+[package.metadata.deb]
+name = "rawkvm-hub"
+maintainer = "RawKVM <jcffrt@users.noreply.github.com>"
+copyright = "RawKVM contributors"
+section = "net"
+priority = "optional"
+revision = ""
+# Static musl binary: no shared libraries; systemd for the service.
+depends = "systemd"
+extended-description = """\
+Reads the Logitech receiver (Unifying, Bolt, Lightspeed) and forwards its \
+raw HID reports to the RawKVM agents of the PCs over QUIC. Includes the \
+blacklist of hid_logitech_dj, a persistent journal and the systemd service."""
+maintainer-scripts = "../../deploy/deb/hub/"
+assets = [
+    ["target/release/rawkvm-hub", "usr/bin/", "755"],
+    ["../../deploy/hub-linux/rawkvm-hub.service", "lib/systemd/system/", "644"],
+    ["../../deploy/hub-linux/modprobe-rawkvm.conf", "etc/modprobe.d/rawkvm.conf", "644"],
+    ["../../deploy/hub-linux/journald-rawkvm.conf", "etc/systemd/journald.conf.d/rawkvm.conf", "644"],
+    ["../../deploy/hub-linux/var-log-journal.mount.in", "usr/share/rawkvm-hub/", "644"],
+    ["../../deploy/deb/hub/hub.toml.example", "usr/share/doc/rawkvm-hub/", "644"],
+]

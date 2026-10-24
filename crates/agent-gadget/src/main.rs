@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use agent_core::{AgentConfig, AgentOptions};
-use anyhow::{Context, Result};
+use agent_core::AgentOptions;
+use anyhow::Result;
 use clap::Parser;
 use rawkvm_agent_gadget::configfs::{self, Options};
 use rawkvm_agent_gadget::sink::{GadgetSink, Paths};
@@ -24,9 +24,20 @@ struct Args {
     #[arg(long)]
     hub: Option<String>,
 
-    /// Pairing token printed by the hub, saved to the config.
+    /// Pairing token printed by the hub, saved to the config. It stays in
+    /// the shell history: prefer --token-file or the --pair prompt.
     #[arg(long)]
     token: Option<String>,
+
+    /// File holding the pairing token, saved to the config.
+    #[arg(long, value_name = "FILE")]
+    token_file: Option<PathBuf>,
+
+    /// Pair and exit: forget the pinned certificate, ask for the token if
+    /// the config has none, connect once, pin the hub and exit with 0.
+    /// Then start the service.
+    #[arg(long, conflicts_with = "configure_only")]
+    pair: bool,
 
     /// Forget the pinned hub certificate (pair again).
     #[arg(long)]
@@ -56,7 +67,7 @@ struct Args {
     #[arg(long)]
     serial: Option<String>,
 
-    /// Save --hub / --token / --unpin to the config and exit.
+    /// Save --hub / --token / --token-file / --unpin to the config and exit.
     #[arg(long)]
     configure_only: bool,
 }
@@ -96,26 +107,30 @@ fn main() -> Result<()> {
         anyhow::bail!("the USB gadget agent needs Linux (ConfigFS)");
     }
 
-    let mut cfg = AgentConfig::load_or_init(&args.config)?;
-    let mut changed = false;
-    if let Some(hub) = args.hub {
-        cfg.hub = hub.trim().to_string();
-        changed = true;
-    }
-    if let Some(token) = args.token {
-        proto::parse_token(&token).context("--token must be 64 hex characters")?;
-        cfg.token = token.trim().to_lowercase();
-        changed = true;
-    }
-    if args.unpin {
-        cfg.hub_fingerprint.clear();
-        changed = true;
-    }
-    if changed || args.configure_only {
+    let pairing = agent_core::pairing::PairArgs {
+        hub: args.hub,
+        token: args.token,
+        token_file: args.token_file,
+        unpin: args.unpin,
+        pair: args.pair,
+    };
+    let cfg = pairing.apply(&args.config)?;
+    if args.configure_only {
         cfg.save(&args.config)?;
         info!("saved {}", args.config.display());
+        return Ok(());
     }
-    if args.configure_only {
+    if args.pair {
+        let opts = AgentOptions {
+            config_path: args.config,
+            os: args.host_os.into(),
+        };
+        let addr = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?
+            .block_on(agent_core::pairing::pair(&opts, proto::NodeKind::Agent))?;
+        println!("paired with the hub at {addr}; start the service:");
+        println!("  sudo systemctl enable --now rawkvm-agent-gadget");
         return Ok(());
     }
     info!(node = %cfg.node_id, name = %cfg.node_name, host_os = ?args.host_os, "starting");

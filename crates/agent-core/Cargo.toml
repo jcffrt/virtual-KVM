@@ -17,6 +17,7 @@ dirs.workspace = true
 gethostname.workspace = true
 mdns-sd.workspace = true
 quinn.workspace = true
+rpassword.workspace = true
 rustls.workspace = true
 serde.workspace = true
 tokio.workspace = true

@@ -7,7 +7,7 @@ After=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/rawkvm-hub --config /etc/rawkvm/hub.toml
+ExecStart=/usr/bin/rawkvm-hub --config /etc/rawkvm/hub.toml
 # Re-read /var/lib/rawkvm/layout.toml (after rawkvm-hub --load-layout).
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=always

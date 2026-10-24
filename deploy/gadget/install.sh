@@ -1,6 +1,7 @@
 #!/bin/sh
 # Install the RawKVM USB gadget agent on a Raspberry Pi (Raspberry Pi OS)
-# or an Armbian board. Idempotent. Run as root:
+# or an Armbian board. Idempotent. The .deb does the same and is the usual
+# way; this script stays for boards without dpkg. Run as root:
 #   sudo sh install.sh ./rawkvm-agent-gadget [--hub IP --token HEX]
 set -eu
 [ "$(id -u)" -eq 0 ] || { echo "run as root" >&2; exit 1; }
@@ -35,14 +36,18 @@ case "$model" in
 esac
 
 # 2. Modules at boot, and now.
+# shellcheck disable=SC2086 # one module per line
 printf '%s\n' $modules > /etc/modules-load.d/rawkvm-gadget.conf
 for m in $modules; do modprobe "$m" 2>/dev/null || reboot_needed=1; done
 mountpoint -q /sys/kernel/config || mount -t configfs none /sys/kernel/config
 
 # 3. Binary, config, service.
-install -m 0755 "$bin" /usr/local/bin/rawkvm-agent-gadget
+install -m 0755 "$bin" /usr/bin/rawkvm-agent-gadget
+rm -f /usr/local/bin/rawkvm-agent-gadget # before 0.5.0
 install -d -m 0700 /etc/rawkvm
-/usr/local/bin/rawkvm-agent-gadget --config /etc/rawkvm/agent.toml --configure-only "$@"
+/usr/bin/rawkvm-agent-gadget --config /etc/rawkvm/agent.toml --configure-only "$@"
+[ -f /etc/default/rawkvm-agent-gadget ] ||
+    install -m 0644 "$here/rawkvm-agent-gadget.default" /etc/default/rawkvm-agent-gadget
 install -m 0644 "$here/rawkvm-agent-gadget.service" /etc/systemd/system/rawkvm-agent-gadget.service
 systemctl daemon-reload
 systemctl enable rawkvm-agent-gadget.service
@@ -53,6 +58,7 @@ else
     systemctl restart rawkvm-agent-gadget.service
     echo "started; log: journalctl -u rawkvm-agent-gadget -f"
 fi
+# shellcheck disable=SC2012 # UDC names are plain
 udc=$(ls /sys/class/udc 2>/dev/null | head -n 1)
 if [ -n "$udc" ]; then
     echo "UDC: $udc"

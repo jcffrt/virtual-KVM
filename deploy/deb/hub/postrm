@@ -1,0 +1,24 @@
+#!/bin/sh
+# postrm of rawkvm-hub. `remove` keeps the config, the token and the
+# certificate; only `purge` deletes them. /etc/rawkvm is shared with
+# rawkvm-agent-gadget (agent.toml): delete only the hub's files.
+set -e
+case "$1" in
+purge)
+    rm -f /etc/rawkvm/hub.toml /etc/rawkvm/hub.tmp
+    rm -rf /var/lib/rawkvm
+    rmdir /etc/rawkvm 2>/dev/null || true
+    mount=/etc/systemd/system/var-log-journal.mount
+    if [ -f "$mount" ] && grep -q RawKVM "$mount"; then
+        if [ -d /run/systemd/system ]; then
+            systemctl disable var-log-journal.mount >/dev/null 2>&1 || true
+        fi
+        rm -f "$mount"
+    fi
+    echo "rawkvm-hub: purged the pairing token and the certificate; every agent must pair again with the next hub"
+    ;;
+esac
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload || true
+fi
+exit 0

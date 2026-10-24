@@ -1,0 +1,8 @@
+# Options of rawkvm-agent-gadget.service: /etc/default/rawkvm-agent-gadget.
+# After a change: sudo systemctl restart rawkvm-agent-gadget
+#
+# System of the PC on the USB cable (default: windows), so that the hub
+# sets the keyboard layout for it. A Linux PC also needs --no-hidpp
+# (ADR 0007):
+#RAWKVM_GADGET_ARGS="--host-os macos"
+#RAWKVM_GADGET_ARGS="--host-os linux --no-hidpp"

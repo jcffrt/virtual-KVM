@@ -3,6 +3,8 @@
 # plugged in: Raspberry Pi OS (Pi 3 B, Pi 4...) or Armbian / Orange Pi OS.
 # Run as root from the directory holding the rawkvm-hub binary:
 #   sudo sh hub-linux/install.sh ./rawkvm-hub
+# The .deb (rawkvm-hub_<version>_arm64.deb) does the same and is the usual
+# way; this script stays for boards without dpkg.
 # Use the aarch64 binary on 64-bit systems (armv7 needs its own build).
 set -eu
 [ "$(id -u)" -eq 0 ] || { echo "run as root" >&2; exit 1; }
@@ -10,7 +12,8 @@ here=$(dirname "$0")
 model=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || echo unknown)
 echo "board: $model"
 
-install -m 0755 "${1:-rawkvm-hub}" /usr/local/bin/rawkvm-hub
+install -m 0755 "${1:-rawkvm-hub}" /usr/bin/rawkvm-hub
+rm -f /usr/local/bin/rawkvm-hub # before 0.5.0
 install -m 0644 "$here/modprobe-rawkvm.conf" /etc/modprobe.d/rawkvm.conf
 install -m 0644 "$here/rawkvm-hub.service" /etc/systemd/system/rawkvm-hub.service
 
@@ -65,7 +68,7 @@ systemctl daemon-reload
 systemctl enable --now rawkvm-hub.service
 sleep 2
 echo "Pairing token:"
-/usr/local/bin/rawkvm-hub --config /etc/rawkvm/hub.toml --show-token
+/usr/bin/rawkvm-hub --config /etc/rawkvm/hub.toml --show-token
 
 # Flush to disk now: boards fed from a PC lose power abruptly, and the SD
 # card may otherwise keep these writes in its cache for minutes.

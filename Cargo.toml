@@ -15,7 +15,7 @@ members = [
 exclude = ["widget"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.5.0"
 edition = "2021"
 license = "MIT"
 rust-version = "1.80"
@@ -37,6 +37,7 @@ nix = { version = "0.30", features = ["ioctl", "fs"] }
 postcard = { version = "1", features = ["alloc"] }
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring", "log"] }
 rand = "0.8"
+rpassword = "7"
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 serde = { version = "1", features = ["derive"] }

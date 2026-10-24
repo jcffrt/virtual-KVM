@@ -318,6 +318,33 @@ pub fn ensure_dir(dir: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// The commented example shipped in the .deb shows the real defaults.
+    #[test]
+    fn packaged_example_matches_the_defaults() {
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/deb/hub/hub.toml.example");
+        let text = fs::read_to_string(path).unwrap();
+        let uncommented: String = text
+            .lines()
+            .filter_map(|l| l.strip_prefix("# "))
+            .filter(|l| {
+                l.starts_with('[') || l.split_once(" = ").is_some_and(|(k, _)| !k.contains(' '))
+            })
+            .map(|l| format!("{l}\n"))
+            .collect();
+        let cfg = HubConfig::parse(&uncommented).unwrap();
+        let want = HubConfig {
+            name: "<hostname>".into(),
+            node_options: vec![NodeOptions {
+                index: 1,
+                swap_alt_gui: false,
+                os_profile: Some(OsProfile::Macos),
+            }],
+            ..Default::default()
+        };
+        assert_eq!(cfg, want);
+    }
+
     #[test]
     fn partial_file_takes_defaults() {
         let cfg = HubConfig::parse("name = \"pi\"\n[switching]\nhysteresis_ms = 300\n").unwrap();

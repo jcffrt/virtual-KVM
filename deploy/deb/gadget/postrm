@@ -1,0 +1,16 @@
+#!/bin/sh
+# postrm of rawkvm-agent-gadget. `remove` keeps the pairing; `purge`
+# deletes it. /etc/rawkvm is shared with rawkvm-hub (hub.toml): delete
+# only the gadget's files. The dwc2 overlay in config.txt stays.
+set -e
+case "$1" in
+purge)
+    rm -f /etc/rawkvm/agent.toml /etc/rawkvm/agent.tmp /etc/modules-load.d/rawkvm-gadget.conf
+    rmdir /etc/rawkvm 2>/dev/null || true
+    echo "rawkvm-agent-gadget: purged its pairing; the dwc2 overlay in config.txt (Raspberry Pi) stays"
+    ;;
+esac
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload || true
+fi
+exit 0

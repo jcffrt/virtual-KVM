@@ -1,0 +1,47 @@
+# Release by tag (ADR 0021): `git tag v0.5.0 && git push origin v0.5.0`.
+# The tag must match the version in Cargo.toml. Attaches the packages and
+# SHA256SUMS to a GitHub release, which the installers download from
+# (releases/latest). Run by hand (workflow_dispatch) it only builds and
+# tests, without publishing.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  debs:
+    uses: ./.github/workflows/debs.yml
+
+  publish:
+    needs: debs
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: The tag matches the version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          [ "${GITHUB_REF_NAME}" = "v$version" ] ||
+            { echo "tag ${GITHUB_REF_NAME} but Cargo.toml has $version" >&2; exit 1; }
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: debs-*
+          path: dist
+          merge-multiple: true
+      - name: SHA256SUMS
+        run: |
+          cd dist
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/* \
+            --verify-tag --title "RawKVM ${GITHUB_REF_NAME#v}" \
+            --notes "Instalación: docs/instalacion.md. Comprobar las descargas con \`sha256sum -c SHA256SUMS\`."

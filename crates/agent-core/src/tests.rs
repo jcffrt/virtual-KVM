@@ -185,6 +185,34 @@ async fn pairs_pins_and_receives_reports() {
 }
 
 #[tokio::test]
+async fn pair_pins_and_returns() {
+    let hub = start_hub().await;
+    let path = agent_config(&hub, &hub.cfg.token, "");
+    let opts = AgentOptions {
+        config_path: path.clone(),
+        os: Os::Linux,
+    };
+    let addr = pairing::pair(&opts, NodeKind::Agent).await.unwrap();
+    assert_eq!(addr, hub.cfg.listen);
+    let cfg = AgentConfig::load_or_init(&path).unwrap();
+    assert_eq!(cfg.hub_fingerprint, hub.fingerprint);
+
+    // A wrong token: an error, and nothing pinned.
+    let bad = agent_config(&hub, &"00".repeat(32), "");
+    let opts = AgentOptions {
+        config_path: bad.clone(),
+        os: Os::Linux,
+    };
+    let e = pairing::pair(&opts, NodeKind::Agent).await.unwrap_err();
+    assert!(format!("{e:#}").contains("token"));
+    assert!(AgentConfig::load_or_init(&bad)
+        .unwrap()
+        .hub_fingerprint
+        .is_empty());
+    let _ = std::fs::remove_dir_all(&hub.dir);
+}
+
+#[tokio::test]
 async fn bad_token_is_fatal() {
     let hub = start_hub().await;
     let path = agent_config(&hub, &"00".repeat(32), "");

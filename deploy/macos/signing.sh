@@ -1,3 +1,4 @@
+# shellcheck shell=sh
 # Sourced by the install scripts. Signs with the local identity
 # "RawKVM Local" (make-signing-identity.sh) when the invoking user has it,
 # ad hoc otherwise (ADR 0016).

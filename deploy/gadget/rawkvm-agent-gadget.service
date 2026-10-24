@@ -1,6 +1,6 @@
 # RawKVM USB gadget agent. Root: it writes ConfigFS and /dev/hidgN.
-# If the PC on the USB cable runs Linux, add --host-os linux --no-hidpp to
-# ExecStart (ADR 0007); for a Mac, --host-os macos. The default is Windows.
+# Options for the PC on the USB cable (--host-os, --no-hidpp) go in
+# /etc/default/rawkvm-agent-gadget (ADR 0007, ADR 0022).
 [Unit]
 Description=RawKVM USB gadget agent (receiver over USB)
 Wants=network-online.target
@@ -9,9 +9,10 @@ Requires=sys-kernel-config.mount
 
 [Service]
 Type=simple
+EnvironmentFile=-/etc/default/rawkvm-agent-gadget
 # --udc-wait: wait up to 60 s for the USB device controller (dwc2 / musb
 # may probe after the service starts).
-ExecStart=/usr/local/bin/rawkvm-agent-gadget --config /etc/rawkvm/agent.toml --udc-wait 60
+ExecStart=/usr/bin/rawkvm-agent-gadget --config /etc/rawkvm/agent.toml --udc-wait 60 $RAWKVM_GADGET_ARGS
 Restart=always
 RestartSec=2
 Nice=-10

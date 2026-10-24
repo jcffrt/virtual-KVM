@@ -8,6 +8,7 @@ pub mod config;
 pub mod discovery;
 pub mod edge;
 pub mod helper;
+pub mod pairing;
 pub mod widget;
 
 use std::collections::{BTreeMap, HashMap};
@@ -160,7 +161,7 @@ pub struct AgentOptions {
 }
 
 /// Why a session ended.
-enum End {
+pub(crate) enum End {
     /// Worth retrying (network, hub restart).
     Retry(anyhow::Error),
     /// Retrying cannot help (bad token, changed certificate, version).
@@ -224,7 +225,7 @@ pub async fn run(opts: AgentOptions, sink: &mut dyn HidSink) -> Result<()> {
     }
 }
 
-async fn resolve_hub(cfg: &AgentConfig) -> Result<SocketAddr> {
+pub(crate) async fn resolve_hub(cfg: &AgentConfig) -> Result<SocketAddr> {
     if !cfg.hub.is_empty() {
         let hub = if cfg.hub.contains(':') {
             cfg.hub.clone()
@@ -372,7 +373,7 @@ async fn session(
 }
 
 /// An accepted session: the connection and its control stream.
-struct Accepted {
+pub(crate) struct Accepted {
     conn: quinn::Connection,
     send: quinn::SendStream,
     recv: quinn::RecvStream,
@@ -380,7 +381,7 @@ struct Accepted {
 
 /// Connect, present `kind` in `Hello`, and pin the certificate once the hub
 /// accepted us.
-async fn handshake(
+pub(crate) async fn handshake(
     opts: &AgentOptions,
     cfg: &mut AgentConfig,
     addr: SocketAddr,

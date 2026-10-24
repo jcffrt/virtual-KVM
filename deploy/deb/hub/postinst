@@ -1,0 +1,126 @@
+#!/bin/sh
+# postinst of rawkvm-hub: what deploy/hub-linux/install.sh does by hand,
+# plus the move from that manual install to the package (ADR 0022).
+set -e
+
+[ "$1" = configure ] || exit 0
+old_version=${2:-}
+share=/usr/share/rawkvm-hub
+migrated=0
+
+systemd_running() { [ -d /run/systemd/system ]; }
+
+# Before the package: binary in /usr/local/bin and a unit in
+# /etc/systemd/system, which would shadow the packaged one. Drop-ins
+# (rawkvm-hub.service.d), hub.toml (and its backups), layout.toml, the
+# token and the certificate stay as they are.
+migrate_manual_install() {
+    old_unit=/etc/systemd/system/rawkvm-hub.service
+    if [ -f "$old_unit" ] && ! [ -L "$old_unit" ]; then
+        echo "rawkvm-hub: replacing the manual install ($old_unit)"
+        if systemd_running; then
+            systemctl disable rawkvm-hub.service >/dev/null 2>&1 || true
+        fi
+        rm -f "$old_unit" /etc/systemd/system/multi-user.target.wants/rawkvm-hub.service
+        migrated=1
+    fi
+    if [ -f /usr/local/bin/rawkvm-hub ]; then
+        rm -f /usr/local/bin/rawkvm-hub
+        migrated=1
+    fi
+}
+
+# Let hid-generic take the receiver now: unload the DJ drivers the
+# blacklist keeps out from the next boot on, and re-plug every Logitech
+# USB device (VID 046D). Only while they are loaded: an upgrade does not
+# interrupt the keyboard.
+release_receiver() {
+    [ -d /sys/module/hid_logitech_dj ] || [ -d /sys/module/hid_logitech_hidpp ] || return 0
+    echo "rawkvm-hub: unloading hid_logitech_dj and re-plugging the Logitech devices"
+    rmmod hid_logitech_hidpp 2>/dev/null || true
+    rmmod hid_logitech_dj 2>/dev/null || true
+    for d in /sys/bus/usb/devices/*; do
+        [ -f "$d/idVendor" ] || continue
+        [ "$(cat "$d/idVendor")" = 046d ] || continue
+        echo 0 > "$d/authorized"
+        sleep 1
+        echo 1 > "$d/authorized"
+    done
+    need_initramfs=1
+}
+
+# The receiver is probed inside the initramfs on Armbian and on Raspberry
+# Pi OS with one: it carries its own copy of modprobe.d.
+update_initramfs() {
+    command -v update-initramfs >/dev/null 2>&1 || return 0
+    echo "rawkvm-hub: regenerating the initramfs so the blacklist applies at boot"
+    update-initramfs -u
+}
+
+# Persistent journal (journald.conf.d/rawkvm.conf). Armbian and Orange Pi
+# OS keep /var/log in RAM: bind /var/log/journal to the SD card.
+setup_journal() {
+    changed=0
+    [ -z "$old_version" ] && changed=1
+    group=
+    getent group systemd-journal >/dev/null 2>&1 && group="-g systemd-journal"
+    ramlog=
+    for svc in armbian-ramlog orangepi-ramlog; do
+        if systemctl cat "$svc.service" >/dev/null 2>&1; then
+            ramlog=$svc
+            break
+        fi
+    done
+    mount=/etc/systemd/system/var-log-journal.mount
+    if [ -n "$ramlog" ] && [ -d /var/log.hdd ]; then
+        # shellcheck disable=SC2086 # $group is empty or two words
+        install -d -m 2755 $group /var/log.hdd/journal
+        unit=$(sed "s/@RAMLOG@/$ramlog/g" "$share/var-log-journal.mount.in")
+        if ! [ -f "$mount" ] || [ "$(cat "$mount")" != "$unit" ]; then
+            echo "rawkvm-hub: /var/log is in RAM ($ramlog): binding /var/log/journal to /var/log.hdd/journal"
+            printf '%s\n' "$unit" > "$mount"
+            changed=1
+        fi
+        if systemd_running; then
+            systemctl daemon-reload
+            systemctl enable var-log-journal.mount >/dev/null 2>&1
+            if ! mountpoint -q /var/log/journal; then
+                install -d /var/log/journal
+                systemctl start var-log-journal.mount
+                changed=1
+            fi
+        fi
+    elif ! [ -d /var/log/journal ]; then
+        # shellcheck disable=SC2086
+        install -d -m 2755 $group /var/log/journal
+        changed=1
+    fi
+    if [ "$changed" -eq 1 ] && systemd_running; then
+        systemd-tmpfiles --create --prefix /var/log/journal 2>/dev/null || true
+        systemctl restart systemd-journald
+        journalctl --flush 2>/dev/null || true
+    fi
+}
+
+need_initramfs=0
+migrate_manual_install
+# A fresh install (not a move from the manual one, which already did it).
+[ -z "$old_version" ] && [ "$migrated" -eq 0 ] && need_initramfs=1
+release_receiver
+[ "$need_initramfs" -eq 1 ] && update_initramfs
+setup_journal
+
+if systemd_running; then
+    systemctl daemon-reload
+    systemctl enable rawkvm-hub.service >/dev/null 2>&1
+    systemctl restart rawkvm-hub.service
+fi
+
+echo "rawkvm-hub: config /etc/rawkvm/hub.toml (example: /usr/share/doc/rawkvm-hub/hub.toml.example)"
+echo "rawkvm-hub: pairing token: sudo rawkvm-hub --show-token"
+echo "rawkvm-hub: log: journalctl -u rawkvm-hub -f"
+
+# Flush to disk now: boards fed from a PC lose power abruptly, and the SD
+# card may otherwise keep these writes in its cache for minutes.
+sync
+exit 0

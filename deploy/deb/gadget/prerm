@@ -1,0 +1,8 @@
+#!/bin/sh
+# prerm of rawkvm-agent-gadget. On upgrade the service keeps running until
+# postinst restarts it with the new binary.
+set -e
+if [ "$1" = remove ] && [ -d /run/systemd/system ]; then
+    systemctl disable --now rawkvm-agent-gadget.service >/dev/null 2>&1 || true
+fi
+exit 0

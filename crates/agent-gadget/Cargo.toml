@@ -27,3 +27,25 @@ uuid.workspace = true
 
 [dev-dependencies]
 proto = { workspace = true, features = ["test-fixtures"] }
+
+# `cargo deb --no-build --target aarch64-unknown-linux-musl -p rawkvm-agent-gadget`
+# after `cargo zigbuild --release --target ...` (release.yml, ADR 0022).
+[package.metadata.deb]
+name = "rawkvm-agent-gadget"
+maintainer = "RawKVM <jcffrt@users.noreply.github.com>"
+copyright = "RawKVM contributors"
+section = "net"
+priority = "optional"
+revision = ""
+# Static musl binary: no shared libraries; systemd for the service.
+depends = "systemd"
+extended-description = """\
+Presents the RawKVM hub's receiver to the PC on the USB cable as a USB HID \
+gadget (ConfigFS), for PCs that cannot run an agent. Includes the systemd \
+service and the device-mode setup of the OTG port."""
+maintainer-scripts = "../../deploy/deb/gadget/"
+assets = [
+    ["target/release/rawkvm-agent-gadget", "usr/bin/", "755"],
+    ["../../deploy/gadget/rawkvm-agent-gadget.service", "lib/systemd/system/", "644"],
+    ["../../deploy/gadget/rawkvm-agent-gadget.default", "etc/default/rawkvm-agent-gadget", "644"],
+]
