@@ -58,32 +58,47 @@ Si el PC tiene instalados Logitech Options+, Logi Options o G HUB, intentarán h
 
 Sistema: Raspberry Pi OS Bookworm (64 bits recomendado; 32 bits también) o Armbian. Wi‑Fi en la misma LAN que el hub.
 
-## 1. Binario
+## 1. Instalar
 
-Del artefacto de CI **rawkvm-agent-gadget-aarch64** (Pi Zero 2 W, Pi 3 A+, Pi 4 con SO de 64 bits, Orange Pi) o **rawkvm-agent-gadget-armv7** (Raspberry Pi OS de 32 bits en Pi 2/3/4/Zero 2 W), o compilando en el Mac:
-
-```sh
-cargo zigbuild --release --target aarch64-unknown-linux-musl -p rawkvm-agent-gadget
-```
-
-## 2. Instalar
+Con el paquete `.deb` de la release ([ADR 0022](adr/0022-paquetes-deb.md)): `arm64` para la Orange Pi, la Pi Zero 2 W, la Pi 3 A+ y la Pi 4 con sistema de 64 bits; `armhf` para Raspberry Pi OS de 32 bits. Descargarlo igual que el del hub ([hub-linux-instalacion.md](hub-linux-instalacion.md#instalar)), con `-p 'rawkvm-agent-gadget_*_arm64.deb'`, y en la placa:
 
 ```sh
-scp target/aarch64-unknown-linux-musl/release/rawkvm-agent-gadget pi@<placa>:
-scp -r deploy/gadget pi@<placa>:rawkvm-gadget
-ssh pi@<placa> 'sudo sh rawkvm-gadget/install.sh ./rawkvm-agent-gadget --hub 192.168.1.28 --token <token>'
+sha256sum -c --ignore-missing SHA256SUMS
+sudo apt install ./rawkvm-agent-gadget_*_arm64.deb
 ```
 
-`install.sh` (se puede repetir):
+El paquete (se puede reinstalar cuando se quiera):
 
 1. En una Raspberry Pi añade `dtoverlay=dwc2,dr_mode=peripheral` a `/boot/firmware/config.txt` (o `/boot/config.txt`).
-2. Carga `dwc2` (Pi) y `libcomposite` ahora y en cada arranque (`/etc/modules-load.d/rawkvm-gadget.conf`), y monta ConfigFS si hace falta.
-3. Instala el binario en `/usr/local/bin`, guarda hub y token en `/etc/rawkvm/agent.toml` y activa `rawkvm-agent-gadget.service` (root).
-4. Si cambió el overlay, pide **reiniciar**; el servicio arranca después.
+2. Carga `dwc2` (en la Pi) y `libcomposite` ahora y en cada arranque (`/etc/modules-load.d/rawkvm-gadget.conf`), y monta ConfigFS si hace falta.
+3. Instala `/usr/bin/rawkvm-agent-gadget` y `rawkvm-agent-gadget.service` (root).
+4. **No empareja**: durante la instalación no hay garantía de red. Si la placa aún no está emparejada, no arranca el servicio e indica el paso siguiente.
+5. Si cambió el overlay, pide **reiniciar**; el servicio arranca después.
 
-**Sistema del PC**: el agente anuncia al hub el sistema del PC enchufado por USB (no el de la placa) para que el hub ponga la disposición de teclas correcta. Por defecto es Windows; para otro sistema, añadir `--host-os macos` o `--host-os linux` al `ExecStart`.
+## 2. Emparejar
 
-**PC con Linux**: añadir `--host-os linux --no-hidpp` al `ExecStart` de `/etc/systemd/system/rawkvm-agent-gadget.service` (`sudo systemctl edit --full rawkvm-agent-gadget`). Si no, `hid-logitech-dj` del PC pondrá nuestro "receptor" en modo DJ y las interfaces de teclado y ratón quedarán mudas (ver ADR 0007). En Windows y macOS no hace falta.
+Una sola vez, con el token del hub (`sudo rawkvm-hub --show-token` en el hub). El token se pide sin mostrarlo en pantalla, así no queda en el historial:
+
+```sh
+sudo rawkvm-agent-gadget --pair --hub 192.168.1.28
+sudo systemctl enable --now rawkvm-agent-gadget
+```
+
+`--pair` se conecta al hub, fija su certificado, guarda todo en `/etc/rawkvm/agent.toml` y termina con «paired with the hub at …». No hay que pulsar Ctrl+C. Sin `--hub`, busca el hub por mDNS. Con `--token-file FICHERO` lee el token de un fichero en vez de pedirlo. Repetir `--pair` sirve también para emparejar con un hub reinstalado (olvida el certificado anterior).
+
+**Sistema del PC**: el agente anuncia al hub el sistema del PC enchufado por USB (no el de la placa) para que el hub ponga la disposición de teclas correcta. Por defecto es Windows. Para otro sistema, en `/etc/default/rawkvm-agent-gadget`:
+
+```sh
+RAWKVM_GADGET_ARGS="--host-os macos"
+```
+
+**PC con Linux**: `RAWKVM_GADGET_ARGS="--host-os linux --no-hidpp"`. Si no, `hid-logitech-dj` del PC pondrá nuestro «receptor» en modo DJ y las interfaces de teclado y ratón quedarán mudas (ver ADR 0007). En Windows y macOS no hace falta.
+
+Después de cambiarlo: `sudo systemctl restart rawkvm-agent-gadget`.
+
+**Desde la instalación manual** (antes de la 0.5.0: `/usr/local/bin` y la unidad en `/etc/systemd/system`): el paquete borra el binario y la unidad viejos, pasa a `/etc/default/rawkvm-agent-gadget` las opciones que tuviera su `ExecStart` (`--host-os`, `--no-hidpp`) y conserva el emparejamiento. Si ya estaba emparejada, el servicio sigue arrancando solo.
+
+**Desinstalar**: `sudo apt remove rawkvm-agent-gadget` conserva el emparejamiento; `sudo apt purge rawkvm-agent-gadget` lo borra (`/etc/rawkvm/agent.toml`). Ninguno de los dos toca el `hub.toml` del hub, si está en la misma placa, ni el overlay de `config.txt`.
 
 ## 3. Comprobar
 
@@ -115,3 +130,14 @@ Después: pasar la entrada a este agente (**Ctrl, Ctrl, N** o si es el único co
 | El gadget sale con menos de 3 interfaces (`bound to … with 1 interfaces`) | El hub no reenvía todo el receptor: en la placa del hub `hid_logitech_dj` se cargó desde el initramfs. Ver «Problemas conocidos» en `docs/fase0-validacion.md` (`update-initramfs -u` y reiniciar). |
 
 El agente espera a que la lista de dispositivos del hub lleve 500 ms sin cambios antes de crear el gadget (el hub anuncia las interfaces una a una al abrirlas), así el PC ve una sola enumeración.
+
+## Anexo: instalación manual
+
+Para placas sin `dpkg`, o para probar un binario recién compilado. Mismas rutas que el paquete:
+
+```sh
+cargo zigbuild --release --target aarch64-unknown-linux-musl -p rawkvm-agent-gadget   # en el Mac
+scp target/aarch64-unknown-linux-musl/release/rawkvm-agent-gadget pi@<placa>:
+scp -r deploy/gadget pi@<placa>:rawkvm-gadget
+ssh -t pi@<placa> 'sudo sh rawkvm-gadget/install.sh ./rawkvm-agent-gadget && sudo rawkvm-agent-gadget --pair --hub 192.168.1.28'
+```

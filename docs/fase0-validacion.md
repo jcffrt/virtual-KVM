@@ -20,13 +20,7 @@ Binarios: `target/aarch64-unknown-linux-musl/release/rawkvm-hub` y `target/x86_6
 
 ## 2. Instalar el hub
 
-```sh
-scp target/aarch64-unknown-linux-musl/release/rawkvm-hub orangepi@192.168.1.28:
-scp -r deploy/hub-linux orangepi@192.168.1.28:rawkvm-deploy
-ssh orangepi@192.168.1.28 'sudo sh rawkvm-deploy/install.sh ./rawkvm-hub'
-```
-
-`install.sh` pone la blacklist de `hid_logitech_dj`/`hid_logitech_hidpp`, regenera el initramfs (`update-initramfs -u`, si existe: en Armbian el receptor se enumera dentro del initramfs, que lleva su propia copia de `modprobe.d`), descarga esos módulos, resetea el receptor, instala y arranca `rawkvm-hub.service` deja el registro del sistema persistente en la SD (ver [hub-linux-instalacion.md](hub-linux-instalacion.md)) e imprime el **token de emparejamiento**. Volver a verlo: `sudo rawkvm-hub --show-token`.
+Con el paquete `.deb`: ver [hub-linux-instalacion.md](hub-linux-instalacion.md). Pone la lista negra de `hid_logitech_dj`/`hid_logitech_hidpp`, regenera el initramfs, descarga esos módulos, reenchufa el receptor, instala y arranca `rawkvm-hub.service` y deja el registro persistente. El **token de emparejamiento** se ve con `sudo rawkvm-hub --show-token`.
 
 Comprobaciones en el Pi:
 

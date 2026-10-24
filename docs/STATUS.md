@@ -475,6 +475,24 @@ Decisiones del usuario/orquestador sobre `docs/widget-plan.md`: (1) protocolo v3
 - Test `a_missed_battery_poll_does_not_stop_the_layout_switches`. Revisión en ADR 0014.
 - Sin cambio de protocolo; hay que redesplegar el hub. Sin probar en hardware.
 
+## Fase 5.1: paquetes .deb del hub y del gadget, releases, versión 0.5.0 (2026-10-24)
+
+- Versión **0.5.0** en todo el workspace y en el widget. `release.yml` publica una release al recibir una etiqueta `v*` (comprueba que la etiqueta coincide con la versión y añade `SHA256SUMS`). ADR 0021.
+- Paquetes `rawkvm-hub` y `rawkvm-agent-gadget` (`arm64` y `armhf`) con `cargo-deb`. ADR 0022.
+  - Instalan en `/usr/bin` y `/lib/systemd/system`.
+  - `hub.toml` no va en el paquete: el hub lo crea al arrancar, y hay un ejemplo en `/usr/share/doc/rawkvm-hub/` comprobado por un test.
+  - Las opciones del gadget van en `/etc/default/rawkvm-agent-gadget`.
+  - Pasan solos de la instalación manual, conservando la configuración, los ficheros de ajuste y el estado.
+  - `purge` borra solo lo de cada paquete y avisa de que los agentes tendrán que volver a emparejarse.
+- `rawkvm-agent-gadget --pair`: empareja y sale, sin Ctrl+C. El token se pide sin eco o se lee con `--token-file`. Está en `agent-core` (`pairing.rs`) para los demás agentes; hay test contra el hub real.
+- CI:
+  - `debs.yml`: compila, pasa lintian (solo avisos) y prueba instalación, migración, reinstalación, `remove`, `purge` e instalación limpia en un contenedor Debian `arm64` con QEMU.
+  - Job `shellcheck` para todos los scripts.
+  - Los jobs `hub-aarch64` y `gadget` de `ci.yml` desaparecen: `debs.yml` los sustituye.
+- Docs: `docs/instalacion.md` (página de entrada), `README.md`, y `hub-linux-instalacion.md` y `gadget-instalacion.md` con el paquete primero y la instalación manual como anexo.
+- Repositorio **privado**: la descarga de las releases necesita `gh` autenticado, o el navegador y después `scp`. Hacerlo público es una decisión pendiente del usuario; el ADR 0021 lista qué revisar antes en el historial.
+- Sin probar en hardware: la migración en la Pi real, con el servicio bajo systemd, el reenchufado del receptor y el montaje del journal; `--pair` del gadget contra el hub real.
+
 ## Convenciones
 
 Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario en castellano, `cargo fmt` y `cargo clippy -D warnings` limpios, un ADR por decisión nueva.
