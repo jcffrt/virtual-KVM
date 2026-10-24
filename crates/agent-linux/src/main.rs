@@ -166,6 +166,9 @@ fn main() -> Result<()> {
             .enable_all()
             .build()
     };
+    if args.check || args.cmd.is_some() {
+        setup::use_session_bus();
+    }
     if let Some(Cmd::Setup {
         hub,
         token_file,

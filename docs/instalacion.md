@@ -31,7 +31,13 @@ Guía completa: [gadget-instalacion.md](gadget-instalacion.md).
 
 ## Ubuntu
 
-Instalador en preparación (Fase 5.2). Mientras tanto: [fase0-validacion.md](fase0-validacion.md) §3 y la extensión de GNOME en [gnome-plan.md](gnome-plan.md).
+En la sesión del usuario (pide `sudo` solo para `apt install`):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/jcffrt/virtual-KVM/main/deploy/linux/setup-linux.sh | sh
+```
+
+O en dos pasos: `sudo apt install ./rawkvm-agent_<versión>_amd64.deb` (administrador) y `rawkvm-agent setup` (el usuario). Comprobar: `rawkvm-agent --check`. Guía completa: [ubuntu-instalacion.md](ubuntu-instalacion.md).
 
 ## Windows
 

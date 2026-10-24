@@ -9,7 +9,7 @@ Hasta la Fase 4 los binarios salían de los artefactos de CI, que caducan a los 
 ## Decisión
 
 - **Releases por etiqueta.** `release.yml` se dispara con una etiqueta `v*`. Construye los paquetes, comprueba que la etiqueta coincide con la versión de `Cargo.toml`, calcula `SHA256SUMS` y lo publica todo como release de GitHub (`gh release create --verify-tag`). Lanzado a mano (`workflow_dispatch`), solo construye y prueba, sin publicar. La etiqueta la pone el orquestador cuando todo está validado en hardware.
-- **Contenido.** En la 0.5.0: `rawkvm-hub_<ver>_{arm64,armhf}.deb`, `rawkvm-agent-gadget_<ver>_{arm64,armhf}.deb` y `SHA256SUMS`. El `.deb` del agente de Linux, el tar de macOS y el zip de Windows se añaden en sus bloques (Fase 5.2 a 5.4).
+- **Contenido.** En la 0.5.0: `rawkvm-hub_<ver>_{arm64,armhf}.deb`, `rawkvm-agent-gadget_<ver>_{arm64,armhf}.deb`, `rawkvm-agent_<ver>_amd64.deb` (Fase 5.2) y `SHA256SUMS`. El tar de macOS y el zip de Windows se añaden en sus bloques (Fase 5.3 y 5.4).
 - **Versión.** Una sola, la de `[workspace.package]` en `Cargo.toml`, igual en `widget/src-tauri/Cargo.toml`, `tauri.conf.json` y `package.json`. Pasa de 0.1.0 a **0.5.0** (Fase 5). `cargo-deb` y los nombres de los ficheros la toman de ahí. El protocolo tiene su propia versión (`PROTO_VERSION`): una release nueva no implica cambiarlo.
 - **Repositorio público** (decisión del usuario, 2026-10-24), para que la descarga no necesite credenciales.
 - **Descarga en los instaladores**, en este orden:

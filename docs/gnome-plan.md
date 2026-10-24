@@ -36,7 +36,7 @@ La lógica sigue en Rust, como en macOS y Windows: el agente Linux implementa `E
 ## Extensión
 
 - `gnome-extension/rawkvm@olitec.cc/`: `metadata.json` (`shell-version` de la 45 a la 51: las APIs usadas se comprobaron en el código fuente de mutter y gnome-shell 45.0 … 51.0 y 50.1; solo cambia la forma de llegar al seat de Clutter, que se detecta en tiempo de ejecución) y `extension.js` (ESM, clase `Extension` con `enable()`/`disable()` que exporta y retira el objeto D-Bus con `Gio.DBusExportedObject`).
-- Instalación en `deploy/linux/install.sh`: copiar a `~/.local/share/gnome-shell/extensions/`, `gnome-extensions enable rawkvm@olitec.cc`. **En Wayland hay que cerrar sesión y volver a entrar** la primera vez: gnome-shell no recarga extensiones nuevas en caliente.
+- Instalación: el paquete `rawkvm-agent` la pone en `/usr/share/gnome-shell/extensions/` y `rawkvm-agent setup` la activa ([ubuntu-instalacion.md](ubuntu-instalacion.md)). **En Wayland hay que cerrar sesión y volver a entrar** la primera vez: gnome-shell no recarga extensiones nuevas en caliente.
 - `"session-modes": ["user", "unlock-dialog"]` (desde la versión 2 de la extensión). Sin `unlock-dialog`, gnome-shell desactiva la extensión al bloquear la pantalla: el orquestador vio a la vez `LockedHint=yes` y la extensión en estado INACTIVE. El helper perdía el puntero y las pantallas hasta desbloquear. La extensión no dibuja nada y solo exporta su objeto D-Bus, así que puede seguir activa en la pantalla de bloqueo: se puede entrar y salir por el borde con el Ubuntu bloqueado (para escribir la contraseña con el teclado compartido) y el puntero se aparca igual. `disable()` sigue llamándose al cerrar sesión o al desactivarla.
 - Sin firmar ni pasar por extensions.gnome.org (uso personal).
 
@@ -53,23 +53,12 @@ La lógica sigue en Rust, como en macOS y Windows: el agente Linux implementa `E
 - **API de GNOME por versión**: `warp_pointer` y `get_pointer` existen en 46, pero la API de extensiones cambia entre versiones (ESM desde la 45). Fijar `shell-version` y probar en cada actualización de Ubuntu.
 - **Puntero de uhid y `get_pointer`**: el ratón de uhid es un dispositivo libinput normal, así que GNOME mueve el puntero y `get_pointer` lo ve. No debería haber diferencia con un ratón físico. Por confirmar en el equipo.
 - **Escalado fraccional**: si `get_monitor_geometry` y `get_pointer` no estuvieran en las mismas unidades con escalado fraccional, se nota en `--show`. Mitigación: el diagnóstico del agente imprime ambos.
-- **Pantalla de bloqueo**: gnome-shell solo mantiene activas en la pantalla de bloqueo las extensiones que declaran `unlock-dialog` en `session-modes`; la nuestra lo declara desde la versión 2 (ver «Extensión»). Una extensión ya instalada se actualiza volviendo a ejecutar `install.sh` y cerrando y abriendo sesión; luego, `gnome-extensions info rawkvm@olitec.cc` con la pantalla bloqueada (por SSH) debe seguir diciendo ACTIVE. Sin verificar todavía en el Ubuntu.
+- **Pantalla de bloqueo**: gnome-shell solo mantiene activas en la pantalla de bloqueo las extensiones que declaran `unlock-dialog` en `session-modes`; la nuestra lo declara desde la versión 2 (ver «Extensión»). Una extensión ya instalada se actualiza con el paquete nuevo, cerrando y abriendo sesión; luego, `gnome-extensions info rawkvm@olitec.cc` con la pantalla bloqueada (por SSH) debe seguir diciendo ACTIVE. Sin verificar todavía en el Ubuntu.
 - **KDE / X11**: fuera de alcance (handoff §11). Con X11 sería otra vía (XFixes + `XWarpPointer`).
 
 ## Instalar
 
-En el Ubuntu, con el binario `rawkvm-agent` (x86-64) y las carpetas `deploy/linux` y `gnome-extension` del repositorio:
-
-```sh
-scp target/x86_64-unknown-linux-gnu/release/rawkvm-agent <usuario>@<ubuntu>:
-scp -r deploy/linux gnome-extension <usuario>@<ubuntu>:rawkvm/
-# en el Ubuntu, con la sesión gráfica abierta (o por SSH, ver abajo):
-sh rawkvm/linux/install.sh ./rawkvm-agent      # pide sudo para la regla udev de uhid
-~/.local/bin/rawkvm-agent --hub 192.168.1.28 --token <hex>   # una vez; Ctrl+C tras «connected»
-systemctl --user start rawkvm-agent
-```
-
-`install.sh` busca la extensión junto a sí mismo, en `../gnome-extension/` (la copia de arriba) o en `../../gnome-extension/` (el repositorio). Copia la extensión a `~/.local/share/gnome-shell/extensions/` y la añade a `enabled-extensions`. **Hay que cerrar sesión y volver a entrar una vez** para que gnome-shell la cargue.
+Con el paquete: ver [ubuntu-instalacion.md](ubuntu-instalacion.md). El paquete instala la extensión en `/usr/share/gnome-shell/extensions/rawkvm@olitec.cc/` y `rawkvm-agent setup` la activa (la añade a `enabled-extensions`). **Hay que cerrar sesión y volver a entrar una vez** para que gnome-shell la cargue. Una copia antigua en `~/.local/share/gnome-shell/extensions/` tendría prioridad sobre la del paquete: `setup` la quita.
 
 El agente arranca el helper solo y escribe `~/.config/rawkvm/edge.toml`, derivado de `agent.toml`. `--no-edge` lo desactiva.
 

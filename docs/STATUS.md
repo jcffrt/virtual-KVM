@@ -493,6 +493,15 @@ Decisiones del usuario/orquestador sobre `docs/widget-plan.md`: (1) protocolo v3
 - Repositorio **público** desde el 2026-10-24 (decisión del usuario, historial revisado; ADR 0021). La descarga principal es `curl` anónimo de `releases/latest` comprobando `SHA256SUMS`, con `gh` y `scp` como alternativas. `releases/latest` da 404 hasta la etiqueta `v0.5.0`.
 - Sin probar en hardware: la migración en la Pi real, con el servicio bajo systemd, el reenchufado del receptor y el montaje del journal; `--pair` del gadget contra el hub real.
 
+## Fase 5.2: agente de Ubuntu, paquete .deb y `rawkvm-agent setup` (2026-10-24)
+
+- `rawkvm-agent_0.5.0_amd64.deb` (glibc 2.35, Ubuntu 22.04 en adelante). Instala el binario, la regla udev de `/dev/uhid` con `uaccess` (el usuario de la sesión gráfica no necesita el grupo `input`), la unidad de usuario en `/usr/lib/systemd/user` y la extensión en `/usr/share`. El postinst quita los ficheros de `/etc` de la instalación manual y, al actualizar, reinicia los agentes en marcha. ADR 0023.
+- `rawkvm-agent setup`, como el usuario: retira la instalación manual de `~`, ofrece los hubs que ve por mDNS, pide el token sin eco, empareja, activa el servicio de usuario y la extensión, y comprueba. `rawkvm-agent --check` solo lee y da una línea por pieza. `--pair` como en el gadget.
+- `deploy/linux/setup-linux.sh`: `curl … | sh` descarga la release, comprueba `SHA256SUMS`, instala con sudo y lanza `setup`.
+- CI: build del agente, lintian y prueba de instalación en Ubuntu 22.04 y 24.04 (binario, `--check` sin configuración, `setup` rechaza root, `remove`/`purge`).
+- Docs: `ubuntu-instalacion.md`; `instalacion.md`, `fase0-validacion.md` y `gnome-plan.md` remiten a ella.
+- Sin probar en el Ubuntu real: `setup` (mDNS, systemd de usuario, gsettings, migración desde `~/.local`), `uaccess`, el reinicio al actualizar y `--check` con la extensión. En 192.168.1.157 el `apt install` lo hace el usuario; `setup` puede hacerlo el orquestador por SSH con la sesión gráfica abierta.
+
 ## Convenciones
 
 Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario en castellano, `cargo fmt` y `cargo clippy -D warnings` limpios, un ADR por decisión nueva.

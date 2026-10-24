@@ -54,6 +54,23 @@ impl Home {
     }
 }
 
+/// Over SSH the session bus address may be unset; the desktop session's
+/// bus is at $XDG_RUNTIME_DIR/bus (gsettings, gnome-extensions, zbus).
+pub fn use_session_bus() {
+    if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some() {
+        return;
+    }
+    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") {
+        let bus = Path::new(&dir).join("bus");
+        if bus.exists() {
+            std::env::set_var(
+                "DBUS_SESSION_BUS_ADDRESS",
+                format!("unix:path={}", bus.display()),
+            );
+        }
+    }
+}
+
 pub async fn setup(config_path: &Path, args: SetupArgs) -> Result<()> {
     // SAFETY: getuid has no preconditions.
     if unsafe { libc::getuid() } == 0 {
@@ -429,7 +446,9 @@ pub async fn check(config_path: &Path) -> Result<bool> {
             "packaged"
         };
         let running = extension_running().await;
+        // LC_ALL=C: "State:", not the translated label.
         let state = Command::new("gnome-extensions")
+            .env("LC_ALL", "C")
             .args(["info", EXTENSION])
             .output()
             .map(|o| extension_state(&String::from_utf8_lossy(&o.stdout)))

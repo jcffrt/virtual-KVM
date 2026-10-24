@@ -36,16 +36,7 @@ journalctl -u rawkvm-hub -f     # "DJ mode switched off", "device ... added" x3,
 
 ## 3. Instalar el agente en Ubuntu
 
-```sh
-scp target/x86_64-unknown-linux-gnu/release/rawkvm-agent usuario@ubuntu:
-scp -r deploy/linux usuario@ubuntu:rawkvm-deploy
-# en el Ubuntu:
-sh rawkvm-deploy/install.sh ./rawkvm-agent
-# (si añadió el usuario al grupo input: cerrar sesión y volver a entrar)
-~/.local/bin/rawkvm-agent --hub 192.168.1.28 --token <token>
-```
-
-Debe mostrar `hub certificate pinned`, `connected`, tres `virtual device created` y `active`. Sin `--hub` lo busca por mDNS. Con Ctrl+C y después `systemctl --user start rawkvm-agent` queda como servicio (`journalctl --user -u rawkvm-agent -f`).
+Ver [ubuntu-instalacion.md](ubuntu-instalacion.md): `sudo apt install ./rawkvm-agent_<versión>_amd64.deb` y después, como el usuario, `rawkvm-agent setup`. El registro (`journalctl --user -u rawkvm-agent -f`) debe mostrar `hub certificate pinned`, `connected`, tres `virtual device created` y `active`.
 
 ## 4. Criterios de aceptación
 
