@@ -35,7 +35,7 @@ migrate_manual_install() {
 
 # The OTG port in device mode, and the modules at boot.
 setup_usb_device_mode() {
-    model=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || echo unknown)
+    model=$(tr -d '\0' 2>/dev/null < /proc/device-tree/model || echo unknown)
     case "$model" in
     *"Raspberry Pi 3 Model B"*)
         echo "rawkvm-agent-gadget: WARNING: on the Pi 3 B/B+ the OTG port sits behind the USB hub; gadget mode cannot work." >&2 ;;

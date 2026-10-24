@@ -10,7 +10,7 @@ bin=${1:?usage: install.sh path/to/rawkvm-agent-gadget [--hub IP --token HEX]}
 shift
 reboot_needed=0
 
-model=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || echo unknown)
+model=$(tr -d '\0' 2>/dev/null < /proc/device-tree/model || echo unknown)
 echo "board: $model"
 
 # 1. Raspberry Pi: put the OTG controller (dwc2) in device mode.

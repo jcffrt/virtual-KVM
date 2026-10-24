@@ -23,4 +23,5 @@ El hub y el gadget se instalaban con `deploy/hub-linux/install.sh` y `deploy/gad
 
 - Instalar, actualizar y desinstalar es `apt install ./…deb` y `apt remove/purge`.
 - Lo que el contenedor no prueba: el servicio arrancando bajo systemd, el reenchufado real del receptor, el initramfs, el montaje del journal y el modo dispositivo del OTG. Eso se valida en la Pi real.
+- lintian solo da avisos, y se aceptan: binario estático (es la decisión de diseño), `systemctl` directo en los scripts en vez de `deb-systemd-helper` (no son paquetes del archivo de Debian), sin `changelog` ni página de manual, y `copyright` sin aviso.
 - `deploy/*/install.sh` quedan como anexo para placas sin dpkg y para probar binarios sueltos.

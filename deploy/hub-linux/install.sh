@@ -9,7 +9,7 @@
 set -eu
 [ "$(id -u)" -eq 0 ] || { echo "run as root" >&2; exit 1; }
 here=$(dirname "$0")
-model=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || echo unknown)
+model=$(tr -d '\0' 2>/dev/null < /proc/device-tree/model || echo unknown)
 echo "board: $model"
 
 install -m 0755 "${1:-rawkvm-hub}" /usr/bin/rawkvm-hub
