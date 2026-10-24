@@ -556,3 +556,4 @@ Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario e
 - **Remedio inmediato**: `sudo systemctl restart rawkvm-hub` en la Pi (el survey lo devuelve a online).
 - **Encargado a VS Code**: reintentar el cambio de perfil aunque el slot esté offline, volver a sondear los slots offline, avisar a nivel warn/info y test. Sin cambio de protocolo.
 - En la Pi queda un drop-in `rawkvm-hub.service.d/debug.conf` con `RUST_LOG=info,rawkvm_hub::receiver_ctl=debug`; quitarlo al desplegar la corrección.
+- **Corrección desplegada** (2026-10-23 20:09): hub e148526 en la Pi (`sha256 eefb9f8e…`), drop-in de debug retirado, servicio activo. Un slot que no contesta al sondeo de batería ya recibe el cambio de perfil en cada cruce y vuelve a online cuando contesta; aviso a nivel warn en el journal. Pendiente de ver en uso real que no se repite.
