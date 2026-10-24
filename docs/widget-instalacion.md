@@ -37,17 +37,13 @@ cd .. && deploy/macos/install-widget.sh
 
 ## Instalar en Windows
 
-Del artefacto de CI **RawKVM-windows** (workflow `widget`, job `windows`): `RawKVM.exe`, este `LEEME.md` y `COMMIT.txt`. Desde el Mac:
+Con el instalador de Windows, que instala a la vez el widget y el helper de borde, los arranca al iniciar sesión y empareja los dos de una vez: [windows-instalacion.md](windows-instalacion.md). El widget toma el emparejamiento del helper (`%APPDATA%\rawkvm\edge.toml`), así que no hay que escribir el token en su ventana.
 
-```sh
-gh run download -R jcffrt/virtual-KVM $(gh run list -R jcffrt/virtual-KVM -w widget -b main -s success -L 1 --json databaseId -q '.[0].databaseId') -n RawKVM-windows -D RawKVM-windows
-```
-
-1. Copiar `RawKVM.exe` a una carpeta fija, por ejemplo `%LOCALAPPDATA%\Programs\RawKVM\`. El inicio automático apunta a esa ruta: si se mueve el exe, desactivar y volver a activar «Abrir RawKVM al iniciar sesión».
-2. Abrirlo con doble clic. No está firmado, así que **SmartScreen** avisa la primera vez: **Más información → Ejecutar de todas formas**.
-3. La primera vez que busca el hub, el **Firewall de Windows** puede preguntar si permite a RawKVM comunicarse en redes privadas: **Permitir** (mDNS y la conexión al hub). Si se cancela, «Buscar hubs» no encuentra nada, pero escribir la IP del hub funciona.
-4. Necesita **WebView2**, que ya viene con Windows 10 (actualizado) y 11.
-5. No pide permisos de administrador ni instala drivers. El helper de borde de Windows (`rawkvm-edge`, [windows-borde.md](windows-borde.md)) sigue siendo otro programa: el widget no mueve el puntero.
+Notas:
+1. Necesita **WebView2**, que ya viene con Windows 10 (actualizado) y 11.
+2. No está firmado. Instalado con `setup.ps1` no hay aviso de **SmartScreen** (le quita la marca de descargado de Internet). Abierto con doble clic desde el zip descargado, SmartScreen avisa: **Más información → Ejecutar de todas formas**.
+3. «Buscar hubs» usa mDNS. El **Firewall de Windows** puede preguntar si permite a RawKVM comunicarse en redes privadas: **Permitir**. Si se cancela, «Buscar hubs» no encuentra nada, pero escribir la IP del hub funciona.
+4. No pide permisos de administrador ni instala drivers. El helper de borde (`rawkvm-edge`) es otro programa: el widget no mueve el puntero.
 
 Compilar en Windows (Node 22 y Rust con MSVC):
 

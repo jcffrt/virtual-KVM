@@ -63,42 +63,5 @@ jobs:
           name: rawkvm-widget-macos
           path: package/
 
-  # Same widget for Windows (ADR 0020): a plain exe, unsigned; WebView2 ships
-  # with Windows 10/11. No installer: the user unzips it and runs it.
-  windows:
-    runs-on: windows-latest
-    defaults:
-      run:
-        working-directory: widget
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: widget/package-lock.json
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: widget/src-tauri
-      - run: npm ci
-      - run: npm run build
-      - run: cargo clippy --all-targets -- -D warnings
-        working-directory: widget/src-tauri
-      - run: cargo test
-        working-directory: widget/src-tauri
-      - run: npx tauri build --no-bundle
-      - name: Package
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force ../package | Out-Null
-          Copy-Item src-tauri/target/release/rawkvm-widget.exe ../package/RawKVM.exe
-          Copy-Item ../docs/widget-instalacion.md ../package/LEEME.md
-          git rev-parse HEAD | Out-File -Encoding ascii ../package/COMMIT.txt
-          Get-ChildItem ../package | Format-Table Name, Length
-      - uses: actions/upload-artifact@v4
-        with:
-          name: RawKVM-windows
-          path: package/
+  # The Windows widget is built (and tested) with the release zip:
+  # windows-zip.yml.

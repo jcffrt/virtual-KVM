@@ -15,6 +15,9 @@
   Needs the WDK (inf2cat, signtool). Runs on the build machine, not on the
   PCs that install the driver.
 #>
+# signtool /p takes the password as plain text anyway; it comes from the
+# environment, never from the command line.
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingPlainTextForPassword', 'PfxPassword')]
 param(
     [Parameter(Mandatory)] [string] $BuildDir,
     [Parameter(Mandatory)] [string] $OutDir,

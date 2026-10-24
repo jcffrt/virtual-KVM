@@ -63,7 +63,7 @@ Arquitectura definitiva: el PC Windows recibe por el gadget USB y no ejecuta nad
   - lectura con `GetCursorPos` (sondeo, no `WH_MOUSE_LL`) y colocación con `SetCursorPos`.
 - Sin driver, sin servicio (un servicio vive en la sesión 0 y no ve el escritorio) y sin administrador. Arranque con `HKCU\...\Run`. El programador de tareas «al iniciar sesión» pide administrador.
 - `for_node` es el `node_id` del gadget, que se lee en la Pi con `rawkvm-hub --list-nodes`. El PC no tiene ningún fichero del agente.
-- Se compila con MinGW en el job `edge-windows` del CI (artefacto `rawkvm-edge-windows`), sin el WDK.
+- Se compila con MinGW en el job `edge-windows` del CI, sin el WDK; el zip de Windows (workflow `windows-zip`, ADR 0024) lo compila con MSVC.
 
 ## Alternativas descartadas
 

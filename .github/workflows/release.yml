@@ -17,8 +17,11 @@ jobs:
   debs:
     uses: ./.github/workflows/debs.yml
 
+  windows:
+    uses: ./.github/workflows/windows-zip.yml
+
   publish:
-    needs: debs
+    needs: [debs, windows]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     steps:
@@ -33,6 +36,10 @@ jobs:
           pattern: debs-*
           path: dist
           merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-zip
+          path: dist
       - name: SHA256SUMS
         run: |
           cd dist

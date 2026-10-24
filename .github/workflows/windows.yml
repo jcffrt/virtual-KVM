@@ -9,15 +9,15 @@ on:
     paths:
       - drivers/windows-vhf/**
       - crates/agent-windows/**
-      - deploy/windows/install.ps1
-      - deploy/windows/uninstall.ps1
+      - deploy/windows/install-driver.ps1
+      - deploy/windows/uninstall-driver.ps1
       - .github/workflows/windows.yml
   pull_request:
     paths:
       - drivers/windows-vhf/**
       - crates/agent-windows/**
-      - deploy/windows/install.ps1
-      - deploy/windows/uninstall.ps1
+      - deploy/windows/install-driver.ps1
+      - deploy/windows/uninstall-driver.ps1
       - .github/workflows/windows.yml
 
 env:
@@ -60,8 +60,8 @@ jobs:
         shell: pwsh
         run: |
           Copy-Item target/release/rawkvm-agent-windows.exe package/rawkvm-agent.exe
-          Copy-Item deploy/windows/install.ps1, deploy/windows/uninstall.ps1 package/
-          Copy-Item docs/windows-instalacion.md package/LEEME.md
+          Copy-Item deploy/windows/install-driver.ps1, deploy/windows/uninstall-driver.ps1 package/
+          Copy-Item docs/windows-driver-vhf.md package/LEEME.md
           git rev-parse HEAD | Out-File package/COMMIT.txt
           Get-ChildItem -Recurse package | Format-Table FullName, Length
       - uses: actions/upload-artifact@v4

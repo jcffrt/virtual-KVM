@@ -4,9 +4,9 @@ Una placa Linux con puerto USB en **modo dispositivo** recibe por Wi‑Fi los in
 
 Un gadget sirve a **un** PC. Para varios PCs, una placa por PC (o combinar con los agentes de software).
 
-Para cambiar de equipo **por el borde de la pantalla** en el PC Windows, instalar además el helper de [windows-borde.md](windows-borde.md) (sin driver ni administrador).
+Para cambiar de equipo **por el borde de la pantalla** en el PC Windows, instalar además el helper de borde y el widget con el instalador de [windows-instalacion.md](windows-instalacion.md) (sin driver ni administrador).
 
-**Es la vía recomendada para Windows** (el driver VHF de [windows-instalacion.md](windows-instalacion.md) queda como alternativa aparcada). La placa puede ser la misma que hace de hub: en la Orange Pi Zero 2W el receptor va en el USB‑C host y el PC en el USB‑C OTG.
+**Es la vía recomendada para Windows** (el driver VHF de [windows-driver-vhf.md](windows-driver-vhf.md) queda como alternativa aparcada). La placa puede ser la misma que hace de hub: en la Orange Pi Zero 2W el receptor va en el USB‑C host y el PC en el USB‑C OTG.
 
 ### Alimentación (importante con la Orange Pi)
 

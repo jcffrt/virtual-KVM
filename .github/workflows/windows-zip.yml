@@ -1,0 +1,90 @@
+# The Windows release zip (ADR 0024): the widget (RawKVM.exe, Tauri), the
+# edge helper (rawkvm-edge.exe), setup.ps1, uninstall.ps1 and the guide,
+# plus an install test of setup.ps1 / uninstall.ps1 on the runner.
+# release.yml calls it; it also runs when its pieces change, or on demand.
+name: windows-zip
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  push:
+    # Branches only: tags go through release.yml, which calls this.
+    branches: ["**"]
+    paths:
+      - widget/**
+      - crates/agent-core/**
+      - crates/proto/**
+      - crates/edge-windows/**
+      - deploy/windows/setup.ps1
+      - deploy/windows/uninstall.ps1
+      - deploy/windows/test-setup.ps1
+      - docs/windows-instalacion.md
+      - .github/workflows/windows-zip.yml
+  pull_request:
+    paths:
+      - widget/**
+      - crates/agent-core/**
+      - crates/proto/**
+      - crates/edge-windows/**
+      - deploy/windows/**
+      - .github/workflows/windows-zip.yml
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  zip:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: widget/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            widget/src-tauri -> target
+      - name: Edge helper
+        run: |
+          cargo clippy -p rawkvm-edge-windows --all-targets -- -D warnings
+          cargo test -p rawkvm-edge-windows
+          cargo build --release -p rawkvm-edge-windows
+      - name: Widget
+        working-directory: widget
+        run: |
+          npm ci
+          npm run build
+          cd src-tauri
+          cargo clippy --all-targets -- -D warnings
+          cargo test
+          cd ..
+          npx tauri build --no-bundle
+      - name: Zip and SHA256SUMS
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          $pkg = New-Item -ItemType Directory -Force package
+          Copy-Item widget/src-tauri/target/release/rawkvm-widget.exe package/RawKVM.exe
+          Copy-Item target/release/rawkvm-edge.exe, deploy/windows/setup.ps1, deploy/windows/uninstall.ps1 package/
+          Copy-Item docs/windows-instalacion.md package/LEEME.md
+          git rev-parse HEAD | Out-File -Encoding ascii package/COMMIT.txt
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $zip = "RawKVM-windows-$version.zip"
+          Compress-Archive -Path package/* -DestinationPath dist/$zip
+          # Same format as sha256sum, for setup.ps1 -From dist.
+          "{0}  {1}" -f (Get-FileHash -Algorithm SHA256 dist/$zip).Hash.ToLower(), $zip |
+            Out-File -Encoding ascii dist/SHA256SUMS
+          Get-ChildItem package, dist | Format-Table Name, Length
+      - name: Install test
+        shell: powershell
+        run: deploy/windows/test-setup.ps1 -Dist dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-zip
+          path: dist/RawKVM-windows-*.zip

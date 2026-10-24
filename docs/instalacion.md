@@ -41,7 +41,14 @@ O en dos pasos: `sudo apt install ./rawkvm-agent_<versión>_amd64.deb` (administ
 
 ## Windows
 
-Instalador en preparación (Fase 5.3). Mientras tanto: helper de borde en [windows-borde.md](windows-borde.md) y widget en [widget-instalacion.md](widget-instalacion.md).
+El PC Windows recibe el teclado y el ratón por el gadget USB (arriba). En él solo se instalan, por usuario y sin administrador, el helper de borde y el widget:
+
+```powershell
+irm https://raw.githubusercontent.com/jcffrt/virtual-KVM/main/deploy/windows/setup.ps1 -OutFile $env:TEMP\rawkvm-setup.ps1
+powershell -ExecutionPolicy Bypass -File $env:TEMP\rawkvm-setup.ps1
+```
+
+Pide la dirección del hub y el token (sin mostrarlo) y encuentra solo el gadget de ese PC. Guía: [windows-instalacion.md](windows-instalacion.md).
 
 ## macOS
 

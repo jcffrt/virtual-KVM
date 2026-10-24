@@ -70,7 +70,7 @@ No cambia nada. Una línea por pieza, para pegarla tal cual en el chat:
 ```
 info  version    0.5.0 (40926a9) at /usr/bin/rawkvm-agent
 ok    uhid       /dev/uhid read/write
-ok    config     /home/javier/.config/rawkvm/agent.toml: hub 192.168.1.28, token set, certificate 3f2a9c…
+ok    config     /home/javier/.config/rawkvm/agent.toml: hub 192.168.1.28, token set, certificate 3f2a9c1d7e0b...
 ok    service    rawkvm-agent.service: enabled, active
 ok    hub        INFO agent_core: connected addr=192.168.1.28:4433 hub=orangepi3 index=3
 ok    extension  running; packaged; GNOME Shell 46, wayland

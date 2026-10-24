@@ -39,6 +39,19 @@ jobs:
           $(git ls-files '*.sh')
           deploy/deb/*/postinst deploy/deb/*/prerm deploy/deb/*/postrm
 
+  psscriptanalyzer:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
+          "PSScriptAnalyzer $((Get-Module -ListAvailable PSScriptAnalyzer).Version)"
+          $found = Get-ChildItem -Recurse -Include *.ps1, *.psm1 deploy, drivers |
+            ForEach-Object { Invoke-ScriptAnalyzer -Path $_.FullName -Settings deploy/windows/PSScriptAnalyzerSettings.psd1 }
+          $found | Format-Table -AutoSize ScriptName, Line, RuleName, Message -Wrap
+          if ($found) { exit 1 }
+
   macos:
     runs-on: macos-14
     steps:
@@ -63,15 +76,5 @@ jobs:
         with:
           key: edge-windows
       - run: sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64
+      # Quick cross-build check; the release zip is windows-zip.yml.
       - run: cargo build --release --target x86_64-pc-windows-gnu -p rawkvm-edge-windows
-      - name: Package
-        run: |
-          mkdir -p package
-          cp target/x86_64-pc-windows-gnu/release/rawkvm-edge.exe package/
-          cp deploy/windows/install-edge.ps1 deploy/windows/uninstall-edge.ps1 package/
-          cp docs/windows-borde.md package/LEEME.md
-          git rev-parse HEAD > package/COMMIT.txt
-      - uses: actions/upload-artifact@v4
-        with:
-          name: rawkvm-edge-windows
-          path: package/

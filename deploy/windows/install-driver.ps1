@@ -3,10 +3,10 @@
   Install the RawKVM VHF driver and agent service. Run from the unpacked
   rawkvm-windows folder in an elevated PowerShell:
 
-    .\install.ps1 -EnableTestSigning        # first time only, then reboot
-    .\install.ps1 -Hub 192.168.1.28 -Token <64 hex>
+    .\install-driver.ps1 -EnableTestSigning        # first time only, then reboot
+    .\install-driver.ps1 -Hub 192.168.1.28 -Token <64 hex>
 
-  See docs\windows-instalacion.md.
+  See docs\windows-driver-vhf.md.
 #>
 #Requires -RunAsAdministrator
 param(
@@ -33,7 +33,7 @@ $startOptions = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control').Syst
 $testSigning = $startOptions -match 'TESTSIGNING'
 if (-not $testSigning) {
     if (-not $EnableTestSigning) {
-        throw "Test signing is off. Run '.\install.ps1 -EnableTestSigning', reboot, and run this script again."
+        throw "Test signing is off. Run '.\install-driver.ps1 -EnableTestSigning', reboot, and run this script again."
     }
     bcdedit /set testsigning on
     if ($LASTEXITCODE) {
@@ -70,7 +70,7 @@ if ($LASTEXITCODE) { throw 'driver installation failed' }
 $dev = Get-PnpDevice -FriendlyName 'RawKVM virtual HID bus' -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $dev) { throw 'RawKVM virtual HID bus not found in Device Manager' }
 if ($dev.Status -ne 'OK') {
-    Write-Warning "RawKVM virtual HID bus status: $($dev.Status) (problem $($dev.Problem)). See docs\windows-instalacion.md."
+    Write-Warning "RawKVM virtual HID bus status: $($dev.Status) (problem $($dev.Problem)). See docs\windows-driver-vhf.md."
 }
 
 # 5. Configuration (hub and token), readable only by SYSTEM and Administrators
@@ -97,4 +97,4 @@ Get-Service $serviceName | Format-Table Name, Status, StartType
 Write-Host "Log: $dataDir\agent.log" -ForegroundColor Green
 
 # Flush the files just written to disk.
-try { Write-VolumeCache -DriveLetter $env:SystemDrive[0] } catch { }
+Write-VolumeCache -DriveLetter $env:SystemDrive[0] -ErrorAction SilentlyContinue

@@ -9,6 +9,7 @@ pub mod discovery;
 pub mod edge;
 pub mod helper;
 pub mod pairing;
+pub mod setup;
 pub mod widget;
 
 use std::collections::{BTreeMap, HashMap};

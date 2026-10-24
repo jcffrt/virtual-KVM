@@ -5,13 +5,12 @@
 //! install in the home directory, pair with the hub, enable the user
 //! service and the GNOME extension, then check. `--check` only reads.
 
-use std::io::{BufRead, IsTerminal, Write};
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
 use agent_core::pairing::{self, PairArgs};
+use agent_core::setup::{self, ask_token, choose_hub, say, step, Level, Report};
 use agent_core::{AgentConfig, AgentOptions};
 use anyhow::{bail, Context, Result};
 use proto::{NodeKind, Os};
@@ -192,86 +191,6 @@ fn migrate(home: &Home) -> Result<()> {
 }
 
 /// Offer the hubs found with mDNS, or ask for an address.
-async fn choose_hub(cfg: &AgentConfig) -> Result<String> {
-    say("looking for hubs on the LAN (mDNS, 3 s)...");
-    let hubs = agent_core::discovery::discover(Duration::from_secs(3))
-        .await
-        .unwrap_or_default();
-    let found: Vec<(String, SocketAddr)> = hubs
-        .iter()
-        .filter_map(|h| h.addrs.first().map(|a| (h.name.clone(), *a)))
-        .collect();
-    let interactive = std::io::stdin().is_terminal();
-    if !interactive {
-        return match (found.as_slice(), cfg.hub.as_str()) {
-            ([(_, a)], _) => Ok(a.ip().to_string()),
-            ([], "") | ([_, _, ..], "") => {
-                bail!("{} hubs found: pass --hub ADDRESS", found.len())
-            }
-            (_, saved) => Ok(saved.to_string()),
-        };
-    }
-    for (i, (name, addr)) in found.iter().enumerate() {
-        println!("  {}) {name} at {}", i + 1, addr.ip());
-    }
-    let default = found
-        .first()
-        .map(|(_, a)| a.ip().to_string())
-        .or_else(|| (!cfg.hub.is_empty()).then(|| cfg.hub.clone()));
-    let question = match (&default, found.len()) {
-        (Some(d), 0) => format!("Hub address [{d}]: "),
-        (Some(d), 1) => format!("Hub: 1, or an address [{d}]: "),
-        (Some(d), n) => format!("Hub: 1-{n}, or an address [{d}]: "),
-        (None, _) => "Hub address (IP or name): ".to_string(),
-    };
-    loop {
-        let answer = read_line(&question)?;
-        if let Some(hub) = pick_hub(&answer, &found, default.as_deref()) {
-            return Ok(hub);
-        }
-        eprintln!("Type a number from the list or an address.");
-    }
-}
-
-/// The hub chosen by `answer`: a number from `found`, an address, or the
-/// default for an empty answer.
-fn pick_hub(answer: &str, found: &[(String, SocketAddr)], default: Option<&str>) -> Option<String> {
-    let a = answer.trim();
-    if a.is_empty() {
-        return default.map(str::to_string);
-    }
-    if let Ok(n) = a.parse::<usize>() {
-        return found
-            .get(n.checked_sub(1)?)
-            .map(|(_, addr)| addr.ip().to_string());
-    }
-    (!a.contains(char::is_whitespace)).then(|| a.to_string())
-}
-
-/// The token, asked without echo; Enter keeps the saved one.
-fn ask_token(cfg: &AgentConfig) -> Result<Option<String>> {
-    if !std::io::stdin().is_terminal() {
-        if cfg.token.is_empty() {
-            bail!("no pairing token: pass --token-file FILE (or run in a terminal to type it)");
-        }
-        return Ok(None);
-    }
-    if cfg.token.is_empty() {
-        return pairing::prompt_token().map(Some);
-    }
-    loop {
-        let text = pairing::prompt_hidden("Pairing token (Enter keeps the saved one): ")?;
-        if text.trim().is_empty() {
-            return Ok(None);
-        }
-        let t = text.trim().to_lowercase();
-        if proto::parse_token(&t).is_some() {
-            return Ok(Some(t));
-        }
-        eprintln!("That is not 64 hex characters; try again.");
-    }
-}
-
 fn enable_extension() -> Result<()> {
     if which("gnome-shell").is_none() {
         say("no GNOME Shell: screen-edge switching is off on this machine");
@@ -317,37 +236,14 @@ fn enable_extension() -> Result<()> {
 
 // ---------------------------------------------------------------- check
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Level {
-    Ok,
-    Info,
-    Warn,
-    Fail,
-}
-
-impl Level {
-    fn tag(self) -> &'static str {
-        match self {
-            Level::Ok => "ok  ",
-            Level::Info => "info",
-            Level::Warn => "warn",
-            Level::Fail => "FAIL",
-        }
-    }
-}
-
 /// Print the state of every piece, read only, in a form to paste in a
 /// chat. True if nothing failed.
 pub async fn check(config_path: &Path) -> Result<bool> {
-    let mut worst = Level::Ok;
-    let mut line = |level: Level, what: &str, detail: &str| {
-        worst = worst.max(level);
-        println!("{}  {what:<10} {detail}", level.tag());
-    };
+    let mut r = Report::default();
     let exe = std::env::current_exe()
         .map(|p| p.display().to_string())
         .unwrap_or_default();
-    line(
+    r.line(
         Level::Info,
         "version",
         &format!("{} at {exe}", crate::VERSION),
@@ -358,55 +254,16 @@ pub async fn check(config_path: &Path) -> Result<bool> {
         .write(true)
         .open("/dev/uhid")
     {
-        Ok(_) => line(Level::Ok, "uhid", "/dev/uhid read/write"),
-        Err(e) => line(
+        Ok(_) => r.line(Level::Ok, "uhid", "/dev/uhid read/write"),
+        Err(e) => r.line(
             Level::Fail,
             "uhid",
             &format!("/dev/uhid: {e} (package rule: the desktop session's user, or group input)"),
         ),
     }
 
-    match std::fs::read_to_string(config_path) {
-        Err(_) => line(
-            Level::Fail,
-            "config",
-            &format!("{} missing: rawkvm-agent setup", config_path.display()),
-        ),
-        Ok(text) => match AgentConfig::parse(&text) {
-            Err(e) => line(
-                Level::Fail,
-                "config",
-                &format!("{}: {e:#}", config_path.display()),
-            ),
-            Ok(cfg) => {
-                let hub = if cfg.hub.is_empty() {
-                    "mDNS"
-                } else {
-                    cfg.hub.as_str()
-                };
-                let token = if cfg.token.is_empty() {
-                    "no token"
-                } else {
-                    "token set"
-                };
-                let pin = if cfg.hub_fingerprint.is_empty() {
-                    "not paired".to_string()
-                } else {
-                    format!("certificate {}…", &cfg.hub_fingerprint[..12])
-                };
-                let level = if cfg.token.is_empty() || cfg.hub_fingerprint.is_empty() {
-                    Level::Fail
-                } else {
-                    Level::Ok
-                };
-                line(
-                    level,
-                    "config",
-                    &format!("{}: hub {hub}, {token}, {pin}", config_path.display()),
-                );
-            }
-        },
-    }
+    let (level, detail) = setup::config_line(config_path, "rawkvm-agent setup");
+    r.line(level, "config", &detail);
 
     let enabled = systemctl_out(&["is-enabled", UNIT]);
     let active = systemctl_out(&["is-active", UNIT]);
@@ -415,7 +272,7 @@ pub async fn check(config_path: &Path) -> Result<bool> {
     } else {
         Level::Fail
     };
-    line(level, "service", &format!("{UNIT}: {enabled}, {active}"));
+    r.line(level, "service", &format!("{UNIT}: {enabled}, {active}"));
 
     let journal = Command::new("journalctl")
         .args([
@@ -432,8 +289,11 @@ pub async fn check(config_path: &Path) -> Result<bool> {
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
         .unwrap_or_default();
-    let (level, detail) = hub_state(journal.lines());
-    line(level, "hub", &detail);
+    let (level, detail) = setup::hub_state(journal.lines()).unwrap_or((
+        Level::Warn,
+        "no connection lines in this boot's log (journalctl --user -u rawkvm-agent)".into(),
+    ));
+    r.line(level, "hub", &detail);
 
     let home = Home::current()?;
     if which("gnome-shell").is_some() {
@@ -469,13 +329,13 @@ pub async fn check(config_path: &Path) -> Result<bool> {
                 "no D-Bus session here (run --check in the desktop session)".to_string(),
             ),
         };
-        line(
+        r.line(
             level,
             "extension",
             &format!("{detail}; {where_}; GNOME Shell {shell}, {session}"),
         );
     } else {
-        line(
+        r.line(
             Level::Info,
             "extension",
             "no GNOME Shell: no screen-edge switching",
@@ -488,7 +348,7 @@ pub async fn check(config_path: &Path) -> Result<bool> {
         .map(|p| p.display().to_string())
         .collect();
     if !leftovers.is_empty() {
-        line(
+        r.line(
             Level::Warn,
             "old files",
             &format!(
@@ -497,32 +357,7 @@ pub async fn check(config_path: &Path) -> Result<bool> {
             ),
         );
     }
-    Ok(worst < Level::Fail)
-}
-
-/// The hub connection from the agent's log: the last of "connected", a
-/// reconnect, or an error decides.
-fn hub_state<'a>(lines: impl Iterator<Item = &'a str>) -> (Level, String) {
-    let mut last: Option<(Level, String)> = None;
-    for l in lines {
-        let l = l.trim();
-        let verdict = if l.contains(" connected addr=") || l.ends_with(" connected") {
-            Some(Level::Ok)
-        } else if l.contains("ERROR") || l.contains("rejected") {
-            Some(Level::Fail)
-        } else if l.contains("reconnecting in") || l.contains("WARN") && l.contains("hub") {
-            Some(Level::Warn)
-        } else {
-            None
-        };
-        if let Some(v) = verdict {
-            last = Some((v, l.to_string()));
-        }
-    }
-    last.unwrap_or((
-        Level::Warn,
-        "no connection lines in this boot's log (journalctl --user -u rawkvm-agent)".into(),
-    ))
+    Ok(r.ok())
 }
 
 /// `State: ACTIVE` from `gnome-extensions info`.
@@ -542,22 +377,6 @@ async fn extension_running() -> Option<bool> {
 }
 
 // ---------------------------------------------------------------- helpers
-
-fn step(name: &str) {
-    println!("\n== {name}");
-}
-
-fn say(msg: &str) {
-    println!("   {msg}");
-}
-
-fn read_line(prompt: &str) -> Result<String> {
-    print!("{prompt}");
-    std::io::stdout().flush()?;
-    let mut s = String::new();
-    std::io::stdin().lock().read_line(&mut s)?;
-    Ok(s)
-}
 
 fn systemctl(args: &[&str]) -> Result<()> {
     let out = Command::new("systemctl")
@@ -674,44 +493,5 @@ mod tests {
         let info = "rawkvm@olitec.cc\n  Name: RawKVM edge bridge\n  State: OUT OF DATE\n";
         assert_eq!(extension_state(info).as_deref(), Some("OUT OF DATE"));
         assert_eq!(extension_state(""), None);
-    }
-
-    #[test]
-    fn hub_from_the_log() {
-        let log = "\
-INFO agent_core: hub certificate pinned fingerprint=ab
-INFO agent_core: connected addr=192.168.1.28:4433 hub=orangepi3 index=3
-WARN agent_core: hub closed the session
-INFO agent_core: reconnecting in 0.5 s
-INFO agent_core: connected addr=192.168.1.28:4433 hub=orangepi3 index=3";
-        let (level, detail) = hub_state(log.lines());
-        assert_eq!(level, Level::Ok);
-        assert!(detail.contains("index=3"));
-        let (level, _) = hub_state("ERROR agent_core: the hub rejected the pairing token".lines());
-        assert_eq!(level, Level::Fail);
-        assert_eq!(hub_state("".lines()).0, Level::Warn);
-    }
-
-    #[test]
-    fn hub_answers() {
-        let found = vec![
-            (
-                "orangepi3".to_string(),
-                "192.168.1.28:4433".parse().unwrap(),
-            ),
-            ("other".to_string(), "192.168.1.30:4433".parse().unwrap()),
-        ];
-        assert_eq!(
-            pick_hub("", &found, Some("192.168.1.28")).as_deref(),
-            Some("192.168.1.28")
-        );
-        assert_eq!(pick_hub("2", &found, None).as_deref(), Some("192.168.1.30"));
-        assert_eq!(pick_hub("3", &found, None), None);
-        assert_eq!(pick_hub("0", &found, None), None);
-        assert_eq!(
-            pick_hub(" pi.lan ", &found, None).as_deref(),
-            Some("pi.lan")
-        );
-        assert_eq!(pick_hub("", &[], None), None);
     }
 }

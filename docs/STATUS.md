@@ -502,6 +502,23 @@ Decisiones del usuario/orquestador sobre `docs/widget-plan.md`: (1) protocolo v3
 - Docs: `ubuntu-instalacion.md`; `instalacion.md`, `fase0-validacion.md` y `gnome-plan.md` remiten a ella.
 - Sin probar en el Ubuntu real: `setup` (mDNS, systemd de usuario, gsettings, migración desde `~/.local`), `uaccess`, el reinicio al actualizar y `--check` con la extensión. En 192.168.1.157 el `apt install` lo hace el usuario; `setup` puede hacerlo el orquestador por SSH con la sesión gráfica abierta.
 
+## Fase 5.3: instalador de Windows, `setup.ps1` (2026-10-24)
+
+- `deploy/windows/setup.ps1`, sin administrador. Instala el helper de borde y el widget en `%LOCALAPPDATA%\Programs\RawKVM`, sin la marca de descargado de Internet, con las claves `Run` de HKCU (`RawKvmEdge`, `RawKVM`) y la entrada en el menú Inicio. Retira la instalación manual anterior. Empareja una vez y comprueba. ADR 0024.
+- Origen del zip: `-From`, la carpeta del script, o la release (`Invoke-WebRequest` anónimo; `gh` si falla), comprobado con `SHA256SUMS`.
+- Emparejamiento:
+  - `setup.ps1` pide el hub (Enter: mDNS) y el token sin mostrarlo (`Read-Host -AsSecureString`, fichero temporal que borra al terminar), o lo toma de `-TokenFile`. No tiene `-Token`.
+  - El helper empareja con `rawkvm-edge --pair`: conecta una vez como widget con un id desechable, lee la lista de nodos y elige solo el agente de Windows (el gadget). Si hay varios, `setup.ps1` pregunta; `-ForNode` lo fuerza. Sin cambio de protocolo.
+  - El widget toma el emparejamiento de `edge.toml` al arrancar (`adopt_pairing`).
+- `setup.ps1 -Check` y `rawkvm-edge --check`: una línea por pieza (versión, configuración, `for_node`, hub, widget, inicio de sesión, procesos, cortafuegos). `uninstall.ps1` (`-Purge` borra también la configuración y los logs).
+- `agent_core::setup` reúne lo común de los `setup` y `--check` de Linux y Windows.
+- Los scripts del driver VHF pasan a `install-driver.ps1` / `uninstall-driver.ps1` y su guía a `windows-driver-vhf.md`. `install-edge.ps1`, `uninstall-edge.ps1` y `windows-borde.md` desaparecen: todo está en la nueva `windows-instalacion.md`.
+- CI:
+  - workflow `windows-zip`: clippy y tests del helper y del widget, el zip, y una prueba de instalación y desinstalación en el runner;
+  - `release.yml` adjunta el zip;
+  - job `psscriptanalyzer` en `ci.yml`.
+- Sin probar en GAMER: la descarga, el emparejamiento real (mDNS, token oculto, elección del gadget), que el widget tome el emparejamiento, el arranque al iniciar sesión sin SmartScreen y `-Check` con todo en marcha.
+
 ## Convenciones
 
 Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario en castellano, `cargo fmt` y `cargo clippy -D warnings` limpios, un ADR por decisión nueva.

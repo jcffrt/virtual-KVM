@@ -142,6 +142,42 @@ impl AgentConfig {
     }
 }
 
+/// Take the pairing (hub, token, pinned certificate) of another program's
+/// config on this machine: the Windows widget uses the edge helper's, so
+/// that setup.ps1 pairs once (ADR 0024). Only a complete pairing is taken,
+/// and only when `target` has none or `source` was written after it (a
+/// pairing made later in the widget itself is kept). Returns whether
+/// `target` changed.
+pub fn adopt_pairing(target: &Path, source: &Path) -> Result<bool> {
+    let Ok(text) = fs::read_to_string(source) else {
+        return Ok(false);
+    };
+    let src = AgentConfig::parse(&text).with_context(|| format!("parsing {}", source.display()))?;
+    if src.hub.is_empty() || src.token.is_empty() || src.hub_fingerprint.is_empty() {
+        return Ok(false);
+    }
+    let mut cfg = AgentConfig::load_or_init(target)?;
+    let same = cfg.hub == src.hub
+        && cfg.token == src.token
+        && cfg
+            .hub_fingerprint
+            .eq_ignore_ascii_case(&src.hub_fingerprint);
+    let modified = |p: &Path| fs::metadata(p).and_then(|m| m.modified()).ok();
+    let newer = match (modified(source), modified(target)) {
+        (Some(s), Some(t)) => s > t,
+        _ => true,
+    };
+    let unpaired = cfg.token.is_empty() || cfg.hub_fingerprint.is_empty();
+    if same || !(unpaired || newer) {
+        return Ok(false);
+    }
+    cfg.hub = src.hub;
+    cfg.token = src.token;
+    cfg.hub_fingerprint = src.hub_fingerprint;
+    cfg.save(target)?;
+    Ok(true)
+}
+
 pub fn is_fingerprint(s: &str) -> bool {
     s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
@@ -185,6 +221,53 @@ mod tests {
         let c = AgentConfig::load_or_init(&path).unwrap();
         assert_eq!(c, b);
         assert_eq!(c.token_bytes().unwrap(), [0x11; 32]);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn adopts_a_newer_complete_pairing() {
+        let dir = std::env::temp_dir().join(format!("rawkvm-adopt-{}", Uuid::new_v4()));
+        let (widget, edge) = (dir.join("widget.toml"), dir.join("edge.toml"));
+        let tick = || std::thread::sleep(std::time::Duration::from_millis(30));
+        // No edge config, or an incomplete one: nothing.
+        assert!(!adopt_pairing(&widget, &edge).unwrap());
+        let mut e = AgentConfig {
+            node_id: Uuid::new_v4(),
+            hub: "192.168.1.28".into(),
+            token: "11".repeat(32),
+            ..Default::default()
+        };
+        e.save(&edge).unwrap();
+        assert!(!adopt_pairing(&widget, &edge).unwrap());
+
+        // An unpaired widget takes it, and keeps its own node id.
+        e.hub_fingerprint = FP.into();
+        e.save(&edge).unwrap();
+        let w0 = AgentConfig::load_or_init(&widget).unwrap();
+        assert!(adopt_pairing(&widget, &edge).unwrap());
+        let w = AgentConfig::load_or_init(&widget).unwrap();
+        assert_eq!(
+            (w.node_id, w.hub.as_str(), w.hub_fingerprint.as_str()),
+            (w0.node_id, "192.168.1.28", FP)
+        );
+        assert!(!adopt_pairing(&widget, &edge).unwrap(), "already the same");
+
+        // Paired later in the widget itself: kept.
+        tick();
+        let mut own = w.clone();
+        own.hub = "192.168.1.99".into();
+        own.save(&widget).unwrap();
+        assert!(!adopt_pairing(&widget, &edge).unwrap());
+
+        // The edge paired again afterwards (setup.ps1 -Pair): taken.
+        tick();
+        e.token = "22".repeat(32);
+        e.save(&edge).unwrap();
+        assert!(adopt_pairing(&widget, &edge).unwrap());
+        assert_eq!(
+            AgentConfig::load_or_init(&widget).unwrap().token,
+            "22".repeat(32)
+        );
         fs::remove_dir_all(dir).unwrap();
     }
 }

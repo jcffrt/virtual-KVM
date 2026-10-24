@@ -213,6 +213,53 @@ async fn pair_pins_and_returns() {
 }
 
 #[tokio::test]
+async fn survey_lists_the_nodes_without_touching_the_config() {
+    let hub = start_hub().await;
+    let agent = agent_config(&hub, &hub.cfg.token, "");
+    let agent_id = AgentConfig::load_or_init(&agent).unwrap().node_id;
+    let mut sink = RecSink::default();
+    let agent_opts = AgentOptions {
+        config_path: agent,
+        os: Os::Windows,
+    };
+    let edge = agent_config(&hub, &hub.cfg.token, "");
+    let before = AgentConfig::load_or_init(&edge).unwrap();
+    let opts = AgentOptions {
+        config_path: edge.clone(),
+        os: Os::Windows,
+    };
+    let surveyed = async {
+        for _ in 0..200 {
+            if hub
+                .router
+                .status()
+                .nodes
+                .iter()
+                .any(|n| n.node_id == agent_id)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        pairing::survey(&opts).await.unwrap()
+    };
+    let (addr, status) = tokio::select! {
+        r = run(agent_opts, &mut sink) => panic!("agent ended: {r:?}"),
+        s = surveyed => s,
+    };
+    assert_eq!(addr, hub.cfg.listen);
+    let a = status.nodes.iter().find(|n| n.node_id == agent_id).unwrap();
+    assert_eq!((a.kind, a.os), (NodeKind::Agent, Os::Windows));
+    assert!(status.nodes.iter().all(|n| n.node_id != before.node_id));
+    let after = AgentConfig::load_or_init(&edge).unwrap();
+    assert_eq!(after.node_id, before.node_id);
+    assert_eq!(after.node_name, before.node_name);
+    assert_eq!(after.hub_fingerprint, hub.fingerprint);
+    assert!(!edge.with_extension("survey.toml").exists());
+    let _ = std::fs::remove_dir_all(&hub.dir);
+}
+
+#[tokio::test]
 async fn bad_token_is_fatal() {
     let hub = start_hub().await;
     let path = agent_config(&hub, &"00".repeat(32), "");

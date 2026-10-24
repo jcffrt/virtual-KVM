@@ -131,6 +131,70 @@ pub async fn pair(opts: &AgentOptions, kind: NodeKind) -> Result<std::net::Socke
         .map_err(|_| anyhow!("no answer from the hub in {} s", PAIR_TIMEOUT.as_secs()))?
 }
 
+/// Connect once as a widget, under a throwaway node id so that nothing the
+/// hub keeps per node is touched, and return the hub's address and its
+/// first `Status` (the connected nodes). Pins the hub certificate in the
+/// config at `opts.config_path` if none was pinned, and saves the address
+/// as `hub` if the hub was found with mDNS. For an edge helper that does
+/// not know its agent yet.
+pub async fn survey(opts: &AgentOptions) -> Result<(std::net::SocketAddr, proto::HubStatus)> {
+    let attempt = async {
+        let mut cfg = AgentConfig::load_or_init(&opts.config_path)?;
+        cfg.token_bytes()?;
+        let addr = resolve_hub(&cfg).await?;
+        let mut probe = AgentConfig {
+            node_id: uuid::Uuid::new_v4(),
+            node_name: format!("{} (setup)", cfg.node_name),
+            ..cfg.clone()
+        };
+        // handshake() saves the config when it pins: not over the real one.
+        let probe_path = opts.config_path.with_extension("survey.toml");
+        let probe_opts = AgentOptions {
+            config_path: probe_path.clone(),
+            os: opts.os,
+        };
+        let result = async {
+            let mut accepted = handshake(&probe_opts, &mut probe, addr, NodeKind::Widget)
+                .await
+                .map_err(|e| match e {
+                    crate::End::Fatal(e) | crate::End::Retry(e) => e,
+                })?;
+            let status = loop {
+                match proto::wire::read_frame(&mut accepted.recv).await? {
+                    Some(proto::Control::Status(s)) => break s,
+                    Some(_) => continue,
+                    None => bail!("the hub closed the session before sending its status"),
+                }
+            };
+            accepted.conn.close(0u32.into(), b"survey");
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            Ok(status)
+        }
+        .await;
+        let _ = std::fs::remove_file(&probe_path);
+        let status = result?;
+        if probe.hub_fingerprint.is_empty() {
+            bail!("the hub presented no certificate to pin");
+        }
+        let mut changed = false;
+        if cfg.hub_fingerprint.is_empty() {
+            cfg.hub_fingerprint = probe.hub_fingerprint;
+            changed = true;
+        }
+        if cfg.hub.is_empty() {
+            cfg.hub = addr.ip().to_string();
+            changed = true;
+        }
+        if changed {
+            cfg.save(&opts.config_path)?;
+        }
+        Ok((addr, status))
+    };
+    tokio::time::timeout(PAIR_TIMEOUT, attempt)
+        .await
+        .map_err(|_| anyhow!("no answer from the hub in {} s", PAIR_TIMEOUT.as_secs()))?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
