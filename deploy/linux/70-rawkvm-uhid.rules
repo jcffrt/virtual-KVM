@@ -1,0 +1,4 @@
+# /dev/uhid for the RawKVM agent (ADR 0023): the user of the active desktop
+# session through logind (uaccess, before 73-seat-late.rules, hence 70-) and
+# members of group input. static_node: the node exists before uhid loads.
+KERNEL=="uhid", SUBSYSTEM=="misc", GROUP="input", MODE="0660", TAG+="uaccess", OPTIONS+="static_node=uhid"

@@ -1105,6 +1105,7 @@ dependencies = [
  "anyhow",
  "clap",
  "futures-util",
+ "libc",
  "rawkvm-agent-core",
  "rawkvm-proto",
  "tokio",

@@ -15,9 +15,37 @@ proto.workspace = true
 agent-core.workspace = true
 anyhow.workspace = true
 clap.workspace = true
+libc.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
 futures-util = "0.3"
 zbus = { version = "5", default-features = false, features = ["tokio"] }
+
+# `cargo deb --no-build --target x86_64-unknown-linux-gnu -p rawkvm-agent-linux`
+# after `cargo zigbuild --release --target x86_64-unknown-linux-gnu.2.35`
+# (glibc 2.35: Ubuntu 22.04 and later; debs.yml, ADR 0023).
+[package.metadata.deb]
+name = "rawkvm-agent"
+maintainer = "RawKVM <jcffrt@users.noreply.github.com>"
+copyright = "RawKVM contributors"
+section = "net"
+priority = "optional"
+revision = ""
+depends = "$auto, systemd"
+suggests = "gnome-shell"
+extended-description = """\
+Recreates the RawKVM hub's HID devices (the Logitech receiver) with \
+/dev/uhid, as a systemd user service, plus the GNOME Shell extension for \
+switching machines at the screen edges. After installing, each user runs \
+`rawkvm-agent setup` to pair with the hub."""
+maintainer-scripts = "../../deploy/deb/agent/"
+assets = [
+    ["target/release/rawkvm-agent", "usr/bin/", "755"],
+    ["../../deploy/linux/70-rawkvm-uhid.rules", "usr/lib/udev/rules.d/", "644"],
+    ["../../deploy/linux/rawkvm-uhid.conf", "usr/lib/modules-load.d/", "644"],
+    ["../../deploy/linux/rawkvm-agent.service", "usr/lib/systemd/user/", "644"],
+    ["../../gnome-extension/rawkvm@olitec.cc/metadata.json", "usr/share/gnome-shell/extensions/rawkvm@olitec.cc/", "644"],
+    ["../../gnome-extension/rawkvm@olitec.cc/extension.js", "usr/share/gnome-shell/extensions/rawkvm@olitec.cc/", "644"],
+]

@@ -1,0 +1,34 @@
+#!/bin/sh
+# postinst of rawkvm-agent (Linux). Root part only: /dev/uhid and the
+# move from the manual install's files in /etc. Pairing, the user service
+# and the GNOME extension are per user: `rawkvm-agent setup` (ADR 0023).
+set -e
+
+[ "$1" = configure ] || exit 0
+old_version=${2:-}
+
+# Before 0.5.0 deploy/linux/install.sh put these in /etc.
+for f in /etc/udev/rules.d/99-rawkvm-uhid.rules /etc/modules-load.d/rawkvm-uhid.conf; do
+    if [ -f "$f" ] && grep -q RawKVM "$f"; then
+        echo "rawkvm-agent: removing $f (now in /usr/lib)"
+        rm -f "$f"
+    fi
+done
+
+modprobe uhid 2>/dev/null || true
+if command -v udevadm >/dev/null 2>&1 && [ -d /run/udev ]; then
+    udevadm control --reload || true
+    udevadm trigger --name-match=uhid || true
+fi
+
+# An upgrade: restart the agent of every user running it.
+if [ -n "$old_version" ] && [ -d /run/systemd/system ]; then
+    for user in $(loginctl list-users --no-legend 2>/dev/null | awk '{print $2}'); do
+        systemctl --user -M "$user@" try-restart rawkvm-agent.service 2>/dev/null || true
+    done
+fi
+
+if [ -z "$old_version" ]; then
+    echo "rawkvm-agent: now, as your own user (not sudo): rawkvm-agent setup"
+fi
+exit 0

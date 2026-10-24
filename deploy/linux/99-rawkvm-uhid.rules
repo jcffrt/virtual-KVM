@@ -1,2 +1,0 @@
-# Let members of group `input` create virtual HID devices (RawKVM agent).
-KERNEL=="uhid", GROUP="input", MODE="0660"

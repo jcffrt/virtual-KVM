@@ -1,0 +1,10 @@
+#!/bin/sh
+# prerm of rawkvm-agent (Linux): on removal, stop the agent of every user
+# running it. Their pairing (~/.config/rawkvm) stays.
+set -e
+if [ "$1" = remove ] && [ -d /run/systemd/system ]; then
+    for user in $(loginctl list-users --no-legend 2>/dev/null | awk '{print $2}'); do
+        systemctl --user -M "$user@" stop rawkvm-agent.service 2>/dev/null || true
+    done
+fi
+exit 0

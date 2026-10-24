@@ -1,7 +1,9 @@
-# Hub and gadget .debs (ADR 0022), for ci.yml (every push) and release.yml
-# (tags). Builds static musl binaries with zig, packages them with
-# cargo-deb, runs lintian, and installs the arm64 packages in an arm64
-# Debian container under QEMU (deploy/deb/test-install.sh).
+# The .debs: hub and gadget (ADR 0022) and the Linux agent (ADR 0023), for
+# ci.yml (every push) and release.yml (tags). Builds with zig (static musl
+# for the boards, glibc 2.35 for the agent), packages with cargo-deb, runs
+# lintian, and installs the packages in containers: the boards' in arm64
+# Debian under QEMU (deploy/deb/test-install.sh), the agent's in Ubuntu
+# 22.04 and 24.04 (deploy/deb/test-install-agent.sh).
 name: debs
 
 on:
@@ -67,3 +69,52 @@ jobs:
           -v "$PWD:/repo:ro"
           debian:bookworm
           sh /repo/deploy/deb/test-install.sh /repo/debs /repo
+
+  agent:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: debs-agent
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: 0.13.0
+      - run: cargo install cargo-zigbuild cargo-deb --locked
+      # glibc 2.35: the package installs on Ubuntu 22.04 and later.
+      - run: cargo zigbuild --release --target x86_64-unknown-linux-gnu.2.35 -p rawkvm-agent-linux
+      # $auto: dpkg-shlibdeps on the runner works out the libc6 version.
+      - run: |
+          cargo deb --no-build --no-strip --target x86_64-unknown-linux-gnu -p rawkvm-agent-linux
+          mkdir -p out
+          cp target/debian/rawkvm-agent_*_amd64.deb out/
+          dpkg-deb --field out/*.deb Depends
+      - name: lintian (warnings only)
+        run: |
+          sudo apt-get install -y --no-install-recommends lintian >/dev/null
+          lintian --no-tag-display-limit out/*.deb || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: debs-amd64
+          path: out/*.deb
+
+  agent-install-test:
+    needs: agent
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        image: ["ubuntu:22.04", "ubuntu:24.04"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: debs-amd64
+          path: debs
+      - run: >
+          docker run --rm
+          -v "$PWD:/repo:ro"
+          ${{ matrix.image }}
+          sh /repo/deploy/deb/test-install-agent.sh /repo/debs

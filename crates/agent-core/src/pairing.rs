@@ -92,14 +92,17 @@ pub fn prompt_token() -> Result<String> {
         bail!("no pairing token: pass --token-file FILE (or run in a terminal to type it)");
     }
     loop {
-        let text =
-            rpassword::prompt_password("Pairing token (shown by `rawkvm-hub --show-token`): ")
-                .context("reading the token")?;
+        let text = prompt_hidden("Pairing token (shown by `rawkvm-hub --show-token`): ")?;
         match parse(&text) {
             Ok(t) => return Ok(t),
             Err(_) => eprintln!("That is not 64 hex characters; try again."),
         }
     }
+}
+
+/// Read a line from the terminal without echo.
+pub fn prompt_hidden(prompt: &str) -> Result<String> {
+    rpassword::prompt_password(prompt).context("reading from the terminal")
 }
 
 /// Connect once with the config of `opts`, present `kind`, pin the hub

@@ -3,6 +3,7 @@
 //! the Logitech receiver as if it were plugged in locally.
 
 mod edge;
+mod setup;
 mod uhid;
 
 use std::collections::HashMap;
@@ -10,9 +11,12 @@ use std::path::PathBuf;
 
 use agent_core::{AgentConfig, AgentOptions, HidSink, OutputReceiver, OutputSender};
 use anyhow::{Context, Result};
-use clap::{Parser, ValueEnum};
-use proto::{HidDevice, Os};
+use clap::{Parser, Subcommand, ValueEnum};
+use proto::{HidDevice, NodeKind, Os};
 use tracing::info;
+
+/// Crate version and git commit of this build.
+pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("RAWKVM_COMMIT"), ")");
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 enum Bus {
@@ -23,8 +27,11 @@ enum Bus {
 }
 
 #[derive(Parser, Debug)]
-#[command(version, about)]
+#[command(version = VERSION, about)]
 struct Args {
+    #[command(subcommand)]
+    cmd: Option<Cmd>,
+
     /// Configuration file (default: ~/.config/rawkvm/agent.toml).
     #[arg(short, long)]
     config: Option<PathBuf>,
@@ -34,10 +41,23 @@ struct Args {
     #[arg(long)]
     hub: Option<String>,
 
-    /// Pairing token printed by the hub on its first start, saved to the
-    /// config.
+    /// Pairing token printed by the hub, saved to the config. It stays in
+    /// the shell history: prefer --token-file or the --pair prompt.
     #[arg(long)]
     token: Option<String>,
+
+    /// File holding the pairing token, saved to the config.
+    #[arg(long, value_name = "FILE")]
+    token_file: Option<PathBuf>,
+
+    /// Pair and exit: forget the pinned certificate, ask for the token if
+    /// the config has none, connect once and pin the hub.
+    #[arg(long)]
+    pair: bool,
+
+    /// Show the state of the installation (read only) and exit.
+    #[arg(long, conflicts_with = "pair")]
+    check: bool,
 
     /// Forget the pinned hub certificate (pair again).
     #[arg(long)]
@@ -54,6 +74,26 @@ struct Args {
     /// extension rawkvm@olitec.cc, docs/gnome-plan.md).
     #[arg(long)]
     no_edge: bool,
+}
+
+#[derive(Subcommand, Debug)]
+enum Cmd {
+    /// After `apt install`: pair, enable the user service and the GNOME
+    /// extension, and check. Run as your own user. Safe to repeat.
+    Setup {
+        /// Hub address; without it, the hubs found by mDNS are offered.
+        #[arg(long)]
+        hub: Option<String>,
+        /// File holding the pairing token (else it is asked, hidden).
+        #[arg(long, value_name = "FILE")]
+        token_file: Option<PathBuf>,
+        /// Pair again even if already paired.
+        #[arg(long)]
+        pair: bool,
+        /// Leave the GNOME extension alone.
+        #[arg(long)]
+        no_extension: bool,
+    },
 }
 
 struct UhidSink {
@@ -121,24 +161,47 @@ fn main() -> Result<()> {
         Some(p) => p,
         None => AgentConfig::default_path()?,
     };
-    let mut cfg = AgentConfig::load_or_init(&config_path)?;
-    let mut changed = false;
-    if let Some(hub) = args.hub {
-        cfg.hub = hub.trim().to_string();
-        changed = true;
+    let runtime = || {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+    };
+    if let Some(Cmd::Setup {
+        hub,
+        token_file,
+        pair,
+        no_extension,
+    }) = args.cmd
+    {
+        let a = setup::SetupArgs {
+            hub,
+            token_file,
+            pair,
+            no_extension,
+        };
+        return runtime()?.block_on(setup::setup(&config_path, a));
     }
-    if let Some(token) = args.token {
-        proto::parse_token(&token).context("--token must be 64 hex characters")?;
-        cfg.token = token.trim().to_lowercase();
-        changed = true;
+    if args.check {
+        let ok = runtime()?.block_on(setup::check(&config_path))?;
+        std::process::exit(if ok { 0 } else { 1 });
     }
-    if args.unpin {
-        cfg.hub_fingerprint.clear();
-        changed = true;
+    let cfg = agent_core::pairing::PairArgs {
+        hub: args.hub,
+        token: args.token,
+        token_file: args.token_file,
+        unpin: args.unpin,
+        pair: args.pair,
     }
-    if changed {
-        cfg.save(&config_path)?;
-        info!("saved {}", config_path.display());
+    .apply(&config_path)?;
+    if args.pair {
+        let opts = AgentOptions {
+            config_path,
+            os: Os::Linux,
+        };
+        let addr = runtime()?.block_on(agent_core::pairing::pair(&opts, NodeKind::Agent))?;
+        println!("paired with the hub at {addr}; start the service:");
+        println!("  systemctl --user enable --now {}", setup::UNIT);
+        return Ok(());
     }
     info!(node = %cfg.node_id, name = %cfg.node_name, "starting");
 
