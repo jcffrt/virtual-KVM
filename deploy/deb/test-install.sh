@@ -67,7 +67,8 @@ dpkg -i "$hub" "$gadget" </dev/null
 cmp /etc/rawkvm/hub.toml /tmp/hub.toml.before || fail "hub.toml changed"
 cmp /etc/rawkvm/agent.toml /tmp/agent.toml.before || fail "agent.toml changed"
 [ -f /etc/rawkvm/hub.toml.bak-v3 ] || fail "backup removed"
-[ -f /var/lib/rawkvm/layout.toml ] && [ -f /var/lib/rawkvm/cert.der ] || fail "state removed"
+[ -f /var/lib/rawkvm/layout.toml ] || fail "state removed"
+[ -f /var/lib/rawkvm/cert.der ] || fail "state removed"
 grep -qx 'RAWKVM_GADGET_ARGS="--host-os linux --no-hidpp"' /etc/default/rawkvm-agent-gadget ||
     fail "gadget options not carried over: $(cat /etc/default/rawkvm-agent-gadget)"
 grep -q '^ExecStart=/usr/bin/rawkvm-hub ' /lib/systemd/system/rawkvm-hub.service || fail "hub unit path"
@@ -85,11 +86,13 @@ step "remove keeps the config, the token and the certificate"
 dpkg -r rawkvm-hub rawkvm-agent-gadget
 [ ! -e /usr/bin/rawkvm-hub ] || fail "binary left after remove"
 cmp /etc/rawkvm/hub.toml /tmp/hub.toml.before || fail "hub.toml removed"
-[ -f /etc/rawkvm/agent.toml ] && [ -f /var/lib/rawkvm/cert.der ] || fail "pairing removed"
+[ -f /etc/rawkvm/agent.toml ] || fail "pairing removed"
+[ -f /var/lib/rawkvm/cert.der ] || fail "pairing removed"
 
 step "purge deletes only what belongs to each package"
 dpkg -P rawkvm-hub
-[ ! -e /etc/rawkvm/hub.toml ] && [ ! -e /var/lib/rawkvm ] || fail "hub purge left its files"
+[ ! -e /etc/rawkvm/hub.toml ] || fail "hub purge left its files"
+[ ! -e /var/lib/rawkvm ] || fail "hub purge left its files"
 [ -f /etc/rawkvm/agent.toml ] || fail "hub purge removed the gadget's agent.toml"
 [ -f /etc/rawkvm/hub.toml.bak-v3 ] || fail "hub purge removed the backup"
 dpkg -P rawkvm-agent-gadget

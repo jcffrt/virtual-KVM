@@ -7,7 +7,10 @@
 set -eu
 [ "$(id -u)" -eq 0 ] || { echo "run with sudo" >&2; exit 1; }
 user=${SUDO_USER:-}
-[ -n "$user" ] && [ "$user" != root ] || { echo "run with sudo from your own account" >&2; exit 1; }
+if [ -z "$user" ] || [ "$user" = root ]; then
+    echo "run with sudo from your own account" >&2
+    exit 1
+fi
 here=$(cd "$(dirname "$0")" && pwd)
 bin=${1:-target/release/rawkvm-edge-macos}
 label=cc.olitec.rawkvm.edge
