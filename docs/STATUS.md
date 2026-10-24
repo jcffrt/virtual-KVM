@@ -536,3 +536,12 @@ Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario e
 - **CI**: job `windows` en `widget.yml`, artefacto `RawKVM-windows` (`RawKVM.exe`, LEEME y COMMIT).
 - **Verificado en el Mac**: clippy `-D warnings` del widget para macOS y para `x86_64-pc-windows-gnu` (solo comprobación, sin enlazar), tests (incluido `tray_icon`) y `npm run build`. El enlazado y el exe los hace el job de CI.
 - **Sin verificar en el GAMER**: bandeja y número, clics, cambio rápido, pestaña Monitores con las 4 pantallas y Aplicar, inicio automático, aviso del cortafuegos.
+
+## Incidencia: el perfil del teclado deja de cambiar (2026-10-23 20:00)
+
+- **Síntoma**: a veces, al cruzar Mac ↔ Windows, el MX Keys se queda con el perfil anterior (Alt y Win cruzadas). El cruce de puntero y teclado sí funciona.
+- **Evidencia** (journal de la Pi, UTC): hasta las 00:53 cada `switched` Mac ↔ Windows va seguido de `keyboard layout set`; desde las 00:55:59, tres cruces sin él y sin ningún aviso de `receiver_ctl`. Tras reiniciar el hub (01:01), el primer cruce vuelve a aplicar `want=MacOs`.
+- **Causa** (`receiver_ctl.rs`): el sondeo de batería cada 5 min marca el slot `online=false` si el teclado está dormido (solo a nivel debug); `apply()` no hace nada con un slot offline; el sondeo no vuelve a tocar los slots offline; la única recuperación es una notificación 0x41 de enlace, que no llega porque para el receptor el enlace nunca cayó. Trampa de un solo sentido.
+- **Remedio inmediato**: `sudo systemctl restart rawkvm-hub` en la Pi (el survey lo devuelve a online).
+- **Encargado a VS Code**: reintentar el cambio de perfil aunque el slot esté offline, volver a sondear los slots offline, avisar a nivel warn/info y test. Sin cambio de protocolo.
+- En la Pi queda un drop-in `rawkvm-hub.service.d/debug.conf` con `RUST_LOG=info,rawkvm_hub::receiver_ctl=debug`; quitarlo al desplegar la corrección.
