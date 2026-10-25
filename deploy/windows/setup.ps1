@@ -329,7 +329,10 @@ if ($paired -and -not ($Pair -or $Hub -or $TokenFile -or $ForNode)) {
         }
         $pairArgs = @('--pair')
         if ($Hub) { $pairArgs += @('--hub', $Hub) }
-        $file = if ($TokenFile) { (Resolve-Path $TokenFile).Path } else { $tempToken }
+        if ($TokenFile -and -not (Test-Path -LiteralPath $TokenFile -PathType Leaf)) {
+            throw "no token file $TokenFile"
+        }
+        $file = if ($TokenFile) { (Resolve-Path -LiteralPath $TokenFile).Path } else { $tempToken }
         if ($file) { $pairArgs += @('--token-file', $file) }
         if ($ForNode) { $pairArgs += @('--for-node', $ForNode) }
         $out = @(Invoke-Program $Edge $pairArgs)

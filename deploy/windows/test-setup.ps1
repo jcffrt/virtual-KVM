@@ -99,8 +99,10 @@ Assert-True ($log -match '(?m)^ok\s+firewall\s+hub address 127.0.0.1') 'firewall
 Assert-True ($log -notmatch 'ab{64}|(ab){32}') 'the token is not printed'
 
 Write-Host '== forced pairing without a hub fails cleanly'
-$tokenFile = Join-Path $env:TEMP 'rawkvm-test-token'
-Set-Content -NoNewline $tokenFile ('ef' * 32)
+$tokenDir = New-Item -ItemType Directory -Force (Join-Path $env:TEMP "rawkvm-test-token-$([guid]::NewGuid())")
+$tokenFile = Join-Path $tokenDir.FullName 'token.txt'
+[IO.File]::WriteAllText($tokenFile, 'ef' * 32)
+Assert-True (Test-Path -LiteralPath $tokenFile) "token file written ($tokenFile)"
 $code = Invoke-Child (Join-Path $dir 'setup.ps1') @('-Pair', '-Hub', '127.0.0.1', '-TokenFile', $tokenFile, '-NoStart') (Join-Path $env:TEMP 'pair.log')
 Assert-True ($code -ne 0) "exit code $code"
 Assert-True ((Get-Content -Raw (Join-Path $env:TEMP 'pair.log')) -match 'pairing failed') 'says pairing failed'
