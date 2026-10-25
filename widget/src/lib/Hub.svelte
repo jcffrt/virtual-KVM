@@ -87,7 +87,7 @@
     </dl>
     {#if view.hub_off && !view.connected}
       <p class="muted">
-        El hub se apagó ({view.hub_off}). Espera a que el LED de la placa se apague antes de desenchufarla.
+        El hub se apagó ({view.hub_off}). Antes de desenchufar la placa, espera a que el LED verde deje de parpadear (el rojo es la alimentación y sigue encendido).
         Al volver a darle corriente, RawKVM se reconecta solo (lo intenta cada 30 s).
       </p>
     {:else if view.error && !view.connected}

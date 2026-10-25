@@ -41,7 +41,7 @@ Hasta ahora la única vía era `sudo systemctl poweroff` por SSH.
   - Para no repetir el bucle tres veces, el ritmo vive en `agent_core::Reconnect`, que comparten agente, helper y widget.
 - **Widget.**
   - Botón **Apagar hub** en la pestaña Hub, con un segundo clic de confirmación («Todos los equipos se quedan sin teclado ni ratón…»).
-  - Después, el estado pasa a **Hub apagado**, con el aviso «espera a que el LED de la placa se apague antes de desenchufarla».
+  - Después, el estado pasa a **Hub apagado**, con el aviso de esperar a que el LED verde deje de parpadear antes de desenchufar (en la Orange Pi Zero 2W el rojo es la alimentación y no se apaga).
   - La bandeja dice «hub apagado» en vez de «sin conexión».
 - **Windows: al apagar el PC que alimenta la placa.**
   - **La opción.** En la pestaña Opciones, apartado «Este PC», **Apagar el hub cuando este PC se apague**, desactivada por defecto. Se guarda en `widget.toml` (`power_off_hub_with_pc`) porque es de este PC, no del hub.
