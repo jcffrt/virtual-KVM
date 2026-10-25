@@ -52,6 +52,11 @@ token = "$token"
 TOML
 echo 'layout' > /var/lib/rawkvm/layout.toml
 echo 'cert' > /var/lib/rawkvm/cert.der
+# Orange Pi OS keeps /var/log in RAM (orangepi-ramlog): one array set,
+# one missing.
+install -d /etc/default
+printf 'ENABLED=true\nSIZE=50M\nUSE_RSYNC=true\nXTRA_RSYNC_TO=(--exclude foo)\n' > /etc/default/orangepi-ramlog
+cp /etc/default/orangepi-ramlog /tmp/ramlog.before
 cp /etc/rawkvm/hub.toml /tmp/hub.toml.before
 cp /etc/rawkvm/agent.toml /tmp/agent.toml.before
 
@@ -72,6 +77,11 @@ cmp /etc/rawkvm/agent.toml /tmp/agent.toml.before || fail "agent.toml changed"
 grep -qx 'RAWKVM_GADGET_ARGS="--host-os linux --no-hidpp"' /etc/default/rawkvm-agent-gadget ||
     fail "gadget options not carried over: $(cat /etc/default/rawkvm-agent-gadget)"
 grep -q '^ExecStart=/usr/bin/rawkvm-hub ' /lib/systemd/system/rawkvm-hub.service || fail "hub unit path"
+grep -qx 'XTRA_RSYNC_TO=(--exclude foo --exclude journal) # rawkvm-hub' /etc/default/orangepi-ramlog ||
+    fail "ramlog TO: $(cat /etc/default/orangepi-ramlog)"
+grep -qx 'XTRA_RSYNC_FROM=(--exclude journal) # rawkvm-hub' /etc/default/orangepi-ramlog ||
+    fail "ramlog FROM: $(cat /etc/default/orangepi-ramlog)"
+grep -qx 'SIZE=50M' /etc/default/orangepi-ramlog || fail "ramlog settings lost"
 
 step "the new hub reads the existing hub.toml"
 [ "$(/usr/bin/rawkvm-hub --show-token)" = "$token" ] || fail "--show-token"
@@ -81,6 +91,7 @@ cmp /etc/rawkvm/hub.toml /tmp/hub.toml.before || fail "hub.toml rewritten by --s
 step "upgrade (same version again)"
 dpkg -i "$hub" "$gadget" </dev/null
 [ "$(grep -c '^RAWKVM_GADGET_ARGS=' /etc/default/rawkvm-agent-gadget)" = 1 ] || fail "options added twice"
+[ "$(grep -c 'exclude journal' /etc/default/orangepi-ramlog)" = 2 ] || fail "ramlog excludes added twice"
 
 step "remove keeps the config, the token and the certificate"
 dpkg -r rawkvm-hub rawkvm-agent-gadget
@@ -95,6 +106,7 @@ dpkg -P rawkvm-hub
 [ ! -e /var/lib/rawkvm ] || fail "hub purge left its files"
 [ -f /etc/rawkvm/agent.toml ] || fail "hub purge removed the gadget's agent.toml"
 [ -f /etc/rawkvm/hub.toml.bak-v3 ] || fail "hub purge removed the backup"
+cmp /etc/default/orangepi-ramlog /tmp/ramlog.before || fail "purge did not restore orangepi-ramlog: $(cat /etc/default/orangepi-ramlog)"
 dpkg -P rawkvm-agent-gadget
 [ ! -e /etc/rawkvm/agent.toml ] || fail "gadget purge left agent.toml"
 [ ! -e /etc/modprobe.d/rawkvm.conf ] || fail "purge left the blacklist"

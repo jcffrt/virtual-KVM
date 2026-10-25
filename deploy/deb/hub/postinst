@@ -102,6 +102,46 @@ setup_journal() {
     fi
 }
 
+# armbian-ramlog / orangepi-ramlog copy /var/log.hdd into the zram /var/log
+# at boot and back with `rsync --delete` when they stop, which is after
+# var-log-journal.mount is unmounted: the stale copy of the journal in RAM
+# would overwrite the real one on the SD card at every clean shutdown.
+# Keep the journal out of both copies (their XTRA_RSYNC_* arrays). A
+# line we change keeps its old value in a "# rawkvm-hub was:" comment, for
+# postrm purge.
+ramlog_exclude_journal() {
+    for conf in /etc/default/armbian-ramlog /etc/default/orangepi-ramlog; do
+        [ -f "$conf" ] || continue
+        for var in XTRA_RSYNC_TO XTRA_RSYNC_FROM; do
+            tmp=$(mktemp "$conf.XXXXXX")
+            awk -v var="$var" '
+                index($0, var "=") == 1 {
+                    seen = 1
+                    if (index($0, "--exclude journal")) { print; next }
+                    if (match($0, /\(.*\)/)) {
+                        inner = substr($0, RSTART + 1, RLENGTH - 2)
+                        sub(/[ \t]+$/, "", inner)
+                        print "# rawkvm-hub was: " $0
+                        print var "=(" (inner == "" ? "" : inner " ") "--exclude journal) # rawkvm-hub"
+                        changed = 1
+                        next
+                    }
+                    print "rawkvm-hub: " FILENAME ": " var " left as it is (not an array)" > "/dev/stderr"
+                }
+                { print }
+                END {
+                    if (!seen) { print var "=(--exclude journal) # rawkvm-hub"; changed = 1 }
+                    exit !changed
+                }' "$conf" > "$tmp" && changed=1 || changed=0
+            if [ "$changed" -eq 1 ]; then
+                cat "$tmp" > "$conf"
+                echo "rawkvm-hub: $conf: $var excludes the journal (it lives on the SD card)"
+            fi
+            rm -f "$tmp"
+        done
+    done
+}
+
 need_initramfs=0
 migrate_manual_install
 # A fresh install (not a move from the manual one, which already did it).
@@ -109,6 +149,7 @@ migrate_manual_install
 release_receiver
 [ "$need_initramfs" -eq 1 ] && update_initramfs
 setup_journal
+ramlog_exclude_journal
 
 if systemd_running; then
     systemctl daemon-reload

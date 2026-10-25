@@ -15,6 +15,18 @@ purge)
         fi
         rm -f "$mount"
     fi
+    # Undo the journal excludes of postinst in the ramlog settings.
+    for conf in /etc/default/armbian-ramlog /etc/default/orangepi-ramlog; do
+        if ! [ -f "$conf" ] || ! grep -q '# rawkvm-hub' "$conf"; then
+            continue
+        fi
+        tmp=$(mktemp "$conf.XXXXXX")
+        awk '
+            index($0, "# rawkvm-hub was: ") == 1 { was = substr($0, 19); next }
+            / # rawkvm-hub$/ { if (was != "") print was; was = ""; next }
+            { print }' "$conf" > "$tmp" && cat "$tmp" > "$conf"
+        rm -f "$tmp"
+    done
     echo "rawkvm-hub: purged the pairing token and the certificate; every agent must pair again with the next hub"
     ;;
 esac

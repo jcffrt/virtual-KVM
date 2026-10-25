@@ -659,3 +659,11 @@ Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario e
   - documentado en `windows-instalacion.md`.
 - Pendiente de ver en el GAMER si el binario nuevo pasa.
 
+## Fase 5.3b validada en la Pi; journal perdido en los apagados limpios (2026-10-25)
+
+- «Apagar hub» desde el widget del Mac (Pi en alimentador): el Mac registró `the hub is powering off (requested from Air-Javier)`, la Pi se apagó de forma ordenada (`last -x`: shutdown) unos 6 s después, y al darle corriente el Mac reconectó solo. La unit endurecida no impide `systemctl poweroff`.
+- Hallazgo, encontrado por el orquestador: el `rsync --delete` de `orangepi-ramlog` al parar pisaba el journal de la SD con la copia de la zram (ADR 0017 corregido).
+  - Corregido a mano en la Pi (excludes en `/etc/default/orangepi-ramlog`).
+  - En el paquete, el postinst del hub los pone y `postrm purge` los quita (ADR 0022). Probado en el contenedor del CI.
+  - Pendiente: confirmar con el siguiente apagado limpio que `journalctl -b -1` lo conserva.
+

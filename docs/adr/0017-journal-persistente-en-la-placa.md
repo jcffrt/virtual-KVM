@@ -18,4 +18,8 @@ La Orange Pi se cayó el 2026-10-23 a las 11:16: sin ping ni ARP y con el PC que
 
 - El journal del arranque anterior sobrevive a un corte o a un cuelgue, salvo lo que aún estuviera en la caché de escritura (journald sincroniza cada 5 min, y al momento los mensajes de prioridad crit o superior).
 - El journal escribe en la SD de forma continua pero en poca cantidad. El tope de 64 MB limita el espacio.
-- La SD guarda el journal en dos sitios a la vez: el bind y la copia periódica del ramlog, que copia `/var/log` (con el bind) sobre `/var/log.hdd`. Como son los mismos ficheros, la copia no cambia nada; queda a revisar si el ramlog los duplica en zram al arrancar.
+- **Corregido (2026-10-25, ADR 0022):** se suponía que la copia periódica del ramlog no cambiaba nada, porque eran los mismos ficheros. No es así en un apagado limpio.
+  - Al arrancar, el ramlog copia `/var/log.hdd` (journal incluido) a la zram, y el bind tapa después esa copia.
+  - Al apagar, el bind se desmonta antes de que pare el ramlog, y su `rsync --delete /var/log/ /var/log.hdd/` pone la copia vieja de la zram encima del journal real de la SD.
+  - El journal del arranque apagado limpiamente desaparecía y el siguiente arranque decía «corrupted or uncleanly shut down». En un corte de corriente no pasaba: el ramlog no llega a copiar.
+  - Ahora el postinst excluye `journal` de las dos copias.
