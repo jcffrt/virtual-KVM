@@ -56,6 +56,19 @@ Sin administrador ni driver: edge y widget son por usuario.
 - SmartScreen: el exe no está firmado; documentar el aviso «Más información → Ejecutar de todas formas» con captura o texto, y que `Unblock-File` evita el bloqueo al inicio de sesión. Firmar con certificado de pago queda fuera.
 - `docs/windows-instalacion.md` y `docs/windows-borde.md` se funden en una guía con el instalador delante y lo manual como anexo. (El driver VHF de `windows.yml` sigue aparcado, ADR 0006; el instalador no lo toca.)
 
+## 3b. Apagado limpio del hub desde el widget y al apagar el PC que lo alimenta
+
+Motivo (incidencia 2026-10-24, ver STATUS): la Orange Pi se alimenta del USB del GAMER; cada apagado del PC es un corte brusco y la SD ya sufrió uno. Un apagado ordenado protege la SD y deja la placa en un estado del que se puede desenchufar. Lo pide el usuario. No sustituye a la alimentación propia por el conector de 40 pines (`gadget-instalacion.md`), que es lo único que evita que el hub desaparezca mientras el PC está apagado.
+
+- **Protocolo**: `Control::Shutdown` (widget → hub) y `Control::ShuttingDown { reason }` (hub → todos los nodos). Sube `PROTO_VERSION` a 7: hay que redesplegar hub, gadget, agentes, edges y widgets a la vez (los nodos v6 reciben `Reject(VersionMismatch)` y lo muestran, como hoy).
+- **Hub**: acepta `Shutdown` solo de un nodo emparejado de tipo widget; envía `ShuttingDown` a todos, para el gadget y el receptor en orden, `sync`, y llama a `systemctl poweroff` (ya corre como root por hidraw; nada de sudo). Un `warn` en el journal con el nodo que lo pidió. Si `systemctl` falla, lo registra y sigue en marcha.
+- **Agentes y edges**: al recibir `ShuttingDown` muestran «hub apagado» y pasan a reintentos lentos (por ejemplo cada 30 s) en vez del backoff normal, hasta que vuelva.
+- **Widget**: botón «Apagar hub» con confirmación; después, estado «apagándose… espera a que el LED se apague antes de desenchufar». Mientras el hub no responde, «hub apagado» en vez de «reconectando».
+- **Windows (el PC que alimenta la Pi)**: opción por equipo en el widget, «apagar el hub cuando este PC se apague», desactivada por defecto. Al recibir `WM_QUERYENDSESSION`/`WM_ENDSESSION` (apagado o reinicio, no cierre de sesión: comprobar `ENDSESSION_LOGOFF`), el widget envía `Shutdown` y espera la confirmación o 3 s, lo que llegue antes, antes de dejar que Windows siga. La suspensión (`PBT_APMSUSPEND`) queda **fuera** por defecto: en muchos PCs también corta el USB, pero apagar el hub al suspender deja sin teclado al Mac y al Ubuntu; si se añade, como segunda opción aparte y también desactivada. Hay que **medir en el GAMER** cuántos segundos pasan entre el aviso a las aplicaciones y el corte de los 5 V; si no bastan para los ~6 s que tarda Armbian en apagarse, documentarlo y dejar la opción, que al menos hace `sync`.
+- **Alternativa sin widget**: el hub también acepta `SIGTERM`/`systemctl poweroff` por SSH, como hoy; documentarlo junto al botón.
+- Docs: `widget.md` (o donde esté el widget) y `gadget-instalacion.md` («Alimentación»); ADR nuevo.
+- Prueba real: en el GAMER con el usuario, a continuación del `setup.ps1`.
+
 ## 4. macOS: `setup.sh` (el más largo; prioridad 4 pero el más valioso)
 
 Un solo script, idempotente, que se puede relanzar tras cada reinicio o tras dar un permiso y continúa donde estaba. Imprime al final una tabla de estado (componente, instalado, permiso, servicio) y qué falta.
@@ -86,6 +99,7 @@ Pruebo yo en el Mac con el usuario delante: `uninstall.sh --purge` y `setup.sh` 
 1. `release.yml` + versión 0.5.0 + `.deb` del hub y del gadget (§ 0, § 1). Yo migro la Pi real con el `.deb`.
 2. Ubuntu `.deb` + `rawkvm-agent setup` (§ 2). Lo pruebo en el Ubuntu.
 3. Windows `setup.ps1` con `-ForNode` automático (§ 3). Lo prueba el usuario en el GAMER conmigo.
+3b. Apagado limpio del hub desde el widget y al apagar el PC (§ 3b, protocolo v7). Se prueba en el GAMER junto con el anterior.
 4. macOS `setup.sh` (§ 4). Lo probamos en el Mac desde cero.
 
 Entregar cada bloque con su commit, CI en verde y la lista de lo que queda sin verificar en hardware, como hasta ahora. Si algún punto exige cambio de protocolo o toca algo que no está aquí, avisar antes de hacerlo.

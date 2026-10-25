@@ -616,3 +616,10 @@ Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario e
 - Hub `0.5.0 (e36ce7d)`: DJ apagado, 3 interfaces, layout de 4 enlaces; gadget 0.5.0 conectado y `bound` con 3 interfaces; los seis nodos (dos agentes, dos widgets, dos edges) se registraron a los 7 s sin reemparejar; el Mac volvió a activo y el perfil del teclado se aplicó.
 - Sin verificar: `rawkvm-agent-gadget --pair` contra el hub real (el gadget ya estaba emparejado), el paquete armhf y `release.yml` (se probará con la etiqueta v0.5.0 al cerrar la fase).
 - El drop-in de debug ya no existía (retirado el 23 a las 20:09), así que esa parte de la migración no se ejercitó.
+
+## Incidencia: la Pi se apaga a los pocos segundos de arrancar (2026-10-24 20:00)
+
+- El usuario reinició la Pi (`reboot`). Desde entonces, en cada arranque el hub y el gadget levantaban, los seis nodos se registraban y el perfil del teclado cambiaba, y a los 15-40 s la placa entera desaparecía de la red: sin mensajes de apagado, journal «corrupted or uncleanly shut down», reloj retrocedido a la hora guardada. Tres arranques seguidos iguales (20:00, 20:12, 20:17).
+- Diagnóstico: corte de alimentación, no software. Con un alimentador de pared en el USB‑C OTG la placa aguantó sin perder un ping (aunque sin GAMER, gadget `not attached`). En **otro puerto USB del GAMER** también aguanta (desde las 20:28, gadget `configured`). El puerto que usaba hasta ahora dejó de dar corriente suficiente al arrancar con Wi‑Fi y receptor; no se sabe por qué cambió.
+- Revisión tras los cortes: ext4 sin errores, `commit=5` ya en `/etc/fstab`, `dpkg -V` de los dos paquetes limpio, hub sin avisos, temperatura 67 °C.
+- Consecuencias: (1) el usuario pide un apagado limpio del hub desde el widget y al apagar el PC que lo alimenta → **bloque 3b de la fase 5** en [fase5-plan.md](fase5-plan.md) (protocolo v7). (2) Sigue vigente la recomendación de `gadget-instalacion.md`: alimentación propia por el conector de 40 pines; el 3b protege la SD pero no evita que el hub se vaya con el PC.
