@@ -52,4 +52,11 @@ Pide la dirección del hub y el token (sin mostrarlo) y encuentra solo el gadget
 
 ## macOS
 
-Instalador en preparación (Fase 5.4). Mientras tanto: [macos-instalacion.md](macos-instalacion.md) y [widget-instalacion.md](widget-instalacion.md).
+En el Terminal, como tú (pide la contraseña solo cuando hace falta):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/jcffrt/virtual-KVM/main/deploy/macos/setup.sh -o /tmp/rawkvm-setup.sh
+sh /tmp/rawkvm-setup.sh
+```
+
+Instala Karabiner-DriverKit-VirtualHIDDevice, el agente, el helper de borde y el widget, y empareja una vez. En cada paso que macOS no deja hacer por script (aprobar la extensión, Monitorización de entrada, Red local) abre el panel de Ajustes y dice qué tocar. Se puede volver a ejecutar tras reiniciar o tras dar un permiso: `sh /usr/local/share/rawkvm/setup.sh`. Comprobar: `sh /usr/local/share/rawkvm/setup.sh --check`. Guía: [macos-instalacion.md](macos-instalacion.md).

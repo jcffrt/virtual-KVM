@@ -676,3 +676,20 @@ Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario e
 - **Bloque 3b, botón «Apagar hub»** (Pi en alimentador): el Mac registró «the hub is powering off (requested from Air-Javier)» y «hub off; reconnecting in 30.0 s»; la Pi dejó de responder 6 s después; `last -x` muestra `shutdown system down`, apagado ordenado; al dar corriente arrancó limpia y los nodos reconectaron solos. La unidad endurecida (`ProtectSystem=strict`, `NoNewPrivileges`) no impide `systemctl poweroff`. LED en la Orange Pi Zero 2W: el **verde** deja de parpadear al terminar; el **rojo** es alimentación y sigue mientras haya cable (el texto del widget debe decir «cuando el LED verde deje de parpadear»).
 - **Hallazgo: ramlog borra el journal en los apagados limpios.** `/var/log` es zram (`orangepi-ramlog`); al arrancar copia `/var/log.hdd` a RAM (journal incluido) y luego nuestro `var-log-journal.mount` tapa `/var/log/journal`; al apagar, el mount se desmonta antes de que pare ramlog y `rsync --delete` pisa el journal del disco con la copia vieja. Por eso el journal del arranque apagado desde el widget no existe y el siguiente dice «system.journal … uncleanly shut down». Corregido a mano en la Pi: `XTRA_RSYNC_FROM=(--exclude journal)` y `XTRA_RSYNC_TO=(--exclude journal)` en `/etc/default/orangepi-ramlog` (copia `.bak-rawkvm`); pendiente comprobar en el próximo apagado limpio y meterlo en el postinst del hub (encargado a VS Code).
 - **Sin medir todavía**: el margen entre el aviso de apagado de Windows y el corte de los 5 V (prueba 7), porque la Pi sigue en el alimentador: en el cable de GAMER muere al enumerar el gadget (ver incidencia de las 20:00). Requiere alimentación por el conector de 40 pines o probar de nuevo en el puerto que aguantó.
+
+## Fase 5.4: instalador de macOS, `setup.sh` (2026-10-25)
+
+- `deploy/macos/setup.sh`, como usuario (sudo solo donde hace falta), idempotente y reanudable desde `/usr/local/share/rawkvm`. ADR 0026.
+  - Programas desde `--from`, la carpeta del script o la release, con `SHA256SUMS`.
+  - Karabiner-DriverKit-VirtualHIDDevice 8.6.0 fijado (SHA-256 y firma del autor), con la activación y la espera a la aprobación; si macOS pide reiniciar, sale con 2.
+  - Identidad «RawKVM Local».
+  - Agente y emparejamiento con token oculto (`rawkvm-agent --pair --token-file`).
+  - Monitorización de entrada guiada: panel, Finder con el binario, espera en el log y `tccutil reset` con aviso.
+  - Helper, y widget con arranque al iniciar sesión y Red local guiada.
+  - Comprobación final.
+- `--check`: una línea por pieza. `rawkvm-agent --check` y `rawkvm-edge --check` nuevos; `agent_core::setup::current_run` lee solo la ejecución actual del log.
+- `uninstall.sh` completo (`--purge`, `--karabiner`; nunca Karabiner por defecto).
+- El widget de macOS toma también el emparejamiento del helper.
+- CI: workflow `macos-tar` (tarball y prueba de `setup.sh`/`uninstall.sh` en macos-14); `release.yml` lo adjunta.
+- Probado en este Mac sin instalar nada: `setup.sh --check` con los binarios nuevos (`RAWKVM_BIN`), `rawkvm-agent --check` y `rawkvm-edge --check` contra los logs reales.
+- Sin probar: la instalación desde cero (la hace el orquestador con el usuario: `uninstall.sh --purge` y `setup.sh`).
