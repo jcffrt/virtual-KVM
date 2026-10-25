@@ -37,6 +37,7 @@ macOS no deja hacer por script ni aprobar una extensión del sistema ni conceder
   - **Token.** `setup.sh` lo pide con `stty -echo` y lo deja en un fichero 0600 de su carpeta temporal, que borra al salir. El orden es: parar el servicio, `sudo rawkvm-agent --pair` y arrancarlo.
   - **Helper.** Toma el emparejamiento del agente (`--from-agent`, como antes).
   - **Widget.** Toma el del helper (`adopt_pairing`), ahora también en macOS. Se empareja una sola vez.
+  - **Con la dirección del hub vacía**, que es lo que queda al pulsar Enter en la pregunta: el agente, el helper y el widget buscan el hub por mDNS. `adopt_pairing` copia la dirección tal cual, aunque esté vacía, y el widget da por emparejada una configuración con token. Corregido tras la prueba desde cero: antes el widget pedía el token.
 - **Permisos que no se pueden dar por script.** Abre el panel exacto de Ajustes, explica qué tocar y espera viendo el log:
   - **Monitorización de entrada** del agente (solo el LED). Además del panel, abre el Finder con el binario seleccionado (`open -R`) para arrastrarlo. Espera la línea `watching the keyboard LEDs` (máximo 3 minutos) y no es bloqueante; `--skip-led` se la salta. Si el log de `tccd` muestra el caso ad hoc → certificado (ADR 0016), ofrece `tccutil reset ListenEvent` avisando de que afecta a todas las apps.
   - **Red local** del widget. Si el widget registra `No route to host` mientras el helper sí llega al hub, es el permiso, y abre su panel.

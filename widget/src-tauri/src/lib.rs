@@ -77,7 +77,8 @@ impl AppState {
         }
         *lock(&self.tx) = None;
         let cfg = self.config();
-        if cfg.hub.is_empty() || cfg.token.is_empty() {
+        // An empty hub is found with mDNS (a pairing made that way).
+        if cfg.token.is_empty() {
             info!("not paired");
             return;
         }
@@ -88,7 +89,7 @@ impl AppState {
             os: this_os(),
         };
         let shared = self.shared.clone();
-        info!(hub = %cfg.hub, "connecting");
+        info!(hub = %cfg.hub, mdns = cfg.hub.is_empty(), "connecting");
         *lock(&self.task) = Some(tauri::async_runtime::spawn(async move {
             if let Err(e) = run_widget(opts, shared, rx).await {
                 error!("{e:#}");

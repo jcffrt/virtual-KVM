@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct View {
-    /// A hub and a token are configured.
+    /// A token is configured; an empty `hub_addr` means mDNS.
     pub paired: bool,
     pub hub_addr: String,
     pub fingerprint: String,
@@ -292,7 +292,7 @@ pub fn view(st: &WidgetState, cfg: &AgentConfig) -> View {
     };
     nodes.sort_by(|a, b| (rank(a.role), a.index, &a.name).cmp(&(rank(b.role), b.index, &b.name)));
     View {
-        paired: !cfg.hub.is_empty() && !cfg.token.is_empty(),
+        paired: !cfg.token.is_empty(),
         hub_addr: cfg.hub.clone(),
         fingerprint: cfg.hub_fingerprint.clone(),
         connected: st.connected.is_some(),

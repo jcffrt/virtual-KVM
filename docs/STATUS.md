@@ -716,3 +716,10 @@ Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario e
 - **CI** (`test-setup.ps1`): matar el helper, comprobar que vuelve, que `edge.log` y `-Check` lo registran y que matar el supervisor no deja ningún helper. Hay tests unitarios del supervisor y del hook.
 - **Sin probar en hardware**: en GAMER, con el zip nuevo y `setup.ps1`. Para probarlo a mano, en el Administrador de tareas, Detalles, terminar el `rawkvm-edge.exe` con más memoria (el helper): vuelve en un segundo y `-Check` muestra `restarted`.
 - **12:25, GAMER actualizado a 51ccd2a** (zip del run 40214191941; sha256 c5ebc63f…): `setup.ps1` sin incidencias con Defender, `-Check` todo `ok` (edge supervisado y widget nuevos, emparejamiento conservado). Primer zip con la corrección de metadatos (f28de57), el supervisor del edge y el hook de pánico (c559c34, ADR 0027) y el texto del LED (50fee58). Bloque 3 cerrado del todo en hardware. El fallo de la CI `windows-zip` en c559c34 fue del script `test-setup.ps1` (`.Count` bajo StrictMode), corregido en 51ccd2a.
+
+## Prueba desde cero en el Mac: el widget no tomaba un emparejamiento por mDNS (2026-10-25, VS Code)
+
+- Con Enter en «Hub address» de `setup.sh`, `agent.toml` y `edge.toml` quedan con `hub = ""` (mDNS), token y certificado. `adopt_pairing` exigía dirección y el widget también («not paired» si `hub` está vacío): el usuario tuvo que pegar el token.
+- Corregido: `adopt_pairing` exige solo el token y el certificado, y copia la dirección tal cual. El widget da por emparejada una configuración con token, se conecta por mDNS si la dirección está vacía y muestra «(mDNS)» en su lugar. Test `adopts_a_pairing_made_with_mdns`. ADR 0026.
+- En Windows no pasaba: `setup.ps1` siempre guarda la dirección.
+- Sin probar en hardware: en el Mac, borrar `~/Library/Application Support/rawkvm/widget.toml` (o «Olvidar hub») y abrir RawKVM con el widget nuevo: debe conectarse sin pedir el token.

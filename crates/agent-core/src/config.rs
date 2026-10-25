@@ -151,14 +151,15 @@ impl AgentConfig {
 /// config on this machine: the Windows widget uses the edge helper's, so
 /// that setup.ps1 pairs once (ADR 0024). Only a complete pairing is taken,
 /// and only when `target` has none or `source` was written after it (a
-/// pairing made later in the widget itself is kept). Returns whether
-/// `target` changed.
+/// pairing made later in the widget itself is kept). Complete means a
+/// token and a pinned certificate; the hub address is copied as it is, and
+/// empty means find the hub with mDNS. Returns whether `target` changed.
 pub fn adopt_pairing(target: &Path, source: &Path) -> Result<bool> {
     let Ok(text) = fs::read_to_string(source) else {
         return Ok(false);
     };
     let src = AgentConfig::parse(&text).with_context(|| format!("parsing {}", source.display()))?;
-    if src.hub.is_empty() || src.token.is_empty() || src.hub_fingerprint.is_empty() {
+    if src.token.is_empty() || src.hub_fingerprint.is_empty() {
         return Ok(false);
     }
     let mut cfg = AgentConfig::load_or_init(target)?;
@@ -272,6 +273,28 @@ mod tests {
         assert_eq!(
             AgentConfig::load_or_init(&widget).unwrap().token,
             "22".repeat(32)
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn adopts_a_pairing_made_with_mdns() {
+        // setup.sh with Enter at the hub address: hub = "" (mDNS).
+        let dir = std::env::temp_dir().join(format!("rawkvm-adopt-{}", Uuid::new_v4()));
+        let (widget, edge) = (dir.join("widget.toml"), dir.join("edge.toml"));
+        AgentConfig {
+            node_id: Uuid::new_v4(),
+            token: "11".repeat(32),
+            hub_fingerprint: FP.into(),
+            ..Default::default()
+        }
+        .save(&edge)
+        .unwrap();
+        assert!(adopt_pairing(&widget, &edge).unwrap());
+        let w = AgentConfig::load_or_init(&widget).unwrap();
+        assert_eq!(
+            (w.hub.as_str(), w.token.as_str(), w.hub_fingerprint.as_str()),
+            ("", "11".repeat(32).as_str(), FP)
         );
         fs::remove_dir_all(dir).unwrap();
     }

@@ -62,8 +62,8 @@
   <div class="card">
     <div class="row">
       <span class="dot" class:ok={view.connected} class:bad={!view.connected}></span>
-      <strong>{view.hub_name ?? view.hub_addr}</strong>
-      <span class="muted mono">{view.hub_addr}</span>
+      <strong>{view.hub_name ?? (view.hub_addr || 'Hub')}</strong>
+      <span class="muted mono">{view.hub_addr || '(mDNS)'}</span>
       <span class="spacer"></span>
       {#if confirmForget}
         <span class="muted">Habrá que volver a emparejar con el token.</span>
