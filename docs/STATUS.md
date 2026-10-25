@@ -723,3 +723,12 @@ Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario e
 - Corregido: `adopt_pairing` exige solo el token y el certificado, y copia la dirección tal cual. El widget da por emparejada una configuración con token, se conecta por mDNS si la dirección está vacía y muestra «(mDNS)» en su lugar. Test `adopts_a_pairing_made_with_mdns`. ADR 0026.
 - En Windows no pasaba: `setup.ps1` siempre guarda la dirección.
 - Sin probar en hardware: en el Mac, borrar `~/Library/Application Support/rawkvm/widget.toml` (o «Olvidar hub») y abrir RawKVM con el widget nuevo: debe conectarse sin pedir el token.
+
+## Prueba desde cero en el Mac: segundo pase y nodos nuevos (2026-10-25, VS Code)
+
+- **El helper se quedaba descargado al volver a ejecutar `setup.sh`** («Bootstrap failed: 5: Input/output error»): `launchctl bootout` vuelve antes de que el trabajo desaparezca. `launchd_reload` (en `signing.sh`) espera hasta 10 s a que `launchctl print` falle y reintenta el bootstrap. Lo usan `install-edge.sh`, `install.sh` y el emparejamiento de `setup.sh`.
+- **`--purge` conserva la identidad** (`node_id` y `node_name`) y `--purge --new-node` lo borra todo. El hub avisa al cargar un `layout.toml` con nodos que no están en `nodes.toml`, y `--forget-node` dice si el layout aún nombra el nodo. ADR 0028.
+- **Falso `warn widget hub` tras reinstalar el widget**: la espera de `setup.sh` leía la ejecución anterior del log. Ahora mira solo lo escrito después de reinstalarlo, y una ejecución recién empezada sin líneas de conexión es `info`.
+- **CI** (`macos-tar`): `install-edge.sh` dos veces seguidas con un emparejamiento inventado, comprobando que no hay error de bootstrap y que el trabajo queda cargado; `--purge` deja solo la identidad; `--purge --new-node` lo borra.
+- **Sin probar en hardware**: el segundo pase de `setup.sh` en el Mac; el aviso del hub, hasta el próximo despliegue del hub.
+- Las pistas del token en el repo ya dicen `sudo rawkvm-hub --show-token`; no hay ninguna que mande a `hub.toml`.

@@ -39,12 +39,11 @@ if [ ! -f "$sysdir/agent.toml" ] && [ -n "${SUDO_USER:-}" ]; then
         echo "copied pairing from $user_cfg"
     fi
 fi
-[ -f "$sysdir/agent.toml" ] || echo "not paired yet: setup.sh pairs it (or sudo /usr/local/bin/rawkvm-agent --pair --hub <pi-ip>, which asks for the token)"
+grep -q "^token = \"[0-9a-f]" "$sysdir/agent.toml" 2>/dev/null || echo "not paired yet: setup.sh pairs it (or sudo /usr/local/bin/rawkvm-agent --pair --hub <pi-ip>, which asks for the token)"
 
 reload() { # label plist
-    launchctl bootout system "/Library/LaunchDaemons/$1.plist" 2>/dev/null || true
-    install -m 0644 -o root -g wheel "$2" "/Library/LaunchDaemons/$1.plist"
-    launchctl bootstrap system "/Library/LaunchDaemons/$1.plist"
+    launchd_reload system "$1" "/Library/LaunchDaemons/$1.plist" \
+        install -m 0644 -o root -g wheel "$2" "/Library/LaunchDaemons/$1.plist"
 }
 
 # Karabiner's daemon does not start by itself. Karabiner-Elements runs its

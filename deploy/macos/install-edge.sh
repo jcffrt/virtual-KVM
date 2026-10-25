@@ -38,11 +38,12 @@ chown "$user" "$cfg"
 chmod 0600 "$cfg"
 
 plist="$home/Library/LaunchAgents/$label.plist"
-launchctl bootout "gui/$uid/$label" 2>/dev/null || true
-sed "s|__HOME__|$home|g" "$here/$label.plist" > "$plist"
-chown "$user" "$plist"
-chmod 0644 "$plist"
-launchctl bootstrap "gui/$uid" "$plist"
+write_plist() {
+    sed "s|__HOME__|$home|g" "$here/$label.plist" > "$plist"
+    chown "$user" "$plist"
+    chmod 0644 "$plist"
+}
+launchd_reload "gui/$uid" "$label" "$plist" write_plist
 
 echo "installed; log: tail -f ~/Library/Logs/rawkvm-edge.log"
 echo "diagnostics: rawkvm-edge --show"

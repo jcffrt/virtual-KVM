@@ -196,11 +196,14 @@ check() {
     [ "$worst" != FAIL ]
 }
 
-# The widget's connection, from its log since it last started: "ok ...",
+# The widget's connection, from its log since it last started (and past
+# line $widget_from, set when setup.sh restarts it): "ok ...", "info ...",
 # "warn ..." or "FAIL ...".
+widget_from=0
 widget_state() {
     [ -f "$widget_log" ] || { echo "warn no log yet ($widget_log)"; return; }
-    run=$(awk '/rawkvm-widget starting/ { buf = "" } { buf = buf $0 "\n" } END { printf "%s", buf }' "$widget_log")
+    run=$(tail -n +$((widget_from + 1)) "$widget_log" |
+        awk '/rawkvm-widget starting/ { buf = "" } { buf = buf $0 "\n" } END { printf "%s", buf }')
     last=$(printf '%s' "$run" | grep -E 'widget connected|No route to host|rejected|certificate' | tail -1)
     case "$last" in
     *"widget connected"*) echo "ok ${last#*INFO }" ;;
@@ -211,7 +214,13 @@ widget_state() {
             echo "warn no route to the hub: is it on and on this network?"
         fi
         ;;
-    "") echo "warn no connection lines yet in $widget_log" ;;
+    "")
+        if printf '%s' "$run" | grep -q 'rawkvm-widget starting'; then
+            echo "info connecting (no connection lines yet in $widget_log; check again in a minute)"
+        else
+            echo "warn no connection lines yet in $widget_log"
+        fi
+        ;;
     *) echo "FAIL $last" ;;
     esac
 }
@@ -429,7 +438,10 @@ if [ "$pair" = yes ] || [ -n "$hub" ] || [ -n "$token_file" ] || ! agent_paired;
     # Its verdict is agent_paired below.
     sudo /usr/local/bin/rawkvm-agent "$@" 2>&1 | sed 's/^/   /' || true
     rm -f "$tmp/token"
-    sudo launchctl bootstrap system "/Library/LaunchDaemons/$agent_label.plist" 2>/dev/null || true
+    # bootout returns before the job is gone: launchd_reload waits for it.
+    # shellcheck disable=SC2016
+    sudo sh -c '. "$1" && launchd_reload system "$2" "$3"' sh "$pkg/signing.sh" \
+        "$agent_label" "/Library/LaunchDaemons/$agent_label.plist" 2>&1 | sed 's/^/   /' || true
     agent_paired || die "pairing failed (see above). With \"No route to host\", allow Local Network for this terminal app in System Settings > Privacy & Security > Local Network; then run setup.sh again"
     say "paired"
 fi
@@ -523,6 +535,8 @@ cat > "$widget_autostart" <<PLIST
   </dict>
 </plist>
 PLIST
+# Only the new run answers below, not the one install-widget.sh stops.
+[ ! -f "$widget_log" ] || widget_from=$(wc -l < "$widget_log")
 sh "$pkg/install-widget.sh" "$pkg/RawKVM.app" | sed 's/^/   /'
 say "starts at login ($widget_autostart)"
 

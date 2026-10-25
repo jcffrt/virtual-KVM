@@ -271,6 +271,14 @@ fn manage_nodes(args: &Args) -> Result<()> {
         let e = store.forget(&id).expect("found above");
         store.try_save(&path)?;
         println!("released index {} of {} ({:?})", e.index, e.id, e.name);
+        let layout = LayoutFile::path_in(&cfg.state_dir);
+        if LayoutFile::load(&layout)?.is_some_and(|l| l.mentions(&id)) {
+            println!(
+                "note: {} still has edges or a canvas place for this node: they do nothing \
+                 until the layout is set again in the widget",
+                layout.display()
+            );
+        }
         return Ok(());
     }
     let last = store.last_active();

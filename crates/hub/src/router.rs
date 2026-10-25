@@ -839,6 +839,7 @@ impl Router {
                     path.display()
                 );
             }
+            warn_unknown_layout_nodes(&st);
             st.layout_path = Some(path);
         }
         Ok(self)
@@ -873,6 +874,7 @@ impl Router {
                 "layout reloaded from {}",
                 path.display()
             );
+            warn_unknown_layout_nodes(&st);
         }
         self.update_layout(&mut st);
         Ok(())
@@ -1243,6 +1245,21 @@ impl crate::receiver_ctl::Events for RouterEvents {
         if let Some(r) = self.0.upgrade() {
             r.pairing_event(event);
         }
+    }
+}
+
+/// Warn about layout links and canvas entries of nodes that nodes.toml
+/// does not know (a node that paired again with a new node_id): those
+/// edges do nothing, and the hub would only log "switch target is not a
+/// connected agent". The widget lays them out again.
+fn warn_unknown_layout_nodes(st: &State) {
+    let Some(l) = &st.custom_layout else { return };
+    for id in l.unknown_nodes(|id| st.store.index_of(id).is_some()) {
+        warn!(
+            node = %id,
+            "the layout names a node that is not in nodes.toml (paired again with a new id?); \
+             its edges do nothing until the layout is set again in the widget"
+        );
     }
 }
 

@@ -51,7 +51,7 @@ macOS no deja hacer por script ni aprobar una extensión del sistema ni conceder
   - el script añade la extensión, la identidad de firma, los servicios, el widget, su arranque y su conexión.
 - **`uninstall.sh`.**
   - **Sin opciones:** quita el agente, el helper, el widget, su arranque, los plists y `/usr/local/share/rawkvm`.
-  - **`--purge`:** también las configuraciones y los logs.
+  - **`--purge`:** también el emparejamiento y los logs. Conserva `node_id` y `node_name` ([ADR 0028](0028-purge-conserva-la-identidad-del-nodo.md)); `--purge --new-node` lo borra todo.
   - **`--karabiner`:** también el driver, con sus propios scripts. Nunca lo hace por defecto, y nunca toca Karabiner-Elements.
   - **Firma:** la identidad «RawKVM Local» se conserva.
 - **CI.** Workflow `macos-tar` en macos-14:

@@ -69,9 +69,39 @@ expect "agent version line" grep -q '^info  agent version' "$tmp/check.log"
 expect "widget line" grep -q '^FAIL  widget' "$tmp/check.log"
 refuse "no shell errors" grep -qiE 'syntax error|command not found|parameter not set' "$tmp/check.log"
 
+echo "== installing the edge helper twice in a row leaves it loaded"
+# A made-up pairing (no hub): the helper takes it from the agent config.
+agent_cfg="/Library/Application Support/rawkvm/agent.toml"
+sudo mkdir -p "$(dirname "$agent_cfg")"
+printf 'node_id = "%s"\nnode_name = "ci"\nhub = "127.0.0.1"\ntoken = "%s"\nhub_fingerprint = "%s"\n' \
+    "$(uuidgen | tr '[:upper:]' '[:lower:]')" "$(printf 'ab%.0s' $(seq 32))" "$(printf 'cd%.0s' $(seq 32))" |
+    sudo tee "$agent_cfg" >/dev/null
+sudo chmod 0600 "$agent_cfg"
+edge_job="gui/$(id -u)/cc.olitec.rawkvm.edge"
+for n in 1 2; do
+    expect "install-edge.sh run $n" run "$tmp/edge$n.log" sudo sh "$share/install-edge.sh" "$share/rawkvm-edge"
+    refuse "run $n: no bootstrap error" grep -q 'Bootstrap failed' "$tmp/edge$n.log"
+    expect "run $n: $edge_job loaded" launchctl print "$edge_job"
+done
+launchctl print "$edge_job" | grep -E '^\s*(state|pid|last exit code) =' | sed 's/^/    | /'
+
 echo "== uninstall.sh --purge"
 expect "exit code 0" run "$tmp/uninstall.log" sh "$share/uninstall.sh" --purge
 refuse "$share removed" test -e "$share"
+sleep 2 # bootout returns before the job is gone
+refuse "$edge_job unloaded" launchctl print "$edge_job"
+# --purge keeps the node identity (ADR 0028), nothing else.
+expect "agent.toml keeps node_id" sudo grep -q '^node_id = ' "$agent_cfg"
+refuse "agent.toml has no token" sudo grep -q '^token' "$agent_cfg"
+edge_cfg="$HOME/Library/Application Support/rawkvm/edge.toml"
+expect "edge.toml keeps node_id" grep -q '^node_id = ' "$edge_cfg"
+refuse "edge.toml has no pairing" grep -qE '^(hub|token|hub_fingerprint) = ' "$edge_cfg"
+
+echo "== uninstall.sh --purge --new-node"
+expect "exit code 0" run "$tmp/new-node.log" sh "$here/uninstall.sh" --purge --new-node
+refuse "agent config removed" sudo test -e "$agent_cfg"
+refuse "edge config removed" test -e "$edge_cfg"
+refuse "--new-node alone is refused" sh "$here/uninstall.sh" --new-node
 
 rm -rf "$tmp"
 [ "$failures" -eq 0 ] || { echo "$failures check(s) failed"; exit 1; }

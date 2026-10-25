@@ -278,6 +278,18 @@ mod tests {
     }
 
     #[test]
+    fn an_identity_only_config_is_unpaired() {
+        // What `uninstall.sh --purge` leaves (ADR 0028).
+        let id = Uuid::new_v4();
+        let c = AgentConfig::parse(&format!(
+            "node_id = \"{id}\"\nnode_name = \"Air-Javier (edge)\"\n"
+        ))
+        .unwrap();
+        assert_eq!((c.node_id, c.node_name.as_str()), (id, "Air-Javier (edge)"));
+        assert!(c.hub.is_empty() && c.token.is_empty() && c.hub_fingerprint.is_empty());
+    }
+
+    #[test]
     fn adopts_a_pairing_made_with_mdns() {
         // setup.sh with Enter at the hub address: hub = "" (mDNS).
         let dir = std::env::temp_dir().join(format!("rawkvm-adopt-{}", Uuid::new_v4()));

@@ -62,3 +62,29 @@ install_signed() {
     install -m 0755 -o root -g wheel "$tmpdir/bin" "$2"
     rm -rf "$tmpdir"
 }
+
+# launchd_reload DOMAIN LABEL PLIST [WRITE...]: stop the job, run WRITE
+# (which puts the new plist in place) if given, wait until launchd has
+# really unloaded the job, and load PLIST. `launchctl bootout` returns
+# before the job is gone, and a bootstrap that lands meanwhile fails with
+# "Bootstrap failed: 5: Input/output error", leaving the job unloaded.
+launchd_reload() {
+    _domain=$1 _label=$2 _plist=$3
+    shift 3
+    launchctl bootout "$_domain/$_label" 2>/dev/null || true
+    [ $# -eq 0 ] || "$@"
+    _i=0
+    while launchctl print "$_domain/$_label" >/dev/null 2>&1 && [ "$_i" -lt 50 ]; do
+        sleep 0.2
+        _i=$((_i + 1))
+    done
+    _i=0
+    until launchctl bootstrap "$_domain" "$_plist" 2>/dev/null; do
+        _i=$((_i + 1))
+        if [ "$_i" -ge 5 ]; then
+            launchctl bootstrap "$_domain" "$_plist"
+            return
+        fi
+        sleep 1
+    done
+}

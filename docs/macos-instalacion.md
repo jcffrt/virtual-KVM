@@ -124,7 +124,8 @@ sh /usr/local/share/rawkvm/uninstall.sh
 ```
 
 - **Sin opciones**: quita el agente, el helper, el widget y su arranque al iniciar sesión, y el paquete de `/usr/local/share/rawkvm`. Conserva el emparejamiento y los logs.
-- **`--purge`**: los borra también. El hub sigue listando los nodos de este Mac hasta `sudo rawkvm-hub --forget-node` allí.
+- **`--purge`**: borra también el emparejamiento y los logs, pero conserva el `node_id` y el nombre de cada pieza. Al volver a emparejar, el Mac es los mismos nodos para el hub: mismo índice del atajo y mismo sitio en el layout ([ADR 0028](adr/0028-purge-conserva-la-identidad-del-nodo.md)).
+- **`--purge --new-node`**: lo borra todo, también la identidad. El hub sigue listando los nodos viejos hasta `sudo rawkvm-hub --forget-node` allí, y el layout hay que volver a fijarlo en el widget: el hub avisa en su log de los enlaces a nodos que ya no conoce.
 - **`--karabiner`**: quita también Karabiner-DriverKit-VirtualHIDDevice, con sus propios scripts de desinstalación. **Nunca** lo hace por defecto, y nunca toca Karabiner-Elements.
 - La identidad «RawKVM Local» se queda en el llavero; se borra con Acceso a Llaveros.
 

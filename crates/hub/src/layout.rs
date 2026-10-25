@@ -73,6 +73,33 @@ impl LayoutFile {
         ))
     }
 
+    /// The nodes the links and the canvas name that `known` does not know
+    /// (not in nodes.toml), each once, in order of appearance: a node
+    /// that paired again with a new node_id leaves its old one here, and
+    /// those links do nothing.
+    pub fn unknown_nodes(&self, known: impl Fn(&Uuid) -> bool) -> Vec<Uuid> {
+        let mut out = Vec::new();
+        let ids = self
+            .link
+            .iter()
+            .flat_map(|l| [l.from_node, l.to_node])
+            .chain(self.canvas.iter().map(|p| p.node));
+        for id in ids {
+            if !known(&id) && !out.contains(&id) {
+                out.push(id);
+            }
+        }
+        out
+    }
+
+    /// Whether the links or the canvas name `node`.
+    pub fn mentions(&self, node: &Uuid) -> bool {
+        self.link
+            .iter()
+            .any(|l| l.from_node == *node || l.to_node == *node)
+            || self.canvas.iter().any(|p| p.node == *node)
+    }
+
     pub fn save(&self, path: &Path) -> Result<()> {
         if let Some(dir) = path.parent() {
             config::ensure_dir(dir)?;
@@ -396,6 +423,40 @@ mod tests {
         fs::write(&path, "link = 3").unwrap();
         assert!(LayoutFile::load(&path).is_err());
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn finds_nodes_the_store_does_not_know() {
+        let (mac, gamer, old_mac) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let link = |from_node, to_node| EdgeLink {
+            from_node,
+            from_screen: 0,
+            from_edge: Edge::Right,
+            from_range: (0.0, 1.0),
+            to_node,
+            to_screen: 0,
+            to_edge: Edge::Left,
+            to_range: (0.0, 1.0),
+        };
+        let place = |node| Placement {
+            node,
+            x: 0.0,
+            y: 0.0,
+            scale: None,
+        };
+        let f = LayoutFile {
+            link: vec![link(old_mac, gamer), link(gamer, old_mac)],
+            canvas: vec![place(gamer), place(old_mac)],
+            ..Default::default()
+        };
+        let known = [mac, gamer];
+        assert_eq!(f.unknown_nodes(|id| known.contains(id)), vec![old_mac]);
+        assert!(f.mentions(&old_mac) && f.mentions(&gamer) && !f.mentions(&mac));
+        let ok = LayoutFile {
+            link: vec![link(mac, gamer)],
+            ..Default::default()
+        };
+        assert!(ok.unknown_nodes(|id| known.contains(id)).is_empty());
     }
 
     #[test]
