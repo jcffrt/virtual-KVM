@@ -97,6 +97,7 @@ fn main() -> Result<()> {
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
+    agent_core::supervise::log_panics();
     let args = Args::parse();
     info!(
         version = VERSION,

@@ -22,6 +22,40 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetCursorPos, SetCursorPos, MONITORINFOF_PRIMARY,
 };
 
+/// Put this process in a job that kills every process in it when its last
+/// handle closes, that is, when this process ends: the helper it starts
+/// (ADR 0027) then never outlives it, and a new logon or setup.ps1 never
+/// finds two helpers for the same node.
+pub fn kill_children_with_me() -> std::io::Result<()> {
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    // SAFETY: plain Win32 calls on handles created here; the job handle is
+    // deliberately never closed, so it lives as long as the process.
+    unsafe {
+        let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+        if job.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &info as *const _ as *const core::ffi::c_void,
+            std::mem::size_of_val(&info) as u32,
+        ) == 0
+            || AssignProcessToJobObject(job, GetCurrentProcess()) == 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
 /// Call once at start, before reading any coordinate.
 pub fn dpi_aware() -> bool {
     // SAFETY: plain call with a predefined context.

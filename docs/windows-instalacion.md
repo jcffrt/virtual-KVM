@@ -2,7 +2,7 @@
 
 El PC Windows recibe el teclado y el ratón por el **gadget USB** de la placa ([gadget-instalacion.md](gadget-instalacion.md)): Windows ve un receptor Logitech real y no necesita nada de RawKVM para eso. En el PC se instalan dos programas **por usuario, sin administrador y sin driver**:
 
-- **`rawkvm-edge.exe`**, el helper de borde: lee la posición del puntero unas 120 veces por segundo mientras el Windows tiene la entrada. Al tocar un borde enlazado en el layout del hub (por ejemplo el izquierdo, hacia el Mac) pide el cambio al hub, y cuando la entrada vuelve coloca el puntero en el borde de entrada a la altura correcta. No muestra ventana. Diseño: [ADR 0009](adr/0009-borde-helpers-y-layout.md).
+- **`rawkvm-edge.exe`**, el helper de borde: lee la posición del puntero unas 120 veces por segundo mientras el Windows tiene la entrada. Al tocar un borde enlazado en el layout del hub (por ejemplo el izquierdo, hacia el Mac) pide el cambio al hub, y cuando la entrada vuelve coloca el puntero en el borde de entrada a la altura correcta. No muestra ventana. Se vigila a sí mismo: si muere, vuelve a arrancar en un segundo y deja en su log cómo acabó, por eso en el Administrador de tareas hay dos `rawkvm-edge.exe` ([ADR 0027](adr/0027-rastro-y-relanzado-de-los-helpers.md)). Diseño: [ADR 0009](adr/0009-borde-helpers-y-layout.md).
 - **`RawKVM.exe`**, el widget: icono en la bandeja para cambiar de equipo con un clic, colocar las pantallas y ver los dispositivos ([widget-instalacion.md](widget-instalacion.md)).
 
 Decisiones del instalador: [ADR 0024](adr/0024-instalador-windows.md).
@@ -94,9 +94,10 @@ Sale con 0 si nada es `FAIL`. Lo habitual:
 | `FAIL widget … not paired` | Abrir RawKVM una vez (toma el emparejamiento del helper al arrancar). |
 | `FAIL defender …` | Microsoft Defender bloquea el helper: ver «Avisos de Windows» arriba. |
 | `FAIL autostart …` | `setup.ps1`. Si se desactivó en el Administrador de tareas (Inicio), `setup.ps1` lo vuelve a activar. |
+| `warn restarted … died after …` | El helper murió y el supervisor lo relanzó: ya funciona. La línea dice cuándo y con qué código; si es `101` (pánico), la línea `panic at …` de justo antes en `edge.log` dice dónde. Pasar las dos al chat. |
 | `FAIL processes … not running` | Cerrar sesión y volver a entrar, o `setup.ps1`. El log dice por qué se paró. |
 
-Logs: `%LOCALAPPDATA%\rawkvm\edge.log` (helper) y `%LOCALAPPDATA%\rawkvm\rawkvm-widget.log` (widget). El del helper debe mostrar `connected`, una línea `screen` por monitor y `layout links=…`. En el hub, `journalctl -u rawkvm-hub` muestra `screens reported` del gadget.
+Logs: `%LOCALAPPDATA%\rawkvm\edge.log` (helper) y `%LOCALAPPDATA%\rawkvm\rawkvm-widget.log` (widget). El del helper debe mostrar `connected`, una línea `screen` por monitor y `layout links=…`. Si el helper muere, el log tiene `rawkvm-edge died after …` con el código de salida, y antes, si fue un pánico, `panic at fichero:línea: mensaje`. En el hub, `journalctl -u rawkvm-hub` muestra `screens reported` del gadget.
 
 Prueba: con el Windows activo, llevar el puntero al borde enlazado (por ejemplo el izquierdo), lejos de las esquinas. La entrada pasa al otro equipo y el puntero aparece en su borde. Volver por ese mismo borde.
 

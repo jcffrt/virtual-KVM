@@ -61,6 +61,7 @@ fn init_logging(to_file: bool) -> Result<()> {
             .with_env_filter(filter)
             .init();
     }
+    agent_core::supervise::log_panics();
     Ok(())
 }
 

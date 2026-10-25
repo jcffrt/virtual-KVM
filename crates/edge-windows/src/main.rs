@@ -84,6 +84,11 @@ struct Args {
     /// Log file. Default: %LOCALAPPDATA%\rawkvm\edge.log.
     #[arg(long)]
     log: Option<PathBuf>,
+
+    /// Internal: this is the helper itself, started by the copy that
+    /// restarts it when it dies (ADR 0027).
+    #[arg(long, hide = true)]
+    supervised: bool,
 }
 
 fn config_path(args: &Args) -> Result<PathBuf> {
@@ -235,12 +240,12 @@ fn check(path: &Path, log: &Path) -> bool {
     }
     let text = std::fs::read_to_string(log).unwrap_or_default();
     // The log is appended across runs: only the latest decides.
-    let tail: Vec<&str> = text.lines().rev().take(300).collect();
-    let (level, detail) = agent_core::setup::hub_state(tail.into_iter().rev()).unwrap_or((
-        Level::Warn,
-        format!("no connection lines in {}", log.display()),
-    ));
+    let run = agent_core::setup::current_run(&text, SUPERVISOR_START);
+    let (level, detail) = agent_core::setup::hub_line(&run, log);
     r.line(level, "hub", &detail);
+    if let Some((level, detail)) = agent_core::setup::last_of(&run, &[(DIED, Level::Warn)]) {
+        r.line(level, "restarted", &detail);
+    }
     r.ok()
 }
 
@@ -288,6 +293,10 @@ fn main() -> Result<()> {
     }
     let cli = args.configure_only || args.show || args.pair || configure_requested(&args);
     init_logging((!cli).then_some(log.as_path()));
+    agent_core::supervise::log_panics();
+    if !cli && !args.supervised {
+        return supervise();
+    }
     configure(&args, &path)?;
     if args.pair {
         return tokio::runtime::Builder::new_current_thread()
@@ -299,6 +308,34 @@ fn main() -> Result<()> {
         return Ok(());
     }
     platform_main(&args, path)
+}
+
+/// First line of a run in the log, and the line of each restart.
+const SUPERVISOR_START: &str = "rawkvm-edge supervisor starting";
+const DIED: &str = "rawkvm-edge died after";
+
+/// Run the helper as a child process (the same command line plus
+/// `--supervised`) and start it again whenever it dies, logging how it
+/// ended: a windowless process has no stderr, and without the helper the
+/// user cannot leave this PC by the screen edge (ADR 0027).
+fn supervise() -> Result<()> {
+    #[cfg(windows)]
+    if let Err(e) = win::kill_children_with_me() {
+        tracing::warn!("job object: {e}; a helper may outlive this process");
+    }
+    let exe = std::env::current_exe()?;
+    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    tracing::info!(version = VERSION, "{SUPERVISOR_START}");
+    agent_core::supervise::supervise("rawkvm-edge", Default::default(), || {
+        std::process::Command::new(&exe)
+            .args(&args)
+            .arg("--supervised")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+    })?;
+    Ok(())
 }
 
 fn configure_requested(args: &Args) -> bool {
