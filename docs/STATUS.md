@@ -623,3 +623,29 @@ Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario e
 - Diagnóstico: corte de alimentación, no software. Con un alimentador de pared en el USB‑C OTG la placa aguantó sin perder un ping (aunque sin GAMER, gadget `not attached`). En **otro puerto USB del GAMER** también aguanta (desde las 20:28, gadget `configured`). El puerto que usaba hasta ahora dejó de dar corriente suficiente al arrancar con Wi‑Fi y receptor; no se sabe por qué cambió.
 - Revisión tras los cortes: ext4 sin errores, `commit=5` ya en `/etc/fstab`, `dpkg -V` de los dos paquetes limpio, hub sin avisos, temperatura 67 °C.
 - Consecuencias: (1) el usuario pide un apagado limpio del hub desde el widget y al apagar el PC que lo alimenta → **bloque 3b de la fase 5** en [fase5-plan.md](fase5-plan.md) (protocolo v7). (2) Sigue vigente la recomendación de `gadget-instalacion.md`: alimentación propia por el conector de 40 pines; el 3b protege la SD pero no evita que el hub se vaya con el PC.
+
+## Fase 5.3b: apagado limpio del hub, protocolo v7 (2026-10-25)
+
+- `Control::Shutdown` (widget → hub) y `Control::ShuttingDown { reason }` (hub → todos); `PROTO_VERSION` 7. ADR 0025.
+- Hub, al recibir `Shutdown`:
+  - solo de un widget; registra un `warn` con quién lo pidió;
+  - libera las teclas en todos los agentes y avisa a todos;
+  - `poweroff::serve`: 0,5 s, `systemctl stop rawkvm-agent-gadget` (máx. 3 s), `sync`, `systemctl poweroff`;
+  - si falla, `error` en el journal y sigue en marcha.
+- Agentes, helpers y widgets, con `ShuttingDown`:
+  - cierran la sesión y reintentan cada 30 s hasta que el hub vuelve (`agent_core::Reconnect`, común a los tres);
+  - log: `the hub is powering off (…)` y `hub off; reconnecting in 30.0 s`.
+- Widget:
+  - **Apagar hub** con confirmación;
+  - estado «Hub apagado», con el aviso de esperar al LED;
+  - bandeja «hub apagado».
+- Windows: opción **Apagar el hub cuando este PC se apague** (desactivada por defecto; `power_off_hub_with_pc` en `widget.toml`).
+  - Una ventana oculta en su propio hilo atiende `WM_QUERYENDSESSION`/`WM_ENDSESSION`; ignora `ENDSESSION_LOGOFF`.
+  - Envía `Shutdown` y espera la confirmación o 3 s.
+  - Registra la hora y el `lParam` de cada aviso, también con la opción desactivada.
+  - Suspender queda fuera.
+- Despliegue: todo a la vez (hub y gadget en la Pi, agentes de Mac y Ubuntu, helper y widget del GAMER con `setup.ps1`).
+- Sin probar en hardware:
+  - `systemctl poweroff` desde el servicio en la Pi;
+  - los avisos de Windows en un apagado y un reinicio reales (con Inicio rápido incluido);
+  - el margen que da el GAMER entre el aviso a las aplicaciones y el corte de los 5 V.

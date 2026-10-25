@@ -25,6 +25,10 @@ pub struct AgentConfig {
     /// Edge helpers only: `node_id` of the agent this helper acts for.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub for_node: Option<Uuid>,
+    /// Widget on Windows only: power the hub off when this PC shuts down
+    /// or restarts (the PC that powers the hub's board, ADR 0025).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub power_off_hub_with_pc: bool,
 }
 
 impl Default for AgentConfig {
@@ -41,6 +45,7 @@ impl Default for AgentConfig {
             token: String::new(),
             hub_fingerprint: String::new(),
             for_node: None,
+            power_off_hub_with_pc: false,
         }
     }
 }

@@ -11,6 +11,7 @@ pub mod hidrec;
 pub mod hotkey;
 pub mod layout;
 pub mod nodes;
+pub mod poweroff;
 pub mod receiver;
 pub mod receiver_ctl;
 pub mod router;

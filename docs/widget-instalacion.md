@@ -70,6 +70,7 @@ Diferencias con el Mac:
 - **Pestaña Hub**:
   - **Sin emparejar**: «Buscar hubs en la red» (mDNS), elegir el hub o escribir su dirección, pegar el token (`sudo rawkvm-hub --show-token` en la Pi) y pulsar **Emparejar**. El certificado del hub se fija en la primera conexión, como en los agentes.
   - **Emparejado**: estado, latencia, versión del hub y lista de equipos: número, sistema, tipo, pantallas conocidas y su atajo (p. ej. `Ctrl, Ctrl, 2`). Un agente sin helper de borde sale **en gris** («sin helper»): se puede cambiar a él por el menú o con el atajo, pero no por el borde. «Usar» cambia a ese equipo. «Olvidar hub» borra el emparejamiento.
+  - **Apagar hub** (hub v7): apaga la placa del hub de forma limpia (`sync` y apagado del sistema), con un segundo clic de confirmación: todos los equipos se quedan sin teclado ni ratón hasta volver a darle corriente. El estado pasa a «Hub apagado»; **esperar a que el LED de la placa se apague** antes de desenchufarla. Al volver la corriente, los equipos se reconectan solos (lo intentan cada 30 s). Sin widget: `sudo systemctl poweroff` en la placa por SSH. Diseño: [ADR 0025](adr/0025-apagado-limpio-del-hub.md).
 
 - **Pestaña Monitores**:
   - un bloque por equipo con sus pantallas reales (Mac: integrada y externa; Windows: sus dos monitores), en unidades lógicas;
@@ -97,7 +98,8 @@ Diferencias con el Mac:
     - Las dos pulsaciones sí llegan al equipo activo. Con Ctrl o Mayús no hacen nada, pero en Windows Win abre el menú Inicio y Alt marca el menú de la ventana.
     - La pestaña Hub (columna Atajo) y el menú de la barra muestran el atajo con la tecla elegida.
   - **Bordes (helpers)**: empujar (ms que hay que mantener el puntero en el borde; 0 = al tocarlo), esquinas (% de cada extremo que no cambia de equipo) y zona muerta (px). Viajan con la disposición: si el hub aún usa la semilla, guardar esto guarda también la disposición de Monitores.
-  - **Este Mac**: abrir RawKVM al iniciar sesión (LaunchAgent del usuario).
+  - **Este Mac** / **Este PC**: abrir RawKVM al iniciar sesión (LaunchAgent del usuario en el Mac, clave `Run` en Windows).
+  - **Este PC → Apagar el hub cuando este PC se apague** (solo Windows, hub v7, desactivada por defecto): para el PC cuyo USB alimenta la placa del hub. Al apagar o reiniciar Windows, el widget pide al hub que se apague y espera su confirmación, como mucho 3 s. Cerrar sesión o suspender no lo apaga: el Mac y el Ubuntu seguirían sin teclado. Se guarda en `widget.toml` de este PC. El log del widget registra la hora de cada aviso de Windows (`WM_QUERYENDSESSION`, `WM_ENDSESSION`).
 
 ## Ficheros
 

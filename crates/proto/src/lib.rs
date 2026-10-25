@@ -37,7 +37,8 @@ use uuid::Uuid;
 ///   `SetPointerSpeed`, `SetFnSwap`.
 /// * 6: [`HubSettings::hotkey`] is a [`Hotkey`] (modifier, previous,
 ///   release keys) instead of a bool.
-pub const PROTO_VERSION: u16 = 6;
+/// * 7: `Shutdown` (widget -> hub) and `ShuttingDown` (hub -> nodes).
+pub const PROTO_VERSION: u16 = 7;
 
 /// DNS-SD service type the hub advertises on the LAN.
 pub const SERVICE_TYPE: &str = "_rawkvm._udp.local.";
@@ -449,6 +450,14 @@ pub enum Control {
         slot: u8,
         on: bool,
     },
+    /// widget -> hub. Power the hub's board off cleanly (the widget's
+    /// button, or the PC that powers the board shutting down).
+    Shutdown,
+    /// hub -> nodes. The hub is powering off: stop reconnecting at the
+    /// normal pace. Also the confirmation of `Shutdown`.
+    ShuttingDown {
+        reason: String,
+    },
 }
 
 impl Control {
@@ -475,6 +484,8 @@ impl Control {
             Control::Unpair { .. } => "Unpair",
             Control::SetPointerSpeed { .. } => "SetPointerSpeed",
             Control::SetFnSwap { .. } => "SetFnSwap",
+            Control::Shutdown => "Shutdown",
+            Control::ShuttingDown { .. } => "ShuttingDown",
         }
     }
 }
@@ -646,6 +657,10 @@ mod tests {
                 value: 300,
             },
             Control::SetFnSwap { slot: 3, on: false },
+            Control::Shutdown,
+            Control::ShuttingDown {
+                reason: "requested by GAMER".into(),
+            },
             Control::Ping(42),
             Control::Status(HubStatus {
                 hub_name: "hub".into(),

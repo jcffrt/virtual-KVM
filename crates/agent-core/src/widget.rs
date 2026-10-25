@@ -15,10 +15,10 @@ use proto::{
 };
 use serde::Serialize;
 use tokio::sync::mpsc::UnboundedReceiver;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use crate::{handshake, resolve_hub, Accepted, AgentConfig, AgentOptions, End};
+use crate::{handshake, resolve_hub, Accepted, AgentConfig, AgentOptions, End, Reconnect};
 
 /// What the widget shows. Kept across reconnections (marked by
 /// `connected`), so the UI does not go blank while the hub restarts.
@@ -30,6 +30,9 @@ pub struct WidgetState {
     pub error: Option<String>,
     /// Retrying cannot help (token, certificate, version): fix the config.
     pub fatal: bool,
+    /// The hub said it is powering off (why), until it accepts a
+    /// connection again. Also the confirmation of a `Shutdown`.
+    pub hub_off: Option<String>,
     pub status: Option<HubStatus>,
     /// Live screens of every node, as reported by agents and edge helpers.
     pub screens: BTreeMap<Uuid, Vec<Screen>>,
@@ -148,8 +151,6 @@ impl WidgetShared {
     }
 }
 
-const BACKOFF_MIN: Duration = Duration::from_millis(500);
-const BACKOFF_MAX: Duration = Duration::from_secs(10);
 const PING_EVERY: Duration = Duration::from_secs(1);
 
 /// Run the widget session until a fatal error. `commands` are sent to the
@@ -159,7 +160,7 @@ pub async fn run_widget(
     shared: Arc<WidgetShared>,
     mut commands: UnboundedReceiver<Control>,
 ) -> Result<()> {
-    let mut backoff = BACKOFF_MIN;
+    let mut retry = Reconnect::new();
     loop {
         let mut cfg = AgentConfig::load_or_init(&opts.config_path)?;
         if let Err(e) = cfg.token_bytes() {
@@ -170,38 +171,44 @@ pub async fn run_widget(
             });
             return Err(e);
         }
-        let started = Instant::now();
+        retry.attempt();
         let end = match resolve_hub(&cfg).await {
-            Ok(addr) => match session(&opts, &mut cfg, addr, &shared, &mut commands).await {
-                Ok(()) => End::Retry(anyhow!("hub closed the session")),
-                Err(e) => e,
-            },
+            Ok(addr) => {
+                match session(&opts, &mut cfg, addr, &shared, &mut commands, &mut retry).await {
+                    Ok(()) => End::Retry(anyhow!("hub closed the session")),
+                    Err(e) => e,
+                }
+            }
             Err(e) => End::Retry(e),
         };
-        let (fatal, e) = match end {
-            End::Fatal(e) => (true, e),
-            End::Retry(e) => (false, e),
+        let message = match &end {
+            End::Fatal(e) | End::Retry(e) => format!("{e:#}"),
+            End::HubDown(reason) => reason.clone(),
         };
-        warn!("{e:#}");
+        let fatal = matches!(end, End::Fatal(_));
+        let off = matches!(end, End::HubDown(_));
+        let result = retry.ended(end);
         shared.update(|st| {
             st.connected = None;
             st.rtt_ms = None;
-            st.error = Some(format!("{e:#}"));
             st.fatal = fatal;
+            if off {
+                st.hub_off = Some(message);
+            } else if fatal || st.hub_off.is_none() {
+                // While the hub is off, failed attempts are expected.
+                st.error = Some(message);
+            }
             true
         });
-        if fatal {
+        if let Err(e) = result {
+            error!("{e:#}");
             return Err(e);
-        }
-        if started.elapsed() > BACKOFF_MAX {
-            backoff = BACKOFF_MIN;
         }
         // Drop commands queued while disconnected.
         while let Ok(c) = commands.try_recv() {
             warn!(msg = c.name(), "not connected; command dropped");
         }
-        tokio::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(BACKOFF_MAX);
+        tokio::time::sleep(retry.delay()).await;
     }
 }
 
@@ -211,17 +218,20 @@ async fn session(
     addr: std::net::SocketAddr,
     shared: &WidgetShared,
     commands: &mut UnboundedReceiver<Control>,
+    retry: &mut Reconnect,
 ) -> Result<(), End> {
     let Accepted {
         conn: _conn,
         mut send,
         mut recv,
     } = handshake(opts, cfg, addr, NodeKind::Widget).await?;
+    retry.connected();
     let hub_name = String::new();
     shared.update(|st| {
         st.connected = Some((hub_name, addr.to_string()));
         st.error = None;
         st.fatal = false;
+        st.hub_off = None;
         true
     });
     info!(%addr, "widget connected");
@@ -253,6 +263,7 @@ async fn session(
                     Control::Reject { reason } => {
                         return Err(End::Fatal(anyhow!("rejected by the hub: {reason:?}")))
                     }
+                    Control::ShuttingDown { reason } => return Err(End::HubDown(reason)),
                     other => {
                         debug!(msg = other.name(), "from hub");
                         shared.update(|st| st.apply(&other));

@@ -115,9 +115,7 @@ pub async fn pair(opts: &AgentOptions, kind: NodeKind) -> Result<std::net::Socke
         let addr = resolve_hub(&cfg).await?;
         let accepted = handshake(opts, &mut cfg, addr, kind)
             .await
-            .map_err(|e| match e {
-                crate::End::Fatal(e) | crate::End::Retry(e) => e,
-            })?;
+            .map_err(crate::End::into_error)?;
         if cfg.hub_fingerprint.is_empty() {
             return Err(anyhow!("the hub presented no certificate to pin"));
         }
@@ -156,9 +154,7 @@ pub async fn survey(opts: &AgentOptions) -> Result<(std::net::SocketAddr, proto:
         let result = async {
             let mut accepted = handshake(&probe_opts, &mut probe, addr, NodeKind::Widget)
                 .await
-                .map_err(|e| match e {
-                    crate::End::Fatal(e) | crate::End::Retry(e) => e,
-                })?;
+                .map_err(crate::End::into_error)?;
             let status = loop {
                 match proto::wire::read_frame(&mut accepted.recv).await? {
                     Some(proto::Control::Status(s)) => break s,

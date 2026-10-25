@@ -167,6 +167,17 @@ pub(crate) enum End {
     Retry(anyhow::Error),
     /// Retrying cannot help (bad token, changed certificate, version).
     Fatal(anyhow::Error),
+    /// The hub said it is powering off (`ShuttingDown`): retry slowly.
+    HubDown(String),
+}
+
+impl End {
+    pub(crate) fn into_error(self) -> anyhow::Error {
+        match self {
+            End::Fatal(e) | End::Retry(e) => e,
+            End::HubDown(reason) => anyhow!("the hub is powering off ({reason})"),
+        }
+    }
 }
 
 impl<E: Into<anyhow::Error>> From<E> for End {
@@ -182,6 +193,71 @@ const STATS_EVERY: Duration = Duration::from_secs(10);
 
 /// How long a service waits after a fatal error before exiting.
 const FATAL_PAUSE: Duration = Duration::from_secs(60);
+
+/// Retry pace once the hub said it is powering off: it comes back when its
+/// board is powered again, maybe hours later.
+pub const HUB_DOWN_RETRY: Duration = Duration::from_secs(30);
+
+/// The reconnect pace: exponential backoff, or [`HUB_DOWN_RETRY`] from a
+/// `ShuttingDown` until the hub accepts a connection again.
+pub(crate) struct Reconnect {
+    backoff: Duration,
+    hub_down: bool,
+    started: Instant,
+}
+
+impl Reconnect {
+    pub(crate) fn new() -> Self {
+        Self {
+            backoff: BACKOFF_MIN,
+            hub_down: false,
+            started: Instant::now(),
+        }
+    }
+
+    /// A connection attempt starts.
+    pub(crate) fn attempt(&mut self) {
+        self.started = Instant::now();
+    }
+
+    /// The hub accepted the connection.
+    pub(crate) fn connected(&mut self) {
+        self.hub_down = false;
+    }
+
+    /// Log why the session ended. `Err` for a fatal end.
+    pub(crate) fn ended(&mut self, end: End) -> Result<(), anyhow::Error> {
+        match end {
+            End::Fatal(e) => return Err(e),
+            // Expected while the hub is off: no warning every 30 s.
+            End::Retry(e) if self.hub_down => debug!("{e:#}"),
+            End::Retry(e) => warn!("{e:#}"),
+            End::HubDown(reason) => {
+                warn!("the hub is powering off ({reason})");
+                self.hub_down = true;
+            }
+        }
+        Ok(())
+    }
+
+    /// How long to wait before the next attempt (logged).
+    pub(crate) fn delay(&mut self) -> Duration {
+        if self.hub_down {
+            info!(
+                "hub off; reconnecting in {:.1} s",
+                HUB_DOWN_RETRY.as_secs_f32()
+            );
+            return HUB_DOWN_RETRY;
+        }
+        if self.started.elapsed() > BACKOFF_MAX {
+            self.backoff = BACKOFF_MIN;
+        }
+        let d = self.backoff;
+        self.backoff = (self.backoff * 2).min(BACKOFF_MAX);
+        info!("reconnecting in {:.1} s", d.as_secs_f32());
+        d
+    }
+}
 
 /// Log a fatal error once and, when running as a service (no terminal),
 /// wait before exiting: launchd and systemd restart the process at once,
@@ -202,27 +278,21 @@ pub(crate) async fn fatal_pause(e: anyhow::Error) -> anyhow::Error {
 
 /// Run the agent until a fatal error: connect, serve, reconnect.
 pub async fn run(opts: AgentOptions, sink: &mut dyn HidSink) -> Result<()> {
-    let mut backoff = BACKOFF_MIN;
+    let mut retry = Reconnect::new();
     let mut outputs = Outputs::new(sink.take_outputs());
     loop {
         let mut cfg = AgentConfig::load_or_init(&opts.config_path)?;
         cfg.token_bytes()?;
-        let started = Instant::now();
+        retry.attempt();
         let end = match resolve_hub(&cfg).await {
-            Ok(addr) => session(&opts, &mut cfg, addr, sink, &mut outputs).await,
+            Ok(addr) => session(&opts, &mut cfg, addr, sink, &mut outputs, &mut retry).await,
             Err(e) => End::Retry(e),
         };
         sink.destroy_all();
-        match end {
-            End::Fatal(e) => return Err(fatal_pause(e).await),
-            End::Retry(e) => warn!("{e:#}"),
+        if let Err(e) = retry.ended(end) {
+            return Err(fatal_pause(e).await);
         }
-        if started.elapsed() > BACKOFF_MAX {
-            backoff = BACKOFF_MIN;
-        }
-        info!("reconnecting in {:.1} s", backoff.as_secs_f32());
-        tokio::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(BACKOFF_MAX);
+        tokio::time::sleep(retry.delay()).await;
     }
 }
 
@@ -366,8 +436,9 @@ async fn session(
     addr: SocketAddr,
     sink: &mut dyn HidSink,
     outputs: &mut Outputs,
+    retry: &mut Reconnect,
 ) -> End {
-    match session_inner(opts, cfg, addr, sink, outputs).await {
+    match session_inner(opts, cfg, addr, sink, outputs, retry).await {
         Ok(()) => End::Retry(anyhow!("hub closed the session")),
         Err(e) => e,
     }
@@ -467,12 +538,14 @@ async fn session_inner(
     addr: SocketAddr,
     sink: &mut dyn HidSink,
     outputs: &mut Outputs,
+    retry: &mut Reconnect,
 ) -> Result<(), End> {
     let Accepted {
         conn,
         mut send,
         mut recv,
     } = handshake(opts, cfg, addr, NodeKind::Agent).await?;
+    retry.connected();
     let mut s = Session::new();
     let mut ping = tokio::time::interval(PING_EVERY);
     let mut stats = tokio::time::interval(STATS_EVERY);
@@ -508,6 +581,10 @@ async fn session_inner(
                     Control::Layout { .. } | Control::Screens { .. } => {}
                     Control::Reject { reason } => {
                         return Err(End::Fatal(anyhow!("rejected by the hub: {reason:?}")))
+                    }
+                    Control::ShuttingDown { reason } => {
+                        s.release_all(sink);
+                        return Err(End::HubDown(reason));
                     }
                     other => debug!(msg = other.name(), "ignored"),
                 }

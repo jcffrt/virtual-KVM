@@ -11,12 +11,14 @@
 //!   edge helper's config when that one is newer (setup.ps1 pairs once).
 
 mod canvas_view;
+#[cfg(windows)]
+mod endsession;
 mod tray_icon;
 mod view;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use agent_core::widget::{run_widget, WidgetShared};
 use agent_core::{AgentConfig, AgentOptions};
@@ -108,6 +110,36 @@ impl AppState {
         })
     }
 
+    /// This PC is shutting down: if the option is on, power the hub off
+    /// and wait for its confirmation (`ShuttingDown`), at most `wait`.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn power_off_with_pc(&self, wait: Duration) {
+        if !self.config().power_off_hub_with_pc {
+            info!("this PC is shutting down; the option to power the hub off is off");
+            return;
+        }
+        let t0 = Instant::now();
+        if let Err(e) = self.send(Control::Shutdown) {
+            warn!("this PC is shutting down; hub power-off not sent: {e}");
+            return;
+        }
+        info!("this PC is shutting down; hub power-off sent");
+        while t0.elapsed() < wait {
+            if self.shared.snapshot().hub_off.is_some() {
+                info!(
+                    ms = t0.elapsed().as_millis() as u64,
+                    "the hub confirmed the power-off"
+                );
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        warn!(
+            ms = t0.elapsed().as_millis() as u64,
+            "no confirmation from the hub; letting Windows go on"
+        );
+    }
+
     fn send(&self, msg: Control) -> Result<(), String> {
         let tx = lock(&self.tx);
         let tx = tx.as_ref().ok_or("no hay conexión con el hub")?;
@@ -122,6 +154,7 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>, v: &view::View) -> tauri::Result<M
     let menu = Menu::new(app)?;
     let header = match (&v.hub_name, v.connected, v.paired) {
         (Some(name), true, _) => format!("RawKVM · {name}"),
+        (_, false, true) if v.hub_off.is_some() => "RawKVM · hub apagado".into(),
         (_, false, true) => "RawKVM · sin conexión con el hub".into(),
         _ => "RawKVM · sin emparejar".into(),
     };
@@ -223,6 +256,7 @@ fn refresh(app: &AppHandle) {
         }
         let tip = match &v.hub_name {
             Some(h) if v.connected => format!("RawKVM: {h}"),
+            _ if v.hub_off.is_some() => "RawKVM: hub apagado".into(),
             _ => "RawKVM: sin conexión".into(),
         };
         let _ = tray.set_tooltip(Some(tip));
@@ -472,6 +506,27 @@ fn set_fn_swap(state: tauri::State<'_, Arc<AppState>>, slot: u8, on: bool) -> Re
     state.send(Control::SetFnSwap { slot, on })
 }
 
+/// The "Apagar hub" button (the window asks for confirmation first).
+#[tauri::command]
+fn shutdown_hub(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
+    info!("hub power-off requested from the window");
+    state.send(Control::Shutdown)
+}
+
+/// Windows: power the hub off when this PC shuts down or restarts.
+#[tauri::command]
+fn set_power_off_with_pc(
+    state: tauri::State<'_, Arc<AppState>>,
+    enabled: bool,
+) -> Result<(), String> {
+    let mut cfg = state.config();
+    cfg.power_off_hub_with_pc = enabled;
+    cfg.save(&state.config).map_err(|e| format!("{e:#}"))?;
+    info!(enabled, "power the hub off with this PC");
+    state.shared.touch();
+    Ok(())
+}
+
 #[tauri::command]
 fn get_autostart(app: AppHandle) -> Result<bool, String> {
     use tauri_plugin_autostart::ManagerExt;
@@ -646,6 +701,12 @@ pub fn run() {
                 tray_key: Mutex::new(String::new()),
             });
             app.manage(state.clone());
+            #[cfg(windows)]
+            {
+                let state = state.clone();
+                // Windows shows "apps are preventing shutdown" after ~5 s.
+                endsession::watch(move || state.power_off_with_pc(Duration::from_secs(3)));
+            }
 
             let v = state.view();
             let menu = build_menu(app.handle(), &v)?;
@@ -708,7 +769,9 @@ pub fn run() {
             set_settings,
             set_edge_options,
             get_autostart,
-            set_autostart
+            set_autostart,
+            shutdown_hub,
+            set_power_off_with_pc
         ])
         .run(tauri::generate_context!())
         .expect("running the RawKVM widget");

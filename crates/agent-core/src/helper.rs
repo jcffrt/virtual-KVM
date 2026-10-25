@@ -11,7 +11,7 @@ use tokio::time::MissedTickBehavior;
 use tracing::{debug, info, warn};
 
 use crate::edge::{EdgeSwitcher, Point};
-use crate::{handshake, resolve_hub, Accepted, AgentConfig, AgentOptions, End};
+use crate::{handshake, resolve_hub, Accepted, AgentConfig, AgentOptions, End, Reconnect};
 
 /// What an edge helper needs from the OS. Coordinates are the OS' global
 /// desktop coordinates, the same for screens, pointer and warp.
@@ -28,12 +28,9 @@ pub const POLL_EVERY: Duration = Duration::from_millis(8);
 /// How often the screens are re-read to notice monitor changes.
 pub const SCREENS_EVERY: Duration = Duration::from_secs(2);
 
-const BACKOFF_MIN: Duration = Duration::from_millis(500);
-const BACKOFF_MAX: Duration = Duration::from_secs(10);
-
 /// Run the helper until a fatal error: connect, watch, reconnect.
 pub async fn run_helper(opts: AgentOptions, platform: &mut dyn EdgePlatform) -> Result<()> {
-    let mut backoff = BACKOFF_MIN;
+    let mut retry = Reconnect::new();
     loop {
         let mut cfg = AgentConfig::load_or_init(&opts.config_path)?;
         cfg.token_bytes()?;
@@ -44,24 +41,20 @@ pub async fn run_helper(opts: AgentOptions, platform: &mut dyn EdgePlatform) -> 
                 opts.config_path.display()
             )
         })?;
-        let started = Instant::now();
+        retry.attempt();
         let end = match resolve_hub(&cfg).await {
-            Ok(addr) => match session(&opts, &mut cfg, addr, for_node, platform).await {
-                Ok(()) => End::Retry(anyhow!("hub closed the session")),
-                Err(e) => e,
-            },
+            Ok(addr) => {
+                match session(&opts, &mut cfg, addr, for_node, platform, &mut retry).await {
+                    Ok(()) => End::Retry(anyhow!("hub closed the session")),
+                    Err(e) => e,
+                }
+            }
             Err(e) => End::Retry(e),
         };
-        match end {
-            End::Fatal(e) => return Err(crate::fatal_pause(e).await),
-            End::Retry(e) => warn!("{e:#}"),
+        if let Err(e) = retry.ended(end) {
+            return Err(crate::fatal_pause(e).await);
         }
-        if started.elapsed() > BACKOFF_MAX {
-            backoff = BACKOFF_MIN;
-        }
-        info!("reconnecting in {:.1} s", backoff.as_secs_f32());
-        tokio::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(BACKOFF_MAX);
+        tokio::time::sleep(retry.delay()).await;
     }
 }
 
@@ -71,12 +64,14 @@ async fn session(
     addr: std::net::SocketAddr,
     for_node: uuid::Uuid,
     platform: &mut dyn EdgePlatform,
+    retry: &mut Reconnect,
 ) -> Result<(), End> {
     let Accepted {
         conn: _conn,
         mut send,
         mut recv,
     } = handshake(opts, cfg, addr, NodeKind::EdgeHelper { for_node }).await?;
+    retry.connected();
     info!(%for_node, "edge helper connected");
 
     let mut sw = EdgeSwitcher::new(for_node);
@@ -127,6 +122,7 @@ async fn session(
                     Control::Reject { reason } => {
                         return Err(End::Fatal(anyhow!("rejected by the hub: {reason:?}")))
                     }
+                    Control::ShuttingDown { reason } => return Err(End::HubDown(reason)),
                     other => debug!(msg = other.name(), "ignored"),
                 }
             }

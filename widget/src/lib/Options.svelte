@@ -141,6 +141,26 @@
       <input type="checkbox" bind:checked={autostart} onchange={saveAutostart} />
       Abrir RawKVM al iniciar sesión
     </label>
+    {#if view.platform === 'windows'}
+      <label>
+        <input
+          type="checkbox"
+          checked={view.power_off_with_pc}
+          onchange={(e) =>
+            run(
+              'set_power_off_with_pc',
+              { enabled: e.currentTarget.checked },
+              e.currentTarget.checked
+                ? 'El hub se apagará cuando este PC se apague o se reinicie.'
+                : 'El hub ya no se apagará con este PC.',
+            )}
+        />
+        Apagar el hub cuando este PC se apague
+      </label>
+      <p class="muted">
+        Solo si la placa del hub se alimenta del USB de este PC. Al cerrar sesión o suspender no se apaga.
+      </p>
+    {/if}
   </div>
 
   {#if message}<p class="muted">{message}</p>{/if}

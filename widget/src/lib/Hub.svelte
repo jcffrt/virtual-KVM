@@ -8,6 +8,7 @@
   let token = $state('');
   let message = $state('');
   let confirmForget = $state(false);
+  let confirmShutdown = $state(false);
 
   async function search() {
     searching = true;
@@ -34,6 +35,16 @@
   async function forget() {
     confirmForget = false;
     await invoke('forget');
+  }
+
+  async function shutdown() {
+    confirmShutdown = false;
+    message = '';
+    try {
+      await invoke('shutdown_hub');
+    } catch (e) {
+      message = String(e);
+    }
   }
 
   async function switchTo(id) {
@@ -65,7 +76,7 @@
     <dl>
       <dt>Estado</dt>
       <dd>
-        {#if view.connected}Conectado{:else if view.fatal}<span class="bad">No se puede conectar</span>{:else}Reconectando…{/if}
+        {#if view.connected}Conectado{:else if view.fatal}<span class="bad">No se puede conectar</span>{:else if view.hub_off}Hub apagado{:else}Reconectando…{/if}
       </dd>
       <dt>Latencia</dt>
       <dd>{view.rtt_ms != null ? `${view.rtt_ms.toFixed(1)} ms` : '—'}</dd>
@@ -74,9 +85,23 @@
       <dt>Certificado</dt>
       <dd class="mono">{view.fingerprint ? `${view.fingerprint.slice(0, 16)}…` : 'se fijará al conectar'}</dd>
     </dl>
-    {#if view.error && !view.connected}
+    {#if view.hub_off && !view.connected}
+      <p class="muted">
+        El hub se apagó ({view.hub_off}). Espera a que el LED de la placa se apague antes de desenchufarla.
+        Al volver a darle corriente, RawKVM se reconecta solo (lo intenta cada 30 s).
+      </p>
+    {:else if view.error && !view.connected}
       <p class:bad={view.fatal} class="muted">{view.error}</p>
     {/if}
+    <div class="row actions">
+      {#if confirmShutdown}
+        <span class="muted">Todos los equipos se quedan sin teclado ni ratón hasta volver a encenderlo.</span>
+        <button onclick={() => (confirmShutdown = false)}>Cancelar</button>
+        <button class="primary" onclick={shutdown}>Apagar</button>
+      {:else}
+        <button onclick={() => (confirmShutdown = true)} disabled={!view.connected}>Apagar hub</button>
+      {/if}
+    </div>
   </div>
 
   <h3>Equipos</h3>
@@ -138,6 +163,7 @@
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-bottom: 18px; }
   .row { display: flex; align-items: center; gap: 10px; }
   .spacer { flex: 1; }
+  .actions { margin-top: 12px; }
   .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
   .dot.ok { background: var(--ok); }
   .dot.bad { background: var(--bad); }

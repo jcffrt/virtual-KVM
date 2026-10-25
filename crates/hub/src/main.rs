@@ -181,6 +181,7 @@ async fn serve(args: Args) -> Result<()> {
             );
         }
     }
+    let (poweroff_tx, poweroff_rx) = tokio::sync::mpsc::unbounded_channel();
     let router = Arc::new(
         Router::new(
             cfg.hub_id,
@@ -199,8 +200,10 @@ async fn serve(args: Args) -> Result<()> {
         )
         .with_store(store, RESTORE_GRACE)
         .with_layout_file(LayoutFile::path_in(&cfg.state_dir))?
-        .with_settings_file(rawkvm_hub::settings::path_in(&cfg.state_dir))?,
+        .with_settings_file(rawkvm_hub::settings::path_in(&cfg.state_dir))?
+        .with_poweroff(poweroff_tx),
     );
+    tokio::spawn(rawkvm_hub::poweroff::serve(router.clone(), poweroff_rx));
     #[cfg(unix)]
     {
         use tokio::signal::unix::{signal, SignalKind};

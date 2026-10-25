@@ -254,6 +254,8 @@ struct State {
     settings: HubSettings,
     settings_path: Option<std::path::PathBuf>,
     next_generation: u64,
+    /// Why the hub is powering off, once a widget asked.
+    shutting_down: Option<String>,
 }
 
 pub struct Router {
@@ -269,6 +271,9 @@ pub struct Router {
     /// The receiver thread (`receiver_ctl`), while the HID++ interface is
     /// open. Locked after `state` when both are needed, never before.
     ctl: Mutex<Option<std::sync::mpsc::Sender<Cmd>>>,
+    /// Powers the board off (`main`); gets why. `None` in tests that do
+    /// not ask for it.
+    poweroff: Option<UnboundedSender<String>>,
 }
 
 impl Router {
@@ -290,7 +295,19 @@ impl Router {
             }),
             hidpp: Mutex::new(None),
             ctl: Mutex::new(None),
+            poweroff: None,
         }
+    }
+
+    /// The board did not power off: a later `Shutdown` tries again.
+    pub fn poweroff_failed(&self) {
+        self.lock().shutting_down = None;
+    }
+
+    /// Where a widget's `Shutdown` goes (ADR 0025).
+    pub fn with_poweroff(mut self, tx: UnboundedSender<String>) -> Self {
+        self.poweroff = Some(tx);
+        self
     }
 
     /// Use (and keep up to date) a persisted [`NodeStore`]. Its last active
@@ -772,6 +789,29 @@ impl Router {
             Control::SetFnSwap { slot, on } if kind == NodeKind::Widget => {
                 info!(node = %from, slot, on, "Fn swap requested by a widget");
                 self.receiver_cmd(sender, Cmd::SetFnSwap { slot, on });
+            }
+            Control::Shutdown if kind == NodeKind::Widget => {
+                if let Some(reason) = &st.shutting_down {
+                    sender.send(Control::ShuttingDown {
+                        reason: reason.clone(),
+                    });
+                    return;
+                }
+                let reason = format!("requested from {}", sender.hello.node_name);
+                warn!(node = %from, name = %sender.hello.node_name, "power-off requested by a widget");
+                // Nothing stays pressed on any PC.
+                self.release_everywhere(&mut st);
+                for n in st.nodes.values() {
+                    n.send(Control::ShuttingDown {
+                        reason: reason.clone(),
+                    });
+                }
+                match &self.poweroff {
+                    Some(tx) if tx.send(reason.clone()).is_ok() => {
+                        st.shutting_down = Some(reason);
+                    }
+                    _ => warn!("no power-off handler; the hub stays up"),
+                }
             }
             other => warn!(node = %from, msg = other.name(), "unexpected message"),
         }
@@ -1304,6 +1344,42 @@ mod tests {
 
     fn key_report(mods: u8, key: u8) -> Vec<u8> {
         vec![mods, 0, key, 0, 0, 0, 0, 0]
+    }
+
+    #[test]
+    fn only_a_widget_powers_the_hub_off() {
+        let (tx, mut off) = unbounded_channel();
+        let r = router().with_poweroff(tx);
+        r.add_device(device(0, BOOT_KEYBOARD));
+        let mut a = join(&r, NodeKind::Agent).unwrap();
+        let mut w = join(&r, NodeKind::Widget).unwrap();
+        a.msgs();
+        a.link.take();
+        w.msgs();
+
+        r.on_control(a.id, Control::Shutdown);
+        assert!(off.try_recv().is_err());
+        assert!(a.events().is_empty());
+
+        r.on_control(w.id, Control::Shutdown);
+        assert_eq!(off.try_recv().unwrap(), "requested from n");
+        let shutting = Control::ShuttingDown {
+            reason: "requested from n".into(),
+        };
+        assert_eq!(a.msgs(), std::slice::from_ref(&shutting));
+        assert_eq!(w.msgs(), std::slice::from_ref(&shutting));
+        // Every key released on the agent first.
+        assert!(a
+            .link
+            .take()
+            .iter()
+            .any(|(_, flags, _, _)| flags & FLAG_RELEASE_ALL != 0));
+
+        // A second request is only answered.
+        r.on_control(w.id, Control::Shutdown);
+        assert!(off.try_recv().is_err());
+        assert_eq!(w.msgs(), [shutting]);
+        assert!(a.msgs().is_empty());
     }
 
     #[test]

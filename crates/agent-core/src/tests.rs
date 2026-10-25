@@ -64,6 +64,8 @@ struct TestHub {
     cfg: HubConfig,
     dir: PathBuf,
     fingerprint: String,
+    /// What a widget's `Shutdown` hands to the power-off task.
+    poweroff: tokio::sync::mpsc::UnboundedReceiver<String>,
 }
 
 fn free_port() -> u16 {
@@ -88,17 +90,21 @@ async fn start_hub_with(layout: Vec<rawkvm_hub::layout::LinkSpec>) -> TestHub {
     };
     cfg.complete();
     let id = server::load_or_create_identity(&cfg.state_dir).unwrap();
-    let router = Arc::new(Router::new(
-        cfg.hub_id,
-        "test-hub".into(),
-        Options {
-            hysteresis: Duration::from_millis(150),
-            resend: Some(Duration::from_millis(5)),
-            hotkey: proto::Hotkey::default(),
-            layout,
-            ..Default::default()
-        },
-    ));
+    let (poweroff_tx, poweroff) = tokio::sync::mpsc::unbounded_channel();
+    let router = Arc::new(
+        Router::new(
+            cfg.hub_id,
+            "test-hub".into(),
+            Options {
+                hysteresis: Duration::from_millis(150),
+                resend: Some(Duration::from_millis(5)),
+                hotkey: proto::Hotkey::default(),
+                layout,
+                ..Default::default()
+            },
+        )
+        .with_poweroff(poweroff_tx),
+    );
     router.add_device(HidDevice {
         id: 0,
         name: "Logitech USB Receiver".into(),
@@ -117,6 +123,7 @@ async fn start_hub_with(layout: Vec<rawkvm_hub::layout::LinkSpec>) -> TestHub {
         cfg,
         dir,
         fingerprint,
+        poweroff,
     }
 }
 
@@ -257,6 +264,69 @@ async fn survey_lists_the_nodes_without_touching_the_config() {
     assert_eq!(after.hub_fingerprint, hub.fingerprint);
     assert!(!edge.with_extension("survey.toml").exists());
     let _ = std::fs::remove_dir_all(&hub.dir);
+}
+
+#[tokio::test]
+async fn a_widget_powers_the_hub_off() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut hub = start_hub().await;
+            let opts = |path: &PathBuf| AgentOptions {
+                config_path: path.clone(),
+                os: Os::Windows,
+            };
+            let sink = RecSink::default();
+            let a_path = agent_config(&hub, &hub.cfg.token, &hub.fingerprint);
+            let agent = {
+                let mut s = sink.clone();
+                tokio::task::spawn_local(async move { run(opts(&a_path), &mut s).await })
+            };
+            wait_for(&sink, |e| e.contains(&Ev::Activate)).await;
+
+            let w_path = agent_config(&hub, &hub.cfg.token, &hub.fingerprint);
+            let shared = widget::WidgetShared::new(|_| {});
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            let widget = {
+                let s = shared.clone();
+                tokio::task::spawn_local(
+                    async move { widget::run_widget(opts(&w_path), s, rx).await },
+                )
+            };
+            for _ in 0..300 {
+                if shared.snapshot().connected.is_some() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            tx.send(proto::Control::Shutdown).unwrap();
+
+            let reason = tokio::time::timeout(Duration::from_secs(3), hub.poweroff.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(reason.starts_with("requested from "), "{reason}");
+            // The widget shows "hub off" (the confirmation) and the agent
+            // let go of its devices; neither comes back at the normal pace.
+            wait_for(&sink, |e| e.last() == Some(&Ev::DestroyAll)).await;
+            for _ in 0..300 {
+                if shared.snapshot().hub_off.is_some() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            let st = shared.snapshot();
+            assert_eq!(st.hub_off.as_deref(), Some(reason.as_str()));
+            assert!(st.connected.is_none() && !st.fatal);
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+            assert!(
+                hub.router.status().nodes.is_empty(),
+                "{:?}",
+                hub.router.status()
+            );
+            agent.abort();
+            widget.abort();
+        })
+        .await;
 }
 
 #[tokio::test]

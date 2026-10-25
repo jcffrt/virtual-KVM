@@ -20,6 +20,10 @@ pub struct View {
     pub rtt_ms: Option<f64>,
     pub error: Option<String>,
     pub fatal: bool,
+    /// The hub said it is powering off (why); until it is back.
+    pub hub_off: Option<String>,
+    /// Windows: power the hub off when this PC shuts down.
+    pub power_off_with_pc: bool,
     pub active: Option<Uuid>,
     pub nodes: Vec<NodeView>,
     pub devices: Vec<DeviceView>,
@@ -302,6 +306,8 @@ pub fn view(st: &WidgetState, cfg: &AgentConfig) -> View {
         rtt_ms: st.rtt_ms,
         error: st.error.clone(),
         fatal: st.fatal,
+        hub_off: st.hub_off.clone(),
+        power_off_with_pc: cfg.power_off_hub_with_pc,
         active,
         nodes,
         devices: devices(st),
@@ -348,8 +354,9 @@ pub fn hotkey_extras(h: &proto::Hotkey) -> Option<String> {
 
 pub fn tray_key(v: &View) -> String {
     let mut k = format!(
-        "{}|{:?}|{:?}|{:?}",
+        "{}|{}|{:?}|{:?}|{:?}",
         v.connected,
+        v.hub_off.is_some(),
         v.hub_name,
         v.active,
         v.settings.map(|s| s.hotkey)

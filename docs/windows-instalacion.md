@@ -96,6 +96,10 @@ Logs: `%LOCALAPPDATA%\rawkvm\edge.log` (helper) y `%LOCALAPPDATA%\rawkvm\rawkvm-
 
 Prueba: con el Windows activo, llevar el puntero al borde enlazado (por ejemplo el izquierdo), lejos de las esquinas. La entrada pasa al otro equipo y el puntero aparece en su borde. Volver por ese mismo borde.
 
+### Si la placa del hub se alimenta de este PC
+
+Activar en RawKVM **Opciones → Este PC → Apagar el hub cuando este PC se apague**: al apagar o reiniciar Windows, el hub se apaga de forma limpia antes de perder la corriente ([ADR 0025](adr/0025-apagado-limpio-del-hub.md); detalles en [gadget-instalacion.md](gadget-instalacion.md), «Cortes de alimentación»).
+
 ## Problemas conocidos
 
 - **No cambia en la pantalla de bloqueo, en UAC ni en Ctrl+Alt+Supr**: Windows no deja leer el puntero en el escritorio seguro. Usar **Ctrl, Ctrl, N**, que lo interpreta el hub.
