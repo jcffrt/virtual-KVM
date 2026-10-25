@@ -693,3 +693,10 @@ Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario e
 - CI: workflow `macos-tar` (tarball y prueba de `setup.sh`/`uninstall.sh` en macos-14); `release.yml` lo adjunta.
 - Probado en este Mac sin instalar nada: `setup.sh --check` con los binarios nuevos (`RAWKVM_BIN`), `rawkvm-agent --check` y `rawkvm-edge --check` contra los logs reales.
 - Sin probar: la instalación desde cero (la hace el orquestador con el usuario: `uninstall.sh --purge` y `setup.sh`).
+
+## Fase 5.4 recibida; prueba desde cero del instalador de macOS pendiente (2026-10-24 22:30)
+
+- Entregado por VS Code (7195634 código, 326be99 docs; CI `macos-tar` 40157594894 con prueba de instalación en macos-14). Revisado `setup.sh` y `uninstall.sh`: lo que ejecuta con sudo y lo que borra es lo previsto (Karabiner con SHA-256 y firma del team fijados; `tccutil reset ListenEvent` solo tras confirmar; `--purge` borra configuración y logs, nunca el driver salvo `--karabiner`).
+- Preparado en el Mac: `~/Desktop/rawkvm-macos/` con `RawKVM-macos-0.5.0.tar.gz` (sha256 64232044…), `SHA256SUMS` generado a mano (en la release lo adjunta `release.yml`) y el paquete descomprimido en `pkg/RawKVM-macos-0.5.0`. Nada instalado todavía; este Mac sigue con la instalación manual v7 (agente, edge y widget 99a1485 / 50fee58 pendiente de widget).
+- Plan para mañana (decisión del usuario): `uninstall.sh --purge` → `setup.sh --from ~/Desktop/rawkvm-macos` → pegar `setup.sh --check` → relanzar sin preguntas → cerrar sesión y entrar. Tras el purge el Mac se empareja con node_id nuevo: `sudo rawkvm-hub --forget-node` de los viejos en la Pi y revisar el índice del atajo.
+- También pendientes: medida del margen de los 5 V en GAMER (prueba 7 del 3b; el usuario valora un hub USB alimentado entre GAMER y la Pi, que además mantendría el hub vivo con el PC apagado), confirmar con el próximo apagado limpio que el journal se conserva (ramlog), reinstalar el widget 50fee58 en Mac y GAMER, etiqueta v0.5.0 al cerrar la fase.
