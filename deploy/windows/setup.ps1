@@ -90,6 +90,13 @@ function Invoke-Program([string] $Exe, [string[]] $Arguments) {
 }
 
 # hub, token and pinned certificate of a config, never the token itself.
+# $null when the key or the value is missing (StrictMode throws on a
+# missing property of Get-ItemProperty).
+function Get-RegistryValue([string] $Key, [string] $Name) {
+    $item = Get-Item $Key -ErrorAction SilentlyContinue
+    if ($item) { $item.GetValue($Name) } else { $null }
+}
+
 function Get-PairingSummary([string] $Path) {
     if (-not (Test-Path $Path)) { return $null }
     $text = Get-Content -Raw $Path
@@ -147,8 +154,8 @@ function Invoke-Check {
 
     $missing = @()
     foreach ($name in $RunNames.Keys) {
-        $value = (Get-ItemProperty $RunKey -Name $name -ErrorAction SilentlyContinue).$name
-        $approved = (Get-ItemProperty $ApprovedKey -Name $name -ErrorAction SilentlyContinue).$name
+        $value = Get-RegistryValue $RunKey $name
+        $approved = Get-RegistryValue $ApprovedKey $name
         # Task Manager's "Disabled" keeps the Run value and marks it here.
         $disabled = $approved -and ($approved[0] -band 1)
         if (-not $value -or $value -notlike "*$($RunNames[$name])*" -or $disabled) { $missing += $name }
@@ -247,7 +254,9 @@ $source = $null
 if ($From) {
     $source = Expand-Release $From
     if (-not $source) { $source = (Resolve-Path $From).Path }
-} elseif ((Test-ProgramSet $here) -and $here -ne $InstallDir) {
+} elseif (-not $Version -and (Test-ProgramSet $here)) {
+    # The unpacked zip, or the install itself (setup.ps1 -Pair or -Check
+    # later): the programs already there.
     $source = $here
 } else {
     $source = Expand-Release (Get-Release $Version)
@@ -259,9 +268,10 @@ Write-Note "from $source"
 Get-Process rawkvm-edge, RawKVM -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Milliseconds 500
 New-Item -ItemType Directory -Force $InstallDir | Out-Null
+$sameFolder = [IO.Path]::GetFullPath($source).TrimEnd('\') -eq [IO.Path]::GetFullPath($InstallDir).TrimEnd('\')
 foreach ($f in $Programs + 'setup.ps1', 'uninstall.ps1', 'LEEME.md', 'COMMIT.txt') {
     $src = Join-Path $source $f
-    if ((Test-Path $src) -and ($source -ne $InstallDir)) { Copy-Item $src $InstallDir -Force }
+    if ((Test-Path $src) -and -not $sameFolder) { Copy-Item $src $InstallDir -Force }
 }
 # Downloaded files carry the "from the Internet" mark: SmartScreen would
 # stop an unsigned program at logon.

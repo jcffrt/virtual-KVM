@@ -36,7 +36,7 @@ powershell -ExecutionPolicy Bypass -File .\setup.ps1
 3. **Inicio de sesión**: los dos arrancan al iniciar sesión (clave `Run` del usuario: `RawKvmEdge` y `RawKVM`) y RawKVM aparece en el menú Inicio.
 4. **Arranca** los dos y **comprueba** todo (lo mismo que `-Check`, abajo).
 
-Repetirlo actualiza los programas sin tocar el emparejamiento.
+Repetirlo (con el comando de arriba o con el zip nuevo) actualiza los programas sin tocar el emparejamiento. El `setup.ps1` ya instalado usa los programas de su carpeta: sirve para `-Pair` y `-Check`, y para actualizar con `-Version` o `-From`.
 
 Opciones:
 
