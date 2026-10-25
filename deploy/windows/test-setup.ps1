@@ -94,15 +94,15 @@ function Get-EdgeProcess([bool] $Supervised) {
     @(Get-CimInstance Win32_Process -Filter "Name = 'rawkvm-edge.exe'" |
         Where-Object { ($_.CommandLine -like '*--supervised*') -eq $Supervised })
 }
-$supervisor = Get-EdgeProcess $false
-$child = Get-EdgeProcess $true
+$supervisor = @(Get-EdgeProcess $false)
+$child = @(Get-EdgeProcess $true)
 Assert-True ($supervisor.Count -eq 1 -and $child.Count -eq 1) "one supervisor and one helper ($($supervisor.Count), $($child.Count))"
 if ($child.Count -eq 1) {
     Stop-Process -Id $child[0].ProcessId -Force
     $back = $null
     foreach ($i in 1..20) {
         Start-Sleep -Milliseconds 500
-        $back = Get-EdgeProcess $true | Where-Object { $_.ProcessId -ne $child[0].ProcessId }
+        $back = @(Get-EdgeProcess $true) | Where-Object { $_.ProcessId -ne $child[0].ProcessId }
         if ($back) { break }
     }
     Assert-True ($null -ne $back) 'helper restarted after being killed'
@@ -121,12 +121,12 @@ Assert-True ($log -notmatch 'ab{64}|(ab){32}') 'the token is not printed'
 Assert-True ($log -match '(?m)^warn\s+restarted\s+.*died after') 'restarted line'
 
 Write-Host '== the helper ends with its supervisor'
-$supervisor = Get-EdgeProcess $false
-$child = Get-EdgeProcess $true
+$supervisor = @(Get-EdgeProcess $false)
+$child = @(Get-EdgeProcess $true)
 if ($supervisor.Count -eq 1) {
     Stop-Process -Id $supervisor[0].ProcessId -Force
     Start-Sleep -Seconds 2
-    Assert-True ((Get-EdgeProcess $true).Count -eq 0) "no helper left ($($child.Count) before)"
+    Assert-True (@(Get-EdgeProcess $true).Count -eq 0) "no helper left ($($child.Count) before)"
     Start-Process (Join-Path $dir 'rawkvm-edge.exe')
 }
 
