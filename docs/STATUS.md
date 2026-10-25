@@ -752,3 +752,21 @@ Con el tarball de c559c34 (run `macos-tar` 40213572924, sha256 16d83c98…) prep
 - **Bluetooth del Pi apagado como prueba**: va en el mismo chip combo (uwe5622) que el Wi‑Fi y RawKVM no lo usa. `systemctl disable --now bluetooth`, `rfkill block bluetooth` y regla `/etc/udev/rules.d/90-rawkvm-no-bluetooth.rules` para que siga bloqueado tras reiniciar. El kernel deja el chip encendido para el Wi‑Fi («can not power off, other module is on»). Si no vuelve a colgarse en unos días, queda; si se cuelga igual, se descarta la coexistencia.
 - **Watchdog de Wi‑Fi: pasa de opcional a necesario** (dos cuelgues en un día). Pedir a VS Code: servicio en el Pi que, sin respuesta del router durante ~1 min, reinicie la interfaz o recargue `sprdwl_ng`/`uwe5622_bsp_sdio`, y si no basta, reinicie el Pi (con `journalctl --flush` antes). ADR.
 - **DDC/CI en el Samsung C34H89x: no viable para la mitad derecha del PBP.** Desde el Mac (m1ddc, USB‑C): las escrituras llegan (brillo), las lecturas devuelven basura. Probados sin efecto el código Dell `0xE8` (segunda fuente PIP/PBP) y los de Samsung Odyssey `0xE3` (panel+fuente, `0x0210` = derecho→DisplayPort) con un m1ddc parcheado para códigos arbitrarios (scratchpad, no en el repo). Desde GAMER (dxva2) un volcado de los 256 códigos VCP antes y después de cambiar la fuente derecha con el mando del monitor no muestra ninguna diferencia: el monitor no expone el PBP por DDC. En modo PBP el usuario ve los dos equipos a la vez, así que el cambio de fuente solo tendría sentido para usar los 3440 px con el equipo activo; queda como idea documentada (`Deactivate{target}`, tabla de entradas por nodo) sin implementar.
+
+## Vigilante del Wi-Fi del hub y salto del reloj (2026-10-25, VS Code)
+
+- Pedido tras los dos cuelgues del firmware del uwe5622 de hoy. ADR 0029; guía en `hub-linux-instalacion.md` («Vigilante del Wi-Fi», «Hora del sistema»).
+- **`rawkvm-netwatch`**, segundo binario del paquete del hub, con `rawkvm-netwatch.service`:
+  - ping a la puerta de enlace cada 10 s, y las firmas del cuelgue en `/dev/kmsg`;
+  - 60 s sin respuesta, o la firma con el ping fallando, inician la escalada: reiniciar el Wi-Fi (nmcli o `ip link`), recargar `sprdwl_ng` y reiniciar la placa, con 30 s entre pasos;
+  - gracia de 2 min al arrancar, máximo 3 reinicios por hora y nada mientras Ethernet tenga la ruta;
+  - `--dry-run` y `--check`.
+- **Paquete:** lo activa una sola vez (un `disable` se respeta en las actualizaciones); `purge` lo limpia. Prueba del `.deb` ampliada.
+- **Reloj:** el hub y el vigilante registran «the system clock jumped by +N s (NTP?)». El hub no espera a NTP: tiene que funcionar sin Internet.
+- **Tests:** 12 de la lógica (escalada, gracia, firma, recuperación, límite, Ethernet, sin ruta o sin interfaz, reinicios futuros, salto del reloj).
+- **Sin probar en hardware.** Qué comprobar en la Pi:
+  1. `sudo rawkvm-netwatch --check`: ruta por `wlan0`, el ping responde y `sprdwl_ng` aparece cargado;
+  2. `journalctl -u rawkvm-netwatch`: «watching wlan0»;
+  3. en un rato sin uso, `sudo modprobe -r sprdwl_ng && sudo modprobe sprdwl_ng` a mano, para saber si el paso 2 sirve; si se bloquea, `--modules none`;
+  4. con `NETWATCH_ARGS="--dry-run --grace 0 --fail-after 20"`, cortar la radio y ver la escalada en el registro;
+  5. el salto del reloj en `journalctl -u rawkvm-hub -b` tras un arranque.

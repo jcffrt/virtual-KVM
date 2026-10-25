@@ -33,6 +33,7 @@ Qué hace el paquete:
 - Instala `/usr/bin/rawkvm-hub` y el servicio `rawkvm-hub.service`, y lo activa y lo arranca. El hub corre como root (`/dev/hidraw*`, ADR 0003).
 - Pone en la lista negra `hid_logitech_dj` y `hid_logitech_hidpp` (`/etc/modprobe.d/rawkvm.conf`). En la primera instalación los descarga, reenchufa los dispositivos Logitech y regenera el initramfs si existe, porque en Armbian el receptor se enumera dentro del initramfs. Las actualizaciones no vuelven a hacerlo, salvo que esos módulos estén cargados, así que no cortan el teclado.
 - Deja el registro del sistema persistente en la SD (ver [Registro persistente](#registro-persistente)).
+- Instala y activa el **vigilante del Wi-Fi**, `rawkvm-netwatch` (ver [Vigilante del Wi-Fi](#vigilante-del-wi-fi)).
 - **No** instala `/etc/rawkvm/hub.toml`: el hub lo crea en su primer arranque con un id y un token nuevos. Hay un ejemplo con todos los valores por defecto en `/usr/share/doc/rawkvm-hub/hub.toml.example`. Para cambiar algo, copiar solo esas líneas a `hub.toml` y `sudo systemctl restart rawkvm-hub`.
 
 Comprobar:
@@ -59,6 +60,38 @@ Antes de la versión 0.5.0 el hub se instalaba con `deploy/hub-linux/install.sh`
 
 - `sudo apt remove rawkvm-hub` para el servicio y quita el programa. La configuración, el token y el certificado se quedan, y reinstalar los recupera.
 - `sudo apt purge rawkvm-hub` borra además `/etc/rawkvm/hub.toml` y `/var/lib/rawkvm`. **El token y el certificado desaparecen: todos los agentes tendrán que emparejarse de nuevo** con el hub que se instale después. No toca `/etc/rawkvm/agent.toml` (es del gadget, si está en la misma placa) ni las copias `hub.toml.bak-*`.
+
+## Vigilante del Wi-Fi
+
+El firmware del Wi-Fi de la Orange Pi Zero 2W (chip uwe5622, driver `sprdwl`) a veces se cuelga. En el registro del kernel aparece `sprdwl:[WIFI_CMD_TX_DATA]timeout` y, segundos después, `NETDEV WATCHDOG: wlan0 (unisoc_wifi): transmit queue 0 timed out`. La placa sigue en marcha, pero sin radio: los equipos que llegan por la red se quedan sin teclado ni ratón (el PC del gadget USB no). Puede tardar más de diez minutos en volver solo.
+
+`rawkvm-netwatch` (servicio `rawkvm-netwatch.service`, [ADR 0029](adr/0029-vigilante-del-wifi.md)) hace ping a la puerta de enlace cada 10 s. Cuando deja de responder durante 60 s, o en cuanto el kernel registra el cuelgue y el ping falla, escala:
+
+1. **Reinicia el Wi-Fi**: `nmcli radio wifi off` y `on` con NetworkManager; si no, `ip link set wlan0 down` y `up`. Espera 30 s.
+2. **Recarga el driver** (`modprobe -r sprdwl_ng` y `modprobe sprdwl_ng`), solo si el módulo está cargado. Espera 30 s.
+3. **Reinicia la placa** (`journalctl --flush`, `sync`, `systemctl reboot`). Como máximo 3 veces por hora; después solo lo registra y vuelve a empezar por el paso 1. Así no entra en bucle si el que falla es el router.
+
+Si el ping vuelve en cualquier momento, para y lo registra. No hace nada durante los 2 primeros minutos tras arrancar, mientras se levanta el Wi-Fi, ni mientras otra interfaz (Ethernet) tenga la ruta por defecto. Cada paso queda en el registro con su motivo:
+
+```sh
+journalctl -u rawkvm-netwatch            # «no answer from the gateway for 60 s: restarting the Wi-Fi», «network back after 75 s down»
+sudo rawkvm-netwatch --check             # ruta, ping, módulos y reinicios de la última hora; no cambia nada
+```
+
+Opciones en `/etc/default/rawkvm-netwatch` (después, `sudo systemctl restart rawkvm-netwatch`):
+
+- `--dry-run`: registra los pasos, pero no los da.
+- `--modules none`: sin el paso 2.
+- `--modules sprdwl_ng,uwe5622_bsp_sdio`: recarga también el módulo de la tarjeta.
+- `--max-reboots`, `--fail-after`, `--grace`, etc.: `rawkvm-netwatch --help`.
+
+Para pararlo hasta el siguiente arranque: `sudo systemctl stop rawkvm-netwatch`. Para desactivarlo del todo: `sudo systemctl disable --now rawkvm-netwatch`; las actualizaciones respetan esa decisión.
+
+El **perro guardián del H616** (`sunxi-wdt`, ya activo) reinicia la placa si se cuelga el kernel, pero no ve un cuelgue de la radio: por eso hace falta este vigilante.
+
+## Hora del sistema
+
+La placa no tiene batería de reloj: arranca con una fecha falsa hasta que NTP la corrige. Las líneas del registro de antes de la sincronización llevan esa hora. El hub y `rawkvm-netwatch` lo dicen al pasar: «the system clock jumped by +N s (NTP?)». Para ver los tiempos desde el arranque, sin depender del reloj: `journalctl -b -o short-monotonic`. El hub no espera a NTP a propósito: tiene que funcionar también sin Internet.
 
 ## Registro persistente
 

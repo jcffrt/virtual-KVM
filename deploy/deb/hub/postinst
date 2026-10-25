@@ -157,9 +157,23 @@ if systemd_running; then
     systemctl restart rawkvm-hub.service
 fi
 
+# The Wi-Fi watchdog (ADR 0029): enabled once, by the first install that
+# has it; a later `systemctl disable rawkvm-netwatch` survives upgrades.
+# systemctl enable also works without systemd running (an image build).
+netwatch_marker=/var/lib/rawkvm-netwatch/enabled-by-package
+if ! [ -e "$netwatch_marker" ]; then
+    systemctl enable rawkvm-netwatch.service >/dev/null 2>&1 || true
+    install -d /var/lib/rawkvm-netwatch
+    : > "$netwatch_marker"
+    echo "rawkvm-hub: Wi-Fi watchdog enabled (rawkvm-netwatch; options in /etc/default/rawkvm-netwatch)"
+fi
+if systemd_running && systemctl is-enabled --quiet rawkvm-netwatch.service; then
+    systemctl restart rawkvm-netwatch.service
+fi
+
 echo "rawkvm-hub: config /etc/rawkvm/hub.toml (example: /usr/share/doc/rawkvm-hub/hub.toml.example)"
 echo "rawkvm-hub: pairing token: sudo rawkvm-hub --show-token"
-echo "rawkvm-hub: log: journalctl -u rawkvm-hub -f"
+echo "rawkvm-hub: log: journalctl -u rawkvm-hub -f (Wi-Fi watchdog: journalctl -u rawkvm-netwatch)"
 
 # Flush to disk now: boards fed from a PC lose power abruptly, and the SD
 # card may otherwise keep these writes in its cache for minutes.

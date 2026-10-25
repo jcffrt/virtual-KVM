@@ -77,6 +77,12 @@ cmp /etc/rawkvm/agent.toml /tmp/agent.toml.before || fail "agent.toml changed"
 grep -qx 'RAWKVM_GADGET_ARGS="--host-os linux --no-hidpp"' /etc/default/rawkvm-agent-gadget ||
     fail "gadget options not carried over: $(cat /etc/default/rawkvm-agent-gadget)"
 grep -q '^ExecStart=/usr/bin/rawkvm-hub ' /lib/systemd/system/rawkvm-hub.service || fail "hub unit path"
+netwatch_link=/etc/systemd/system/multi-user.target.wants/rawkvm-netwatch.service
+[ -L "$netwatch_link" ] || fail "Wi-Fi watchdog not enabled"
+[ -f /etc/default/rawkvm-netwatch ] || fail "watchdog options missing"
+/usr/bin/rawkvm-netwatch --version
+# No such interface here: nothing to ping, and it changes nothing.
+/usr/bin/rawkvm-netwatch --check --iface rawkvm-none || fail "rawkvm-netwatch --check"
 grep -qx 'XTRA_RSYNC_TO=(--exclude foo --exclude journal) # rawkvm-hub' /etc/default/orangepi-ramlog ||
     fail "ramlog TO: $(cat /etc/default/orangepi-ramlog)"
 grep -qx 'XTRA_RSYNC_FROM=(--exclude journal) # rawkvm-hub' /etc/default/orangepi-ramlog ||
@@ -88,8 +94,10 @@ step "the new hub reads the existing hub.toml"
 /usr/bin/rawkvm-agent-gadget --version
 cmp /etc/rawkvm/hub.toml /tmp/hub.toml.before || fail "hub.toml rewritten by --show-token"
 
-step "upgrade (same version again)"
+step "upgrade (same version again) keeps a disabled watchdog disabled"
+systemctl disable rawkvm-netwatch.service
 dpkg -i "$hub" "$gadget" </dev/null
+[ ! -e "$netwatch_link" ] || fail "upgrade enabled the watchdog again"
 [ "$(grep -c '^RAWKVM_GADGET_ARGS=' /etc/default/rawkvm-agent-gadget)" = 1 ] || fail "options added twice"
 [ "$(grep -c 'exclude journal' /etc/default/orangepi-ramlog)" = 2 ] || fail "ramlog excludes added twice"
 
@@ -107,6 +115,8 @@ dpkg -P rawkvm-hub
 [ -f /etc/rawkvm/agent.toml ] || fail "hub purge removed the gadget's agent.toml"
 [ -f /etc/rawkvm/hub.toml.bak-v3 ] || fail "hub purge removed the backup"
 cmp /etc/default/orangepi-ramlog /tmp/ramlog.before || fail "purge did not restore orangepi-ramlog: $(cat /etc/default/orangepi-ramlog)"
+[ ! -e /etc/default/rawkvm-netwatch ] || fail "purge left the watchdog options"
+[ ! -e /var/lib/rawkvm-netwatch ] || fail "purge left the watchdog state"
 dpkg -P rawkvm-agent-gadget
 [ ! -e /etc/rawkvm/agent.toml ] || fail "gadget purge left agent.toml"
 [ ! -e /etc/modprobe.d/rawkvm.conf ] || fail "purge left the blacklist"
@@ -117,4 +127,5 @@ dpkg -i "$hub" "$gadget" </dev/null | tee /tmp/fresh.log
 grep -q -- '--pair --hub' /tmp/fresh.log || fail "no pairing hint for the gadget"
 [ ! -e /etc/rawkvm/hub.toml ] || fail "the package must not ship hub.toml"
 /usr/bin/rawkvm-hub --show-token | grep -Eq '^[0-9a-f]{64}$' || fail "first start makes no token"
+[ -L "$netwatch_link" ] || fail "fresh install did not enable the Wi-Fi watchdog"
 echo "all package checks passed"

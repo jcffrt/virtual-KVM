@@ -6,7 +6,9 @@ set -e
 case "$1" in
 purge)
     rm -f /etc/rawkvm/hub.toml /etc/rawkvm/hub.tmp
-    rm -rf /var/lib/rawkvm
+    rm -rf /var/lib/rawkvm /var/lib/rawkvm-netwatch
+    # Enabled without systemd running (prerm could not disable it then).
+    rm -f /etc/systemd/system/multi-user.target.wants/rawkvm-netwatch.service
     rmdir /etc/rawkvm 2>/dev/null || true
     mount=/etc/systemd/system/var-log-journal.mount
     if [ -f "$mount" ] && grep -q RawKVM "$mount"; then

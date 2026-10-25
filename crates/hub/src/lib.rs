@@ -10,6 +10,7 @@ pub mod hidraw;
 pub mod hidrec;
 pub mod hotkey;
 pub mod layout;
+pub mod netwatch;
 pub mod nodes;
 pub mod poweroff;
 pub mod receiver;

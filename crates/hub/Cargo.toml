@@ -14,6 +14,11 @@ path = "src/lib.rs"
 name = "rawkvm-hub"
 path = "src/main.rs"
 
+# Wi-Fi watchdog of the hub board (ADR 0029).
+[[bin]]
+name = "rawkvm-netwatch"
+path = "src/netwatch_main.rs"
+
 [dependencies]
 proto.workspace = true
 anyhow.workspace = true
@@ -55,10 +60,14 @@ depends = "systemd"
 extended-description = """\
 Reads the Logitech receiver (Unifying, Bolt, Lightspeed) and forwards its \
 raw HID reports to the RawKVM agents of the PCs over QUIC. Includes the \
-blacklist of hid_logitech_dj, a persistent journal and the systemd service."""
+blacklist of hid_logitech_dj, a persistent journal, the systemd service and \
+rawkvm-netwatch, a Wi-Fi watchdog that restarts the radio when it hangs."""
 maintainer-scripts = "../../deploy/deb/hub/"
 assets = [
     ["target/release/rawkvm-hub", "usr/bin/", "755"],
+    ["target/release/rawkvm-netwatch", "usr/bin/", "755"],
+    ["../../deploy/hub-linux/rawkvm-netwatch.service", "lib/systemd/system/", "644"],
+    ["../../deploy/hub-linux/rawkvm-netwatch.default", "etc/default/rawkvm-netwatch", "644"],
     ["../../deploy/hub-linux/rawkvm-hub.service", "lib/systemd/system/", "644"],
     ["../../deploy/hub-linux/modprobe-rawkvm.conf", "etc/modprobe.d/rawkvm.conf", "644"],
     ["../../deploy/hub-linux/journald-rawkvm.conf", "etc/systemd/journald.conf.d/rawkvm.conf", "644"],

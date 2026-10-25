@@ -1,0 +1,23 @@
+# RawKVM Wi-Fi watchdog (ADR 0029): pings the gateway and, when the radio
+# hangs, restarts the Wi-Fi, reloads its driver, then reboots (at most 3
+# times an hour). Options: /etc/default/rawkvm-netwatch. Stopped by hand
+# (systemctl stop) it does nothing until the next boot; disable to keep it
+# off.
+[Unit]
+Description=RawKVM Wi-Fi watchdog (restarts the radio when the hub loses the network)
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/default/rawkvm-netwatch
+ExecStart=/usr/bin/rawkvm-netwatch $NETWATCH_ARGS
+Restart=on-failure
+RestartSec=10
+StateDirectory=rawkvm-netwatch
+# Root without most limits: it runs ip, nmcli, modprobe and systemctl
+# reboot.
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

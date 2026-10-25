@@ -204,6 +204,20 @@ async fn serve(args: Args) -> Result<()> {
         .with_poweroff(poweroff_tx),
     );
     tokio::spawn(rawkvm_hub::poweroff::serve(router.clone(), poweroff_rx));
+    // A board without a battery starts with a wrong date until NTP sets
+    // it: say so in the log, whose earlier lines carry the wrong time.
+    tokio::spawn(async {
+        use rawkvm_hub::netwatch::{unix, ClockJump};
+        let start = std::time::Instant::now();
+        let mono = || start.elapsed().as_secs() as i64;
+        let mut clock = ClockJump::new(unix(std::time::SystemTime::now()), mono());
+        loop {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            if let Some(j) = clock.check(unix(std::time::SystemTime::now()), mono()) {
+                info!("the system clock jumped by {j:+} s (NTP?): earlier log times are off by that much");
+            }
+        }
+    });
     #[cfg(unix)]
     {
         use tokio::signal::unix::{signal, SignalKind};

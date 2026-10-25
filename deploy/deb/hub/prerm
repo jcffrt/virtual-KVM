@@ -4,5 +4,6 @@
 set -e
 if [ "$1" = remove ] && [ -d /run/systemd/system ]; then
     systemctl disable --now rawkvm-hub.service >/dev/null 2>&1 || true
+    systemctl disable --now rawkvm-netwatch.service >/dev/null 2>&1 || true
 fi
 exit 0

@@ -1,0 +1,8 @@
+# Options of rawkvm-netwatch, the Wi-Fi watchdog of the hub (ADR 0029):
+# `rawkvm-netwatch --help`. Apply with `sudo systemctl restart
+# rawkvm-netwatch`. Examples:
+#   NETWATCH_ARGS="--dry-run"                     log the steps, take none
+#   NETWATCH_ARGS="--modules sprdwl_ng,uwe5622_bsp_sdio"
+#   NETWATCH_ARGS="--modules none"                no driver reload
+#   NETWATCH_ARGS="--max-reboots 1"
+NETWATCH_ARGS=""
