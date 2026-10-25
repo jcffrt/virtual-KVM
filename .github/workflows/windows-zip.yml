@@ -80,7 +80,12 @@ jobs:
           # Same format as sha256sum, for setup.ps1 -From dist.
           "{0}  {1}" -f (Get-FileHash -Algorithm SHA256 dist/$zip).Hash.ToLower(), $zip |
             Out-File -Encoding ascii dist/SHA256SUMS
+          # The version resource (build.rs) must be there: without it
+          # Defender's machine learning flags the edge helper (ADR 0024).
+          $info = (Get-Item package/rawkvm-edge.exe).VersionInfo
+          if ($info.FileDescription -ne 'RawKVM edge helper') { throw "rawkvm-edge.exe has no version resource" }
           Get-ChildItem package, dist | Format-Table Name, Length
+          Get-FileHash -Algorithm SHA256 package/*.exe | Format-Table Hash, Path
       - name: Install test
         shell: powershell
         run: deploy/windows/test-setup.ps1 -Dist dist

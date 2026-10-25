@@ -77,5 +77,11 @@ Además, `install.ps1` / `uninstall.ps1` eran los del driver VHF, aparcado (ADR 
 ## Consecuencias
 
 - La instalación en el PC Windows es un comando, sin datos que copiar de la Pi salvo la IP y el token.
+- **Microsoft Defender** detectó el primer `rawkvm-edge.exe` 0.5.0 en el GAMER como `Trojan:Win32/Bearfoos.A!ml`. Era un falso positivo de la detección por aprendizaje automático, con un programa sin firma, sin recurso de versión, sin manifiesto ni icono. El widget, que sí los lleva, no se detectó, y el helper v6 (mingw) tampoco.
+  - El helper no usa ganchos de teclado ni Raw Input: solo `GetCursorPos`/`SetCursorPos` a 120 Hz, `EnumDisplayMonitors`, la conexión QUIC saliente y la clave `Run`. No hay nada que quitar sin cambiar lo que hace.
+  - Mitigación:
+    - `build.rs` incrusta, en la build MSVC, el recurso de versión (producto, descripción, versión), un manifiesto `asInvoker` y el icono, y el CI comprueba que están;
+    - `setup.ps1` y `-Check` reconocen el bloqueo (error Win32 225/226, sea cual sea el idioma, o el fichero retirado) y explican las dos salidas: avisar a Microsoft del falso positivo o permitirlo con administrador.
+  - Si aun así se detecta, lo siguiente es firmar con un certificado, que queda fuera.
 - Los `.exe` siguen sin firmar: abiertos con doble clic desde el zip descargado, SmartScreen avisa. Firmar con un certificado de pago queda fuera.
 - Sin probar en el CI: emparejar contra un hub real (no hay hub en el runner de Windows; `survey` y la elección del gadget tienen tests en el workspace), la lectura oculta del token y la pregunta con varios gadgets.

@@ -67,6 +67,8 @@ $ApprovedKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Startup
 $RunNames = @{ RawKvmEdge = $Edge; RawKVM = $Widget }
 $Shortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\RawKVM.lnk'
 $Programs = 'rawkvm-edge.exe', 'RawKVM.exe'
+# Set by Invoke-Program when Microsoft Defender refuses to start a program.
+$script:Blocked = $null
 
 function Write-Step([string] $Message) { Write-Host "`n== $Message" -ForegroundColor Cyan }
 function Write-Note([string] $Message) { Write-Host "   $Message" }
@@ -83,10 +85,59 @@ function Write-CheckLine([string] $Level, [string] $What, [string] $Detail) {
 
 # Run a GUI-subsystem program of ours and wait for it (the pipe makes
 # PowerShell wait). Returns its output lines; $LASTEXITCODE is its code.
+# If Microsoft Defender blocks it, $script:Blocked names it, nothing is
+# returned and $LASTEXITCODE is 225.
 function Invoke-Program([string] $Exe, [string[]] $Arguments) {
     # Native stderr must not become a terminating error.
     $ErrorActionPreference = 'Continue'
-    & $Exe @Arguments 2>&1 | ForEach-Object { "$_" }
+    try {
+        & $Exe @Arguments 2>&1 | ForEach-Object { "$_" }
+    } catch {
+        if (-not (Test-DefenderBlock $_)) { throw }
+        $script:Blocked = $Exe
+        $global:LASTEXITCODE = 225
+    }
+}
+
+# Defender refused to start a program: ERROR_VIRUS_INFECTED (225) or
+# ERROR_VIRUS_DELETED (226) somewhere in the exception, whatever the
+# language of the message.
+function Test-DefenderBlock([Management.Automation.ErrorRecord] $Record) {
+    for ($e = $Record.Exception; $e; $e = $e.InnerException) {
+        if ($e -is [ComponentModel.Win32Exception] -and $e.NativeErrorCode -in 225, 226) { return $true }
+        # HRESULT_FROM_WIN32 of both: 0x800700E1, 0x800700E2.
+        if ($e.HResult -in -2147024671, -2147024670) { return $true }
+    }
+    $Record.ToString() -match 'virus|potentially unwanted|potencialmente no deseado'
+}
+
+# The name of Defender's detection of $Exe, if this user may read it.
+function Get-DefenderThreat([string] $Exe) {
+    try {
+        $leaf = Split-Path -Leaf $Exe
+        $d = Get-MpThreatDetection -ErrorAction Stop | Where-Object { "$($_.Resources)" -like "*$leaf*" } |
+            Sort-Object InitialDetectionTime -Descending | Select-Object -First 1
+        if ($d) { return (Get-MpThreat -ThreatID $d.ThreatID -ErrorAction Stop).ThreatName }
+    } catch {
+        Write-Verbose "Get-MpThreatDetection: $_"
+    }
+    $null
+}
+
+# What to do when Defender blocks or removes one of our programs: an
+# unsigned program flagged by its machine learning (ADR 0024).
+function Write-DefenderHelp([string] $Exe, [string] $Hash) {
+    $threat = Get-DefenderThreat $Exe
+    $what = if ($threat) { " as $threat" } else { '' }
+    Write-Host ''
+    Write-Host "Microsoft Defender blocked $(Split-Path -Leaf $Exe)$what." -ForegroundColor Yellow
+    Write-Host '  It is a false positive of its automatic detection of unsigned programs. Either:'
+    Write-Host '  1. Report it to Microsoft (no administrator needed; usually fixed in a few days):'
+    Write-Host '     https://www.microsoft.com/wdsi/filesubmission  (Home customer, "Incorrectly detected")'
+    if ($Hash) { Write-Host "     SHA-256 $Hash" }
+    Write-Host '  2. Or allow it on this PC (needs an administrator): Windows Security >'
+    Write-Host '     Virus & threat protection > Protection history > the detection > Actions >'
+    Write-Host '     Allow on device (Restore, if it was quarantined). Then run setup.ps1 again.'
 }
 
 # hub, token and pinned certificate of a config, never the token itself.
@@ -125,12 +176,16 @@ function Get-HubState([string] $Path) {
 
 function Invoke-Check {
     $script:Worst = 0
+    $script:Blocked = $null
     $edgeVersion = if (Test-Path $Edge) { (Invoke-Program $Edge @('--version')) -join ' ' } else { 'missing' }
+    if ($script:Blocked) { $edgeVersion = 'blocked by Microsoft Defender' }
     $widgetVersion = if (Test-Path $Widget) { (Get-Item $Widget).VersionInfo.ProductVersion } else { 'missing' }
     $level = if ((Test-Path $Edge) -and (Test-Path $Widget)) { 'info' } else { 'FAIL' }
     Write-CheckLine $level 'version' "$edgeVersion; widget $widgetVersion; in $InstallDir"
 
-    if (Test-Path $Edge) {
+    if ($script:Blocked) {
+        Write-CheckLine 'FAIL' 'defender' "$Edge blocked by Microsoft Defender (see below)"
+    } elseif (Test-Path $Edge) {
         # config, for node and hub of the edge helper.
         foreach ($l in (Invoke-Program $Edge @('--check'))) {
             if ($l -match '^(ok|info|warn|FAIL)\s+(\S+(?: node)?)\s+(.*)$' -and $Matches[2] -ne 'version') {
@@ -191,6 +246,10 @@ function Invoke-Check {
 
     if (Test-Path $OldEdge) {
         Write-CheckLine 'warn' 'old files' "$OldEdge (setup.ps1 removes it)"
+    }
+    if ($script:Blocked) {
+        $hash = try { (Get-FileHash -Algorithm SHA256 $Edge -ErrorAction Stop).Hash.ToLower() } catch { $null }
+        Write-DefenderHelp $Edge $hash
     }
     $script:Worst -lt 3
 }
@@ -261,7 +320,14 @@ if ($From) {
 } else {
     $source = Expand-Release (Get-Release $Version)
 }
-if (-not (Test-ProgramSet $source)) { throw "$source has no $($Programs -join ' and ')" }
+if (-not (Test-ProgramSet $source)) {
+    if ($source -and (Test-Path (Join-Path $source 'RawKVM.exe'))) {
+        # Defender removes a file it detects right after it is unpacked.
+        Write-DefenderHelp (Join-Path $source 'rawkvm-edge.exe') $null
+        exit 1
+    }
+    throw "$source has no $($Programs -join ' and ')"
+}
 Write-Note "from $source"
 
 # Stop both, wherever they run from (older installs too).
@@ -277,6 +343,16 @@ foreach ($f in $Programs + 'setup.ps1', 'uninstall.ps1', 'LEEME.md', 'COMMIT.txt
 # stop an unsigned program at logon.
 Get-ChildItem $InstallDir | Unblock-File
 Write-Note "installed in $InstallDir"
+
+# Defender may refuse the edge helper (ADR 0024): say so now, not as an
+# exception dump later.
+$edgeHash = try { (Get-FileHash -Algorithm SHA256 (Join-Path $source 'rawkvm-edge.exe')).Hash.ToLower() } catch { $null }
+$script:Blocked = $null
+if (Test-Path $Edge) { Invoke-Program $Edge @('--version') | Out-Null }
+if ($script:Blocked -or -not (Test-Path $Edge)) {
+    Write-DefenderHelp $Edge $edgeHash
+    exit 1
+}
 
 if (Test-Path $OldEdge) {
     Remove-Item $OldEdge -Force

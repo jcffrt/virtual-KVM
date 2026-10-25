@@ -10,6 +10,9 @@ description = "RawKVM edge helper for Windows: switches machines at screen edges
 name = "rawkvm-edge"
 path = "src/main.rs"
 
+[build-dependencies]
+winresource = "0.1"
+
 [dependencies]
 proto.workspace = true
 agent-core.workspace = true

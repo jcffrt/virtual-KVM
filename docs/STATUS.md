@@ -649,3 +649,13 @@ Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario e
   - `systemctl poweroff` desde el servicio en la Pi;
   - los avisos de Windows en un apagado y un reinicio reales (con Inicio rápido incluido);
   - el margen que da el GAMER entre el aviso a las aplicaciones y el corte de los 5 V.
+
+## Fase 5.3: Microsoft Defender bloquea el helper (2026-10-25)
+
+- En el GAMER, el despliegue v7 funcionó salvo `rawkvm-edge.exe` 0.5.0 (MSVC, sha256 `8f1ecc46…`): `Trojan:Win32/Bearfoos.A!ml`, falso positivo de la detección automática. El widget (con recursos de versión) y el helper v6 (mingw) no se detectaron.
+- Mitigación (ADR 0024):
+  - recurso de versión, manifiesto e icono en el helper (`build.rs`, solo MSVC; el CI comprueba que están);
+  - `setup.ps1` y `-Check` detectan el bloqueo y explican cómo avisar a Microsoft o permitirlo;
+  - documentado en `windows-instalacion.md`.
+- Pendiente de ver en el GAMER si el binario nuevo pasa.
+

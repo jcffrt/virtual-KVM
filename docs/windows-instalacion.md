@@ -57,6 +57,9 @@ Sin consola (desde otro script) hay que pasar `-TokenFile`, y `-Hub` si hay más
 
 - **ExecutionPolicy**: Windows no ejecuta scripts `.ps1` descargados con la política por defecto. `powershell -ExecutionPolicy Bypass -File …` la salta solo para ese script, sin cambiar nada del sistema.
 - **SmartScreen**: los `.exe` no están firmados (un certificado de firma de código es de pago). Instalados con `setup.ps1` no hay aviso, porque les quita la marca de descargado de Internet (`Unblock-File`), y tampoco al iniciar sesión. Si se abre un `.exe` con doble clic desde el zip descargado, SmartScreen muestra «Windows protegió su PC»: **Más información → Ejecutar de todas formas**.
+- **Microsoft Defender**: su detección automática puede tomar `rawkvm-edge.exe` por un troyano (en el GAMER, con 0.5.0 sin recursos de versión: `Trojan:Win32/Bearfoos.A!ml`). El `!ml` indica una detección por aprendizaje automático, típica de programas sin firma: es un falso positivo. El helper no instala ganchos de teclado ni lee teclas; solo lee y mueve el puntero (`GetCursorPos`/`SetCursorPos`) y habla con el hub. `setup.ps1` y `-Check` lo detectan y dicen qué hacer:
+  - **avisar a Microsoft** (sin administrador; suele quedar corregido en unos días): <https://www.microsoft.com/wdsi/filesubmission>, «Home customer», «Incorrectly detected», con el fichero o su SHA-256, que `setup.ps1` muestra;
+  - **o permitirlo en este PC** (necesita administrador): Seguridad de Windows → Protección antivirus y contra amenazas → Historial de protección → la detección → Acciones → **Permitir en el dispositivo** (o **Restaurar**, si lo puso en cuarentena). Después, `setup.ps1` otra vez.
 - **Firewall**: la conexión con el hub es saliente (QUIC, UDP 4433) y no necesita regla. Solo la búsqueda por mDNS recibe respuestas entrantes (UDP 5353). El firewall puede preguntar la primera vez, o descartarlas sin preguntar si el usuario no es administrador. Por eso `setup.ps1` guarda la dirección del hub y los programas no vuelven a usar mDNS. Si la búsqueda no encuentra el hub, escribir su IP.
 
 ## Comprobar
@@ -89,6 +92,7 @@ Sale con 0 si nada es `FAIL`. Lo habitual:
 | `FAIL hub … certificate is not the pinned one` | El hub se reinstaló: `setup.ps1 -Pair`. |
 | `warn hub … reconnecting` | El hub no responde: ¿está en marcha y en la misma red? |
 | `FAIL widget … not paired` | Abrir RawKVM una vez (toma el emparejamiento del helper al arrancar). |
+| `FAIL defender …` | Microsoft Defender bloquea el helper: ver «Avisos de Windows» arriba. |
 | `FAIL autostart …` | `setup.ps1`. Si se desactivó en el Administrador de tareas (Inicio), `setup.ps1` lo vuelve a activar. |
 | `FAIL processes … not running` | Cerrar sesión y volver a entrar, o `setup.ps1`. El log dice por qué se paró. |
 
