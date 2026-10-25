@@ -1151,6 +1151,7 @@ version = "0.5.0"
 dependencies = [
  "anyhow",
  "clap",
+ "dirs",
  "rawkvm-agent-core",
  "rawkvm-proto",
  "tokio",

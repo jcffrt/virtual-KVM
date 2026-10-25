@@ -1,0 +1,83 @@
+# The macOS release tarball (ADR 0026): the agent, the edge helper, the
+# widget (RawKVM.app) and the install scripts, for Apple silicon, plus an
+# install test of setup.sh / uninstall.sh on the runner. release.yml calls
+# it; it also runs when its pieces change, or on demand.
+name: macos-tar
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  push:
+    # Branches only: tags go through release.yml, which calls this.
+    branches: ["**"]
+    paths:
+      - widget/**
+      - crates/agent-core/**
+      - crates/proto/**
+      - crates/agent-macos/**
+      - crates/edge-macos/**
+      - deploy/macos/**
+      - docs/macos-instalacion.md
+      - .github/workflows/macos-tar.yml
+  pull_request:
+    paths:
+      - widget/**
+      - crates/agent-core/**
+      - crates/proto/**
+      - crates/agent-macos/**
+      - crates/edge-macos/**
+      - deploy/macos/**
+      - .github/workflows/macos-tar.yml
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  tar:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: widget/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            widget/src-tauri -> target
+      - name: Agent and edge helper
+        run: cargo build --release -p rawkvm-agent-macos -p rawkvm-edge-macos
+      - name: Widget
+        working-directory: widget
+        run: |
+          npm ci
+          npm run build
+          npx tauri build --bundles app
+      - name: Tarball and SHA256SUMS
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          name=RawKVM-macos-$version
+          pkg=package/$name
+          mkdir -p "$pkg" dist
+          cp target/release/rawkvm-agent-macos "$pkg/rawkvm-agent"
+          cp target/release/rawkvm-edge-macos "$pkg/rawkvm-edge"
+          # Ad hoc here; setup.sh signs with "RawKVM Local" (ADR 0016).
+          ditto widget/src-tauri/target/release/bundle/macos/RawKVM.app "$pkg/RawKVM.app"
+          codesign --force --deep --sign - "$pkg/RawKVM.app"
+          cp deploy/macos/setup.sh deploy/macos/uninstall.sh deploy/macos/install.sh \
+            deploy/macos/install-edge.sh deploy/macos/install-widget.sh deploy/macos/signing.sh \
+            deploy/macos/make-signing-identity.sh deploy/macos/*.plist "$pkg/"
+          cp docs/macos-instalacion.md "$pkg/LEEME.md"
+          git rev-parse HEAD > "$pkg/COMMIT.txt"
+          tar -czf "dist/$name.tar.gz" -C package "$name"
+          (cd dist && shasum -a 256 "$name.tar.gz" > SHA256SUMS && cat SHA256SUMS)
+          ls -l dist "$pkg"
+      - name: Install test
+        run: sh deploy/macos/test-setup.sh dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-tar
+          path: dist/RawKVM-macos-*.tar.gz

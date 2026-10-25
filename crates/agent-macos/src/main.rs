@@ -12,22 +12,26 @@ mod leds;
 mod mapper;
 mod vhid;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use agent_core::{AgentConfig, AgentOptions, HidSink, OutputReceiver};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Parser;
 use mapper::{Mapper, Output};
-use proto::{Edge, HidDevice, Os};
+use proto::{Edge, HidDevice, NodeKind, Os};
 use tracing::{debug, info, warn};
 use vhid::{KeyboardParams, VirtualHid};
 
 /// Config used when running as root (the LaunchDaemon).
 const SYSTEM_CONFIG: &str = "/Library/Application Support/rawkvm/agent.toml";
+/// Where the LaunchDaemon writes its log (cc.olitec.rawkvm.agent.plist).
+const SYSTEM_LOG: &str = "/var/log/rawkvm-agent.log";
+
+const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("RAWKVM_COMMIT"), ")");
 
 #[derive(Parser, Debug)]
-#[command(version, about)]
+#[command(version = VERSION, about)]
 struct Args {
     /// Configuration file. Default: /Library/Application Support/rawkvm/
     /// agent.toml as root, ~/Library/Application Support/rawkvm/agent.toml
@@ -39,10 +43,24 @@ struct Args {
     #[arg(long)]
     hub: Option<String>,
 
-    /// Pairing token printed by the hub on its first start, saved to the
-    /// config.
-    #[arg(long)]
+    /// Pairing token, saved to the config. Stays in the shell history:
+    /// prefer --token-file or the --pair prompt.
+    #[arg(long, hide = true)]
     token: Option<String>,
+
+    /// File holding the pairing token, saved to the config.
+    #[arg(long, value_name = "FILE")]
+    token_file: Option<PathBuf>,
+
+    /// Connect once, pin the hub certificate and exit (asks for the token,
+    /// hidden, if there is none). Stop the service first; setup.sh does.
+    #[arg(long)]
+    pair: bool,
+
+    /// Print the state of each piece, one line each, and exit: 0 if none
+    /// failed. Changes nothing. Run with sudo to read the config.
+    #[arg(long, conflicts_with = "pair")]
+    check: bool,
 
     /// Forget the pinned hub certificate (pair again).
     #[arg(long)]
@@ -200,6 +218,59 @@ impl HidSink for KarabinerSink {
     }
 }
 
+/// `--check`: version, config, hub, Karabiner and the LED permission,
+/// from the config and the service's log (setup.sh shows these lines).
+fn check(config: &Path, log: &Path) -> bool {
+    use agent_core::setup::{self, Level, Report};
+    let mut r = Report::default();
+    let exe = std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    r.line(Level::Info, "version", &format!("{VERSION} at {exe}"));
+    match std::fs::File::open(config) {
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => r.line(
+            Level::Warn,
+            "config",
+            &format!("{}: run with sudo to read it", config.display()),
+        ),
+        _ => {
+            let (level, detail) = setup::config_line(config, "setup.sh");
+            r.line(level, "config", &detail);
+        }
+    }
+    let text = std::fs::read_to_string(log).unwrap_or_default();
+    let run = setup::current_run(&text, "rawkvm_agent_macos: starting");
+    let (level, detail) = setup::hub_line(&run, log);
+    r.line(level, "hub", &detail);
+    let karabiner = setup::last_of(
+        &run,
+        &[
+            ("kind=KeyboardReady value=true", Level::Ok),
+            ("not activated", Level::Fail),
+            ("version mismatch", Level::Fail),
+            ("Karabiner-VirtualHIDDevice-Daemon running", Level::Fail),
+            ("disconnected from the Karabiner daemon", Level::Warn),
+            ("kind=KeyboardReady value=false", Level::Warn),
+        ],
+    )
+    .unwrap_or((
+        Level::Warn,
+        format!("no Karabiner lines in {}", log.display()),
+    ));
+    r.line(karabiner.0, "karabiner", &karabiner.1);
+    // Without Input Monitoring only the Caps Lock LED is missing.
+    let leds = setup::last_of(
+        &run,
+        &[
+            ("watching the keyboard LEDs", Level::Ok),
+            ("keyboard LEDs not watched", Level::Warn),
+        ],
+    )
+    .unwrap_or((Level::Warn, "no LED lines yet".into()));
+    r.line(leds.0, "leds", &leds.1);
+    r.ok()
+}
+
 fn is_root() -> bool {
     // SAFETY: geteuid has no preconditions.
     unsafe { libc::geteuid() == 0 }
@@ -217,29 +288,40 @@ fn main() -> Result<()> {
 
     let config_path = match args.config {
         Some(p) => p,
-        None if is_root() => PathBuf::from(SYSTEM_CONFIG),
+        // --check looks at what the service uses.
+        None if is_root() || args.check => PathBuf::from(SYSTEM_CONFIG),
         None => AgentConfig::default_path()?,
     };
-    let mut cfg = AgentConfig::load_or_init(&config_path)?;
-    let mut changed = false;
-    if let Some(hub) = args.hub {
-        cfg.hub = hub.trim().to_string();
-        changed = true;
+    let runtime = || {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+    };
+    if args.check {
+        std::process::exit(if check(&config_path, Path::new(SYSTEM_LOG)) {
+            0
+        } else {
+            1
+        });
     }
-    if let Some(token) = args.token {
-        proto::parse_token(&token).context("--token must be 64 hex characters")?;
-        cfg.token = token.trim().to_lowercase();
-        changed = true;
+    let cfg = agent_core::pairing::PairArgs {
+        hub: args.hub,
+        token: args.token,
+        token_file: args.token_file,
+        unpin: args.unpin,
+        pair: args.pair,
     }
-    if args.unpin {
-        cfg.hub_fingerprint.clear();
-        changed = true;
+    .apply(&config_path)?;
+    if args.pair {
+        let opts = AgentOptions {
+            config_path,
+            os: Os::MacOs,
+        };
+        let addr = runtime()?.block_on(agent_core::pairing::pair(&opts, NodeKind::Agent))?;
+        println!("paired with the hub at {addr}");
+        return Ok(());
     }
-    if changed {
-        cfg.save(&config_path)?;
-        info!("saved {}", config_path.display());
-    }
-    info!(node = %cfg.node_id, name = %cfg.node_name, config = %config_path.display(), "starting");
+    info!(version = VERSION, node = %cfg.node_id, name = %cfg.node_name, config = %config_path.display(), "starting");
 
     let vhid = if args.dry_run {
         warn!("dry run: reports are logged, not posted (this prints keystrokes)");
@@ -279,15 +361,12 @@ fn main() -> Result<()> {
         config_path,
         os: Os::MacOs,
     };
-    let result = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?
-        .block_on(async {
-            tokio::select! {
-                r = agent_core::run(opts, &mut sink) => r,
-                _ = agent_core::shutdown_signal() => Ok(()),
-            }
-        });
+    let result = runtime()?.block_on(async {
+        tokio::select! {
+            r = agent_core::run(opts, &mut sink) => r,
+            _ = agent_core::shutdown_signal() => Ok(()),
+        }
+    });
     sink.destroy_all();
     if let Some(v) = vhid {
         v.terminate();

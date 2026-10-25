@@ -7,8 +7,10 @@
 //! - macOS: `~/Library/Application Support/rawkvm/widget.toml`,
 //!   `~/Library/Logs/rawkvm-widget.log`;
 //! - Windows: `%LOCALAPPDATA%\rawkvm\widget.toml`,
-//!   `%LOCALAPPDATA%\rawkvm\rawkvm-widget.log`; the pairing comes from the
-//!   edge helper's config when that one is newer (setup.ps1 pairs once).
+//!   `%LOCALAPPDATA%\rawkvm\rawkvm-widget.log`.
+//!
+//! On both, the pairing comes from the edge helper's config when that one
+//! is newer (setup.ps1 / setup.sh pair once).
 
 mod canvas_view;
 #[cfg(windows)]
@@ -655,8 +657,10 @@ fn config_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("widget.toml"))
 }
 
-/// On Windows setup.ps1 pairs the edge helper once; the widget takes the
-/// same pairing from its config (%APPDATA%\rawkvm\edge.toml, ADR 0024).
+/// setup.ps1 (Windows) and setup.sh (macOS) pair once; the widget takes
+/// the same pairing from the edge helper's config (`edge.toml` next to the
+/// agent's: %APPDATA%\rawkvm on Windows, ~/Library/Application
+/// Support/rawkvm on macOS; ADR 0024, ADR 0026).
 fn adopt_edge_pairing(widget: &std::path::Path) {
     let Ok(edge) = AgentConfig::default_path().map(|p| p.with_file_name("edge.toml")) else {
         return;
@@ -688,9 +692,7 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-            if cfg!(windows) {
-                adopt_edge_pairing(&config_path());
-            }
+            adopt_edge_pairing(&config_path());
             let handle = app.handle().clone();
             let shared = WidgetShared::new(move |_| refresh(&handle));
             let state = Arc::new(AppState {

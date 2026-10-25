@@ -21,8 +21,10 @@ use uuid::Uuid;
 /// The macOS agent's config (root-only); read by `--from-agent` as root.
 const AGENT_SYSTEM_CONFIG: &str = "/Library/Application Support/rawkvm/agent.toml";
 
+const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("RAWKVM_COMMIT"), ")");
+
 #[derive(Parser, Debug)]
-#[command(version, about)]
+#[command(version = VERSION, about)]
 struct Args {
     /// Helper configuration. Default:
     /// ~/Library/Application Support/rawkvm/edge.toml.
@@ -59,6 +61,41 @@ struct Args {
     /// until Ctrl+C. Does not connect to the hub.
     #[arg(long)]
     show: bool,
+
+    /// Print the state of each piece, one line each, and exit: 0 if none
+    /// failed. Changes nothing.
+    #[arg(long)]
+    check: bool,
+}
+
+/// `--check`: version, config, `for_node` and the hub, from the config and
+/// the LaunchAgent's log.
+fn check(path: &Path) -> bool {
+    use agent_core::setup::{self, Level, Report};
+    let mut r = Report::default();
+    let exe = std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    r.line(Level::Info, "version", &format!("{VERSION} at {exe}"));
+    let (level, detail) = setup::config_line(path, "setup.sh");
+    r.line(level, "config", &detail);
+    // Read only: load_or_init would create the file.
+    match std::fs::read_to_string(path)
+        .ok()
+        .and_then(|t| AgentConfig::parse(&t).ok())
+        .and_then(|c| c.for_node)
+    {
+        Some(id) => r.line(Level::Ok, "for node", &id.to_string()),
+        None => r.line(Level::Fail, "for node", "not set: setup.sh"),
+    }
+    let log = dirs::home_dir()
+        .unwrap_or_default()
+        .join("Library/Logs/rawkvm-edge.log");
+    let text = std::fs::read_to_string(&log).unwrap_or_default();
+    let run = setup::current_run(&text, "rawkvm_edge_macos: starting");
+    let (level, detail) = setup::hub_line(&run, &log);
+    r.line(level, "hub", &detail);
+    r.ok()
 }
 
 fn config_path(args: &Args) -> Result<PathBuf> {
@@ -123,6 +160,9 @@ fn main() -> Result<()> {
         .init();
     let args = Args::parse();
     let path = config_path(&args)?;
+    if args.check {
+        std::process::exit(if check(&path) { 0 } else { 1 });
+    }
     configure(&args, &path)?;
     if args.configure_only || args.from_agent.is_some() {
         return Ok(());
@@ -141,7 +181,7 @@ fn platform_main(args: &Args, path: PathBuf) -> Result<()> {
         return show();
     }
     let cfg = AgentConfig::load_or_init(&path)?;
-    info!(node = %cfg.node_id, for_node = ?cfg.for_node, config = %path.display(), "starting");
+    info!(version = VERSION, node = %cfg.node_id, for_node = ?cfg.for_node, config = %path.display(), "starting");
     let mut platform = MacScreens::new();
     let opts = agent_core::AgentOptions {
         config_path: path,

@@ -113,6 +113,36 @@ pub fn hub_state<'a>(lines: impl Iterator<Item = &'a str>) -> Option<(Level, Str
     last
 }
 
+/// The lines of the current run in a log that programs append to across
+/// runs: from the last line containing `start` on; the last 300 lines if
+/// none does.
+pub fn current_run<'a>(text: &'a str, start: &str) -> Vec<&'a str> {
+    let lines: Vec<&str> = text.lines().collect();
+    match lines.iter().rposition(|l| l.contains(start)) {
+        Some(i) => lines[i..].to_vec(),
+        None => lines[lines.len().saturating_sub(300)..].to_vec(),
+    }
+}
+
+/// The `hub` line of `--check` from the lines of a log.
+pub fn hub_line(lines: &[&str], log: &Path) -> (Level, String) {
+    hub_state(lines.iter().copied()).unwrap_or((
+        Level::Warn,
+        format!("no connection lines in {}", log.display()),
+    ))
+}
+
+/// The last line containing one of the `patterns`, with that pattern's
+/// level (the first pattern that matches a line wins).
+pub fn last_of(lines: &[&str], patterns: &[(&str, Level)]) -> Option<(Level, String)> {
+    lines.iter().rev().find_map(|l| {
+        patterns
+            .iter()
+            .find(|(p, _)| l.contains(p))
+            .map(|(_, level)| (*level, l.trim().to_string()))
+    })
+}
+
 /// Offer the hubs found with mDNS, or an address; non-interactive, the one
 /// hub found or the saved address.
 pub async fn choose_hub(cfg: &AgentConfig) -> Result<String> {
@@ -235,6 +265,21 @@ INFO agent_core: connected addr=192.168.1.28:4433 hub=orangepi3 index=3";
             hub_state("ERROR agent_core: the hub rejected the pairing token".lines()).unwrap();
         assert_eq!(level, Level::Fail);
         assert!(hub_state("".lines()).is_none());
+    }
+
+    #[test]
+    fn the_current_run_of_a_log() {
+        let log = "a starting\nconnected addr=1\nb starting\nreconnecting in 0.5 s";
+        let run = current_run(log, " starting");
+        assert_eq!(run, ["b starting", "reconnecting in 0.5 s"]);
+        assert_eq!(current_run("x\ny", "starting"), ["x", "y"]);
+        let found = last_of(
+            &run,
+            &[("starting", Level::Info), ("reconnecting", Level::Warn)],
+        );
+        assert_eq!(found, Some((Level::Warn, "reconnecting in 0.5 s".into())));
+        assert_eq!(last_of(&run, &[("LEDs", Level::Ok)]), None);
+        assert_eq!(hub_line(&run, Path::new("l")).0, Level::Warn);
     }
 
     #[test]

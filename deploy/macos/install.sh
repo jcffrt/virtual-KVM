@@ -39,7 +39,7 @@ if [ ! -f "$sysdir/agent.toml" ] && [ -n "${SUDO_USER:-}" ]; then
         echo "copied pairing from $user_cfg"
     fi
 fi
-[ -f "$sysdir/agent.toml" ] || echo "not paired yet: sudo /usr/local/bin/rawkvm-agent --hub <pi-ip> --token <hex>, then Ctrl+C"
+[ -f "$sysdir/agent.toml" ] || echo "not paired yet: setup.sh pairs it (or sudo /usr/local/bin/rawkvm-agent --pair --hub <pi-ip>, which asks for the token)"
 
 reload() { # label plist
     launchctl bootout system "/Library/LaunchDaemons/$1.plist" 2>/dev/null || true
