@@ -732,3 +732,16 @@ Ver sección 12 del handoff: código y comentarios en inglés, docs de usuario e
 - **CI** (`macos-tar`): `install-edge.sh` dos veces seguidas con un emparejamiento inventado, comprobando que no hay error de bootstrap y que el trabajo queda cargado; `--purge` deja solo la identidad; `--purge --new-node` lo borra.
 - **Sin probar en hardware**: el segundo pase de `setup.sh` en el Mac; el aviso del hub, hasta el próximo despliegue del hub.
 - Las pistas del token en el repo ya dicen `sudo rawkvm-hub --show-token`; no hay ninguna que mande a `hub.toml`.
+
+## Fase 5.4: prueba desde cero del instalador de macOS (2026-10-25 12:50)
+
+Con el tarball de c559c34 (run `macos-tar` 40213572924, sha256 16d83c98…) preparado en `~/Desktop/rawkvm-macos` (el de 7195634 apartado en `old-7195634/`; scripts idénticos, solo cambian binarios). Copia de las configuraciones previas en `backup-config-1228/`.
+
+- `uninstall.sh --purge`: limpio. Sin binarios, plist, configuraciones, logs ni procesos; el driver de Karabiner sigue activado.
+- Hub: `--forget-node` del agente viejo **con el hub parado** (el `--help` lo exige; la primera vez lo hice en caliente y no pasó nada, pero no es fiable). Los edges y widgets no tienen índice, `--forget-node` los rechaza (esperado).
+- `setup.sh --from ~/Desktop/rawkvm-macos`: SHA ok, Karabiner reconocido, identidad «RawKVM Local» reutilizada, agente firmado y emparejado (mDNS, índice 2 de nuevo), **Monitorización de entrada conservada sin preguntar** (la identidad estable funciona), edge y widget instalados, `--check` todo `ok`.
+- **Fallo 1**: el widget mostró su ventana de emparejamiento. `adopt_pairing` descarta `edge.toml` porque `hub = ""` (mDNS). El usuario pegó el token a mano. Reportado a VS Code.
+- **Fallo 2**: el reemparejado da `node_id` nuevo y `layout.toml` seguía apuntando al viejo en los dos enlaces y en el lienzo; el borde de GAMER hacia el Mac no hacía nada («switch target is not a connected agent»). Corregido a mano (hub parado, sed, copia `layout.toml.bak-1242`). Propuesto: `--purge` conserva `node_id`; además aviso del hub ante enlaces a nodos desconocidos.
+- **Fallo 3**: relanzar `setup.sh` (idempotencia) dejó el edge caído: `install-edge.sh` hace `bootout` y `bootstrap` seguidos y launchd devuelve «Bootstrap failed: 5: Input/output error»; `--check` marcó `FAIL edge svc` y el usuario quedó encerrado en el Mac. Arrancado a mano con `launchctl bootstrap`. Propuesto: esperar a que el `bootout` termine o `kickstart -k`; la CI debe relanzar `setup.sh` y comprobar el edge.
+- Menor: tras el relanzado, «warn widget hub no connection lines yet» por el log recién creado; conectó 16 s después.
+- **Pendiente**: cerrar sesión y entrar (arranque automático de edge y widget); lo hace el usuario más tarde. El token del hub apareció en claro en el terminal del usuario por un `grep`; el camino previsto es `sudo rawkvm-hub --show-token`.
