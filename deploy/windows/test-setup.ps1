@@ -84,7 +84,17 @@ Assert-True ($edgeVersion -match '^rawkvm-edge\S* \d+\.\d+\.\d+ \([0-9a-f]{7}\)$
 if (Get-Process RawKVM -ErrorAction SilentlyContinue) {
     Start-Sleep -Seconds 2
     $w = if (Test-Path $widgetConfig) { Get-Content -Raw $widgetConfig } else { '' }
-    Assert-True ($w -match 'hub = "127.0.0.1"' -and $w -match "hub_fingerprint = `"$('cd' * 32)`"") 'widget took the pairing'
+    $took = $w -match 'hub = "127.0.0.1"' -and $w -match "hub_fingerprint = `"$('cd' * 32)`""
+    Assert-True $took 'widget took the pairing'
+    if (-not $took) {
+        # What the widget got to before it stalled or failed.
+        $widgetLog = Join-Path $env:LOCALAPPDATA 'rawkvm\rawkvm-widget.log'
+        if (Test-Path $widgetLog) {
+            Get-Content $widgetLog -Tail 40 | ForEach-Object { Write-Host "    widget.log | $_" }
+        } else {
+            Write-Host "    no $widgetLog"
+        }
+    }
 } else {
     Write-Host 'note  the widget did not start on this runner; its pairing is not checked'
 }
