@@ -392,6 +392,14 @@ impl DescriptorInfo {
             .find(|r| r.report_id == id && r.len == payload)
     }
 
+    /// Whether `report` is an output report the hub writes to the real
+    /// device: declared by the descriptor (ID and length) and not on a
+    /// vendor page (HID++ requests of the PC are not forwarded).
+    pub fn is_forwarded_output(&self, report: &[u8]) -> bool {
+        self.output_for(report)
+            .is_some_and(|r| r.app_usage_page < 0xFF00)
+    }
+
     /// Synthesize one "nothing pressed" report per input report of the
     /// standard HID pages. Vendor pages (HID++) are skipped: a zero report
     /// there means nothing and might confuse a driver.

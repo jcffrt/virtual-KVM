@@ -13,7 +13,7 @@ pub mod setup;
 pub mod supervise;
 pub mod widget;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -91,6 +91,8 @@ struct Outputs {
     /// PC only sends its LEDs when they change.
     last: BTreeMap<(u8, Option<u8>), Vec<u8>>,
     seq: [u16; 256],
+    /// (device, length) of undeclared reports already logged.
+    dropped: HashSet<(u8, usize)>,
 }
 
 impl Outputs {
@@ -99,6 +101,7 @@ impl Outputs {
             rx,
             last: BTreeMap::new(),
             seq: [0; 256],
+            dropped: HashSet::new(),
         }
     }
 
@@ -113,16 +116,39 @@ impl Outputs {
         std::future::pending().await
     }
 
+    /// The report ID key of `o` if it is worth sending: a device of the
+    /// list, and a report the hub would write. What it would drop anyway
+    /// (HID++ requests of programs on the PC, such as fwupd, Solaar or
+    /// Options+, written to every interface) is logged once per device and
+    /// length and not sent.
+    fn admit(&mut self, o: &OutputReport, devices: &[HidDevice]) -> Option<Option<u8>> {
+        let dev = devices.iter().find(|d| d.id == o.dev_id)?;
+        if !DescriptorInfo::parse(&dev.report_descriptor).is_forwarded_output(&o.report) {
+            if self.dropped.insert((o.dev_id, o.report.len())) {
+                info!(
+                    dev = o.dev_id,
+                    len = o.report.len(),
+                    report = ?o.report,
+                    "output report not declared by the interface (or vendor); not sent \
+                     (logged once per device and length)"
+                );
+            }
+            return None;
+        }
+        Some(
+            dev.uses_report_ids
+                .then(|| o.report.first().copied())
+                .flatten(),
+        )
+    }
+
     /// Remember `o` (keyed with the device's report ID use) and send it.
     fn on_report(&mut self, o: OutputReport, devices: &[HidDevice], conn: &quinn::Connection) {
-        let Some(dev) = devices.iter().find(|d| d.id == o.dev_id) else {
+        let Some(rid) = self.admit(&o, devices) else {
             return;
         };
-        let rid = dev
-            .uses_report_ids
-            .then(|| o.report.first().copied())
-            .flatten();
-        debug!(dev = o.dev_id, report = ?o.report, "output report");
+        // Keyboard LEDs: rare, and worth seeing without debug logging.
+        info!(dev = o.dev_id, report = ?o.report, "output report sent to the hub");
         self.send(o.dev_id, &o.report, conn);
         self.last.insert((o.dev_id, rid), o.report);
     }

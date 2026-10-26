@@ -417,6 +417,34 @@ fn sinks_without_settle_time_are_ready_at_once() {
     assert_eq!(sink.events(), [Ev::DestroyAll, Ev::Create(0), Ev::Ready]);
 }
 
+#[test]
+fn only_outputs_the_hub_would_write_are_sent() {
+    let mut out = Outputs::new(None);
+    let mut hidpp = hid(2);
+    hidpp.report_descriptor = vec![
+        0x06, 0x00, 0xFF, 0x09, 0x01, 0xA1, 0x01, 0x85, 0x10, 0x75, 0x08, 0x95, 0x06, 0x91, 0x00,
+        0xC0,
+    ];
+    hidpp.uses_report_ids = true;
+    let devices = [hid(0), hidpp];
+    let o = |dev_id, report: &[u8]| OutputReport {
+        dev_id,
+        report: report.to_vec(),
+    };
+    // The boot keyboard's LED byte.
+    assert_eq!(out.admit(&o(0, &[0x02]), &devices), Some(None));
+    // A HID++ short request written to the keyboard interface (Ubuntu,
+    // 2026-10-26): 7 bytes, not declared there. Not trimmed: its first
+    // byte would light the wrong LEDs.
+    let ping = [0x10, 0xFF, 0x00, 0x12, 0x00, 0x00, 0x00];
+    assert_eq!(out.admit(&o(0, &ping), &devices), None);
+    // Declared on the HID++ interface, but vendor: the hub drops it too.
+    assert_eq!(out.admit(&o(2, &ping), &devices), None);
+    // Unknown device.
+    assert_eq!(out.admit(&o(9, &[0x02]), &devices), None);
+    assert!(out.dropped.contains(&(0, 7)));
+}
+
 /// A sink that cannot present some devices (a full USB gadget).
 struct PartialSink(Vec<u8>);
 

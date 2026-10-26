@@ -1686,11 +1686,7 @@ impl Router {
         let Some(dev) = st.devices.get_mut(&dev_id) else {
             return;
         };
-        let declared = dev
-            .info
-            .output_for(report)
-            .is_some_and(|r| r.app_usage_page < 0xFF00);
-        if !declared {
+        if !dev.info.is_forwarded_output(report) {
             debug!(
                 node = %from,
                 dev_id,
