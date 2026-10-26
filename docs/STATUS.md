@@ -924,3 +924,20 @@ Según [fase8-plan.md](fase8-plan.md); decisiones en el [ADR 0032](adr/0032-rece
 - **Dongles en la Zero:** el hub abre el Areson (ids 16, 17) y el Logitech (0, 1, 2); el gadget 0.8.0 enlaza con **4 interfaces** (0, 1, 16, 17) y avisa «not presented to the PC on the USB cable: 2 (HID++)»: la prioridad del ADR 0031 funciona en hardware.
 - **Los cinco nodos en 0.8.0** y conectados: gadget, Mac (agente, edge, widget), Ubuntu (agente, edge), GAMER (edge, widget). Instaladores: en el Mac hay que usar el `setup.sh` del repositorio (el instalado reinstala el paquete que tiene al lado); en Windows `setup.ps1 -Version v0.8.0`; en Ubuntu el `curl … setup-linux.sh | sh` pide la contraseña de sudo en el terminal (un `| tail` la oculta).
 - **Abierto:** el LED de Bloq Mayús en el Mac sigue sin funcionar con 0.8.0: el agente de macOS no emite ningún «output report sent» al pulsar Bloq Mayús aunque diga «watching the keyboard LEDs»; el arreglo 5a5fdfb corregía el destino, no la fuente. Asignado a VS Code con hipótesis (callback de LED del teclado virtual de Karabiner en macOS 27, run loop, o deducir el estado de los modificadores). Fase 8 sin probar aún desde el widget («Quitar»/«Añadir» de `areson`); `--list` dice «unclaimed USB HID devices: none», correcto. Fase 7 (puente Bluetooth): prueba de concepto lista en la rama `fase7`, pendiente de una placa con Bluetooth Broadcom (la Zero 2W tiene el Unisoc); candidatas: una Raspberry Pi Zero 2 W con la SD de la RPi muerta, o una Pi 4/5.
+
+## LED de Bloq Mayús con el Mac activo: 0.8.1 (2026-10-26, VS Code)
+
+- **Causa:** el vigilante de LEDs del agente de macOS se quedaba en el primer teclado virtual de Karabiner. Al conectar con el hub, el agente cambia la identidad del teclado (`virtual keyboard identity 046d:c52b`), y Karabiner lo vuelve a crear (`KeyboardReady` false → true en el log). Su `IOHIDManager`, sin programar en un run loop, seguía devolviendo la lista del principio: nunca vio que el teclado había desaparecido, y desde el arranque no llegaba ningún LED. En el log de las 21:53:23 se ve la secuencia.
+- **Comprobado en este Mac** (macOS 27, Karabiner 8.6.0) con una sonda propia:
+  - al cambiar Bloq Mayús del sistema (`IOHIDSetModifierLockState`), macOS manda el `SetReport` de LEDs al teclado virtual, y el eco (informe 6, página 0x08, valor y informe) llega a un proceso que lo tiene abierto;
+  - con el servicio 0.8.0 en marcha, en el mismo momento el agente no registró nada.
+
+  `CGEventSourceFlagsState` no refleja ese cambio, así que la alternativa de sondear los modificadores no habría servido.
+- **Arreglo** (ADR 0012):
+  - cada 5 s el vigilante enumera con un `IOHIDManager` nuevo y compara el id de registro del teclado virtual;
+  - si cambió, abre el nuevo con el estado de LEDs puesto a desconocido y registra «the Karabiner virtual keyboard was created again»;
+  - tests de la decisión (`step`) y del olvido del estado.
+- **Versión 0.8.1**, sin cambio de protocolo: basta con actualizar el agente del Mac.
+- **Qué probar tras instalarlo:**
+  - en `/var/log/rawkvm-agent.log`, «watching the keyboard LEDs … registry_id=…» y, tras «virtual keyboard identity 046d:c52b», en ≤ 5 s «created again» y otro «watching … registry_id» distinto;
+  - con el Mac activo, Bloq Mayús enciende y apaga el LED del teclado Logitech, y el log dice «output report sent to the hub».
