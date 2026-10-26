@@ -22,7 +22,7 @@ Lo que el hub reenvía lo toma en exclusiva (`grab_evdev`). Adoptar cualquier HI
 - **Por cada grupo se anuncia:**
   - `vid` y `pid`;
   - el nombre: el más corto de sus interfaces, porque el kernel añade «Mouse» o «Consumer Control» a algunas;
-  - el número de serie, si lo hay;
+  - el número de serie, si lo hay, y el puerto USB, que distingue dos dispositivos con el mismo `vid:pid` (el widget los usa como clave de la lista);
   - el número de interfaces;
   - qué contiene: teclado (Generic Desktop keyboard o keypad), ratón (mouse o pointer) u otro (cualquier otra colección). Es la clasificación del ADR 0031.
 - El hub envía la lista a los widgets al conectar y cuando cambia (`UnclaimedReceivers`). `rawkvm-hub --list` la muestra también, para diagnosticar por SSH.
@@ -61,6 +61,7 @@ Lo que el hub reenvía lo toma en exclusiva (`grab_evdev`). Adoptar cualquier HI
 ### La escritura de `hub.toml`
 
 - Con `toml_edit`: se conservan los comentarios, el orden y el formato del resto del fichero. El bloque nuevo va al final del array `[[receiver]]`, con un comentario «Added from the widget: vid:pid producto», y con `vid` y `pids` en hexadecimal.
+- **Posición:** `toml_edit` escribe las tablas por su posición, y una tabla sin posición (o con la del documento pequeño del que se sacó) acababa tras la primera tabla posicionada: entre dos bloques, o delante de todos si iban después de `[switching]`. Al reiniciar, el índice no coincidía con el anunciado en caliente. Cada tabla que añade el hub recibe una posición mayor que la de cualquier otra tabla del fichero, así que queda la última del fichero y del array. Hay un test con un fichero como el real.
 - **Las formas antiguas se convierten:**
   - sin clave `receiver` (el bloque Logitech por defecto, implícito): se escribe primero ese bloque, porque si no el array nuevo lo sustituiría;
   - con una tabla única `[receiver]`: pasa a ser el primer elemento del array.
@@ -69,7 +70,7 @@ Lo que el hub reenvía lo toma en exclusiva (`grab_evdev`). Adoptar cualquier HI
 
 ### HID++
 
-Sigue siendo del primer receptor Logitech (ADR 0030). El router lo calcula al arrancar y lo actualiza cuando el hilo de escaneo engancha la interfaz HID++ de un receptor. Si se quita el receptor HID++, su lector se cierra y el hilo de HID++ se para. Un Logitech añadido después tiene HID++ si es el primer Logitech que queda.
+Sigue siendo del primer receptor Logitech (ADR 0030). El router lo calcula al arrancar y lo actualiza cuando el hilo de escaneo engancha la interfaz HID++ de un receptor. `detach_receiver` lo olvida. Si se quita el receptor HID++, su lector se cierra y el hilo de HID++ se para. Si había otro Logitech abierto sin HID++ y pasa a ser el primero, el hilo de escaneo cierra su interfaz DJ y la vuelve a abrir con HID++, con el mismo id. Un Logitech añadido después tiene HID++ si es el primer Logitech que queda.
 
 ### Protocolo 10
 
@@ -81,11 +82,16 @@ Sigue siendo del primer receptor Logitech (ADR 0030). El router lo calcula al ar
 ### `.hidrec`
 
 La reproducción ya no asigna los receptores una sola vez. En cada pasada sincroniza los dispositivos grabados con los bloques del router (`Replay::sync`):
-- añade los que un bloque reconoce;
+- añade los que un bloque reconoce, con el id que daría un hub real (`16 × receptor + interfaz`); los ids grabados solo nombran los dispositivos en las líneas `R`;
 - quita los de un bloque quitado;
 - anuncia los demás como «sin configurar».
 
 `fixtures/two-receivers.hidrec`, con una configuración de solo el bloque Logitech, sirve como grabación con un dispositivo sin configurar. El test del router la usa para añadir y quitar el segundo receptor de punta a punta. No hace falta otra grabación.
+
+### Anotado sin cambio
+
+- `AddReceiver` valida contra la lista de «sin configurar», que puede tener hasta 2 s. Un dispositivo recién desenchufado aún se puede añadir. Su bloque queda escrito y no hace nada hasta que vuelva.
+- La escritura de `hub.toml`, con su `fsync`, va en el hilo de tokio de la conexión del widget, bajo `config_lock` y fuera del lock del router, como el guardado de `settings.toml`. Es una acción rara y explícita del usuario.
 
 ## Consecuencias
 
