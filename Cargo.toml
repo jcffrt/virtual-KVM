@@ -10,6 +10,7 @@ members = [
     "crates/agent-windows",
     "crates/edge-windows",
     "crates/agent-gadget",
+    "crates/bridge-core",
     "crates/agent-bt",
 ]
 # The widget (Tauri) is its own workspace: widget/src-tauri.
@@ -25,6 +26,7 @@ repository = "https://github.com/jcffrt/virtual-KVM"
 [workspace.dependencies]
 proto = { path = "crates/proto", package = "rawkvm-proto" }
 agent-core = { path = "crates/agent-core", package = "rawkvm-agent-core" }
+bridge-core = { path = "crates/bridge-core", package = "rawkvm-bridge-core" }
 
 anyhow = "1"
 bytes = "1"

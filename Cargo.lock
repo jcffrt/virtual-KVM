@@ -1313,6 +1313,7 @@ dependencies = [
  "bluer",
  "clap",
  "dbus",
+ "rawkvm-bridge-core",
  "rawkvm-proto",
  "tokio",
  "tracing",
@@ -1400,6 +1401,16 @@ dependencies = [
  "uuid",
  "windows-service",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "rawkvm-bridge-core"
+version = "0.8.0"
+dependencies = [
+ "anyhow",
+ "rawkvm-proto",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

@@ -1,0 +1,19 @@
+[package]
+name = "rawkvm-bridge-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Transport-neutral logic of a RawKVM Bluetooth bridge: descriptor merging and the bonded host"
+
+[lib]
+name = "bridge_core"
+path = "src/lib.rs"
+
+[dependencies]
+proto.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

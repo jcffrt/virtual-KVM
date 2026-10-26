@@ -16,6 +16,7 @@ path = "src/bin/poc.rs"
 
 [dependencies]
 proto.workspace = true
+bridge-core.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 tokio.workspace = true

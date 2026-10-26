@@ -1,11 +1,13 @@
 //! The one PC the bridge is bonded with: pairing, forgetting, reconnection
 //! and the status the widget shows (ADR 0033).
 //!
-//! The state machine does not touch BlueZ itself: it calls a [`Bluez`]
-//! implementation (`bluer` on Linux, a fake in tests) and is told what
-//! happened through its `on_*` methods.
+//! The state machine does no I/O: it calls a [`Radio`] implementation (the
+//! platform's Bluetooth stack, a fake in tests) and is told what happened
+//! through its `on_*` methods.
 
 use std::time::{Duration, Instant};
+
+use proto::BridgeStatus;
 
 /// A Bluetooth device address, most significant byte first (as printed).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -37,12 +39,12 @@ impl std::str::FromStr for BtAddr {
     }
 }
 
-/// What the state machine asks of BlueZ.
+/// What the state machine asks of the Bluetooth stack.
 #[allow(async_fn_in_trait)]
-pub trait Bluez {
+pub trait Radio {
     /// Discoverable and pairable for `secs`, or neither (`None`).
     async fn set_discoverable(&mut self, secs: Option<u32>) -> anyhow::Result<()>;
-    /// Remove the bond with `addr` (BlueZ forgets its keys).
+    /// Remove the bond with `addr` (the stack forgets its keys).
     async fn remove(&mut self, addr: BtAddr) -> anyhow::Result<()>;
     /// Open the control and interrupt channels to `addr` (the device
     /// reconnecting, HIDReconnectInitiate). Success is reported through
@@ -64,19 +66,6 @@ pub struct Saved {
     pub bonded: Option<(BtAddr, String)>,
     /// Descriptor the bonded PC paired with.
     pub paired_descriptor: Option<u64>,
-}
-
-/// Status for the hub and the widgets (`BtStatus` in the protocol).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Status {
-    /// Name (or address) of the bonded PC.
-    pub bonded: Option<String>,
-    pub connected: bool,
-    /// Seconds left of discoverability.
-    pub discoverable_secs: Option<u32>,
-    /// The descriptor changed since the PC paired: forget the device on the
-    /// PC and pair again. Input is not sent meanwhile.
-    pub repair_needed: bool,
 }
 
 /// Delays between reconnection attempts; the last one repeats.
@@ -123,8 +112,9 @@ impl Host {
         std::mem::take(&mut self.dirty)
     }
 
-    pub fn status(&self, now: Instant) -> Status {
-        Status {
+    /// For `BtStatus`. While `repair_needed`, input is held back.
+    pub fn status(&self, now: Instant) -> BridgeStatus {
+        BridgeStatus {
             bonded: self.saved.bonded.as_ref().map(|(a, n)| {
                 if n.is_empty() {
                     a.to_string()
@@ -160,7 +150,7 @@ impl Host {
     /// The widget asked for pairing (`secs` > 0) or to stop it (0).
     pub async fn discoverable(
         &mut self,
-        bz: &mut impl Bluez,
+        bz: &mut impl Radio,
         secs: u8,
         now: Instant,
     ) -> anyhow::Result<()> {
@@ -175,7 +165,7 @@ impl Host {
     }
 
     /// The widget asked to forget the PC.
-    pub async fn forget(&mut self, bz: &mut impl Bluez) -> anyhow::Result<()> {
+    pub async fn forget(&mut self, bz: &mut impl Radio) -> anyhow::Result<()> {
         if let Some((addr, _)) = self.saved.bonded.take() {
             self.saved.paired_descriptor = None;
             self.connected = false;
@@ -189,7 +179,7 @@ impl Host {
     /// A PC paired. One host at a time: an earlier one is forgotten.
     pub async fn on_paired(
         &mut self,
-        bz: &mut impl Bluez,
+        bz: &mut impl Radio,
         addr: BtAddr,
         name: String,
     ) -> anyhow::Result<()> {
@@ -226,13 +216,13 @@ impl Host {
     }
 
     /// The PC removed the virtual cable: it forgot us, so we forget it.
-    pub async fn on_unplugged(&mut self, bz: &mut impl Bluez) -> anyhow::Result<()> {
+    pub async fn on_unplugged(&mut self, bz: &mut impl Radio) -> anyhow::Result<()> {
         self.connected = false;
         self.forget(bz).await
     }
 
     /// Periodic: expire discoverability, try to reconnect when due.
-    pub async fn tick(&mut self, bz: &mut impl Bluez, now: Instant) {
+    pub async fn tick(&mut self, bz: &mut impl Radio, now: Instant) {
         if self.discoverable_until.is_some_and(|t| t <= now) {
             self.discoverable_until = None;
         }
@@ -265,12 +255,12 @@ mod tests {
     use super::*;
 
     #[derive(Default)]
-    struct FakeBluez {
+    struct FakeRadio {
         calls: Vec<String>,
         fail_connect: bool,
     }
 
-    impl Bluez for FakeBluez {
+    impl Radio for FakeRadio {
         async fn set_discoverable(&mut self, secs: Option<u32>) -> anyhow::Result<()> {
             self.calls.push(format!("discoverable {secs:?}"));
             Ok(())
@@ -308,7 +298,7 @@ mod tests {
     #[test]
     fn pairing_a_second_pc_forgets_the_first() {
         block(async {
-            let mut bz = FakeBluez::default();
+            let mut bz = FakeRadio::default();
             let mut h = Host::new(Saved::default());
             let t0 = Instant::now();
             h.set_descriptor(1);
@@ -346,7 +336,7 @@ mod tests {
     #[test]
     fn a_new_descriptor_needs_pairing_again() {
         block(async {
-            let mut bz = FakeBluez::default();
+            let mut bz = FakeRadio::default();
             let mut h = Host::new(Saved::default());
             h.set_descriptor(descriptor_hash(&[1, 2, 3]));
             h.on_paired(&mut bz, PC, "GAMER".into()).await.unwrap();
@@ -369,7 +359,7 @@ mod tests {
     #[test]
     fn reconnection_backs_off_and_stops_when_connected() {
         block(async {
-            let mut bz = FakeBluez {
+            let mut bz = FakeRadio {
                 fail_connect: true,
                 ..Default::default()
             };
@@ -413,7 +403,7 @@ mod tests {
     #[test]
     fn forget_and_unplug_clear_the_bond() {
         block(async {
-            let mut bz = FakeBluez::default();
+            let mut bz = FakeRadio::default();
             let mut h = Host::new(Saved {
                 bonded: Some((PC, "GAMER".into())),
                 paired_descriptor: Some(1),
