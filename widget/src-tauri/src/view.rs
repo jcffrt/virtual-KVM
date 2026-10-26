@@ -45,6 +45,57 @@ pub struct View {
     /// The hub's receivers and where their input goes (ADR 0030); empty
     /// until the hub sends its settings.
     pub exposures: Vec<ExposureView>,
+    /// USB HID devices on the hub's board that are not receivers yet
+    /// (ADR 0032).
+    pub unclaimed: Vec<UnclaimedView>,
+    /// The hub's answer to the last add or remove.
+    pub receiver_result: Option<ReceiverResultView>,
+}
+
+/// One device the hub could take as a receiver.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct UnclaimedView {
+    pub vid: u16,
+    pub pid: u16,
+    /// "25a7:fa09".
+    pub vid_pid: String,
+    pub name: String,
+    pub interfaces: u8,
+    /// "teclado", "ratón", "otro".
+    pub kinds: Vec<&'static str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ReceiverResultView {
+    pub ok: bool,
+    pub message: String,
+}
+
+fn unclaimed(st: &WidgetState) -> Vec<UnclaimedView> {
+    use proto::DeviceKind;
+    st.unclaimed
+        .iter()
+        .map(|u| UnclaimedView {
+            vid: u.vid,
+            pid: u.pid,
+            vid_pid: format!("{:04x}:{:04x}", u.vid, u.pid),
+            name: if u.name.is_empty() {
+                "(sin nombre)".into()
+            } else {
+                u.name.clone()
+            },
+            interfaces: u.interfaces,
+            kinds: u
+                .kinds
+                .iter()
+                .map(|k| match k {
+                    DeviceKind::Keyboard => "teclado",
+                    DeviceKind::Mouse => "ratón",
+                    DeviceKind::Other => "otro",
+                })
+                .collect(),
+        })
+        .collect()
 }
 
 /// One receiver of the hub and its exposure.
@@ -403,6 +454,14 @@ pub fn view(st: &WidgetState, cfg: &AgentConfig) -> View {
         options: st.options,
         custom_layout: !st.canvas.is_empty(),
         exposures: exposures(st),
+        unclaimed: unclaimed(st),
+        receiver_result: st
+            .receiver_result
+            .as_ref()
+            .map(|(ok, message)| ReceiverResultView {
+                ok: *ok,
+                message: message.clone(),
+            }),
     }
 }
 
@@ -754,5 +813,25 @@ mod tests {
             ]
         );
         assert_eq!(v[2].agent, Some(gone));
+    }
+
+    #[test]
+    fn unclaimed_receivers_in_spanish() {
+        let st = WidgetState {
+            unclaimed: vec![proto::UnclaimedReceiver {
+                vid: 0x25a7,
+                pid: 0xfa09,
+                name: String::new(),
+                serial: None,
+                interfaces: 2,
+                kinds: vec![proto::DeviceKind::Keyboard, proto::DeviceKind::Mouse],
+            }],
+            receiver_result: Some((false, "overlap".into())),
+            ..Default::default()
+        };
+        let u = unclaimed(&st);
+        assert_eq!(u[0].vid_pid, "25a7:fa09");
+        assert_eq!(u[0].name, "(sin nombre)");
+        assert_eq!(u[0].kinds, ["teclado", "ratón"]);
     }
 }

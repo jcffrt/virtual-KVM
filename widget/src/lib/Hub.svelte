@@ -9,6 +9,31 @@
   let message = $state('');
   let confirmForget = $state(false);
   let confirmShutdown = $state(false);
+  // Receiver index waiting for the "Quitar" confirmation.
+  let confirmRemove = $state(null);
+  // A receiver was added or removed from this window: show the hub's answer.
+  let receiverAsked = $state(false);
+
+  async function addReceiver(u) {
+    message = '';
+    receiverAsked = true;
+    try {
+      await invoke('add_receiver', { vid: u.vid, pid: u.pid });
+    } catch (e) {
+      message = String(e);
+    }
+  }
+
+  async function removeReceiver(receiver) {
+    confirmRemove = null;
+    message = '';
+    receiverAsked = true;
+    try {
+      await invoke('remove_receiver', { receiver });
+    } catch (e) {
+      message = String(e);
+    }
+  }
 
   async function search() {
     searching = true;
@@ -172,7 +197,7 @@
     <h3 class="section">Receptores</h3>
     <table>
       <thead>
-        <tr><th>N.º</th><th>Nombre</th><th>Interfaces</th><th>Entrada para</th></tr>
+        <tr><th>N.º</th><th>Nombre</th><th>Interfaces</th><th>Entrada para</th><th></th></tr>
       </thead>
       <tbody>
         {#each view.exposures as e (e.receiver)}
@@ -193,10 +218,53 @@
               </select>
               {#if e.held}<span class="bad"> · su equipo no está conectado: la entrada se descarta</span>{/if}
             </td>
+            <td class="nowrap">
+              {#if confirmRemove === e.receiver}
+                <button onclick={() => (confirmRemove = null)}>Cancelar</button>
+                <button class="primary" onclick={() => removeReceiver(e.receiver)}>Quitar</button>
+              {:else}
+                <button
+                  onclick={() => (confirmRemove = e.receiver)}
+                  disabled={!view.connected || view.exposures.length < 2}
+                  title={view.exposures.length < 2 ? 'El hub necesita al menos un receptor' : 'Deja de leerlo y lo borra de hub.toml'}
+                >Quitar</button>
+              {/if}
+            </td>
           </tr>
         {/each}
       </tbody>
     </table>
+    {#if confirmRemove !== null}
+      <p class="muted">Sus dispositivos desaparecen de todos los equipos. Para volver a usarlo, aparecerá en «Sin configurar».</p>
+    {/if}
+
+    <h3 class="section">Sin configurar</h3>
+    {#if view.unclaimed.length === 0}
+      <p class="muted">Ningún receptor sin configurar.</p>
+    {:else}
+      <p class="muted">Dispositivos USB enchufados en el hub que no reenvía. Añadirlo los lleva a todos los equipos sin reiniciar el hub.</p>
+      <table>
+        <thead>
+          <tr><th>Nombre</th><th>vid:pid</th><th>Interfaces</th><th>Contiene</th><th></th></tr>
+        </thead>
+        <tbody>
+          {#each view.unclaimed as u (u.vid_pid)}
+            <tr>
+              <td>{u.name}</td>
+              <td class="mono">{u.vid_pid}</td>
+              <td>{u.interfaces}</td>
+              <td>{u.kinds.join(', ')}</td>
+              <td><button onclick={() => addReceiver(u)} disabled={!view.connected}>Añadir como receptor</button></td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    {/if}
+    {#if receiverAsked && view.receiver_result}
+      <p class:bad={!view.receiver_result.ok} class:ok={view.receiver_result.ok}>
+        {view.receiver_result.ok ? 'Hecho' : 'El hub no lo hizo'}: {view.receiver_result.message}
+      </p>
+    {/if}
     {#if view.exposures.some((e) => e.agent)}
       <p class="muted">
         Un receptor exclusivo no cambia de equipo con los bordes ni con el atajo.
@@ -251,4 +319,6 @@
   .form label { display: flex; gap: 8px; align-items: center; }
   h3 { margin: 0 0 8px; font-size: 14px; }
   h3.section { margin-top: 18px; }
+  .ok { color: var(--ok); }
+  .nowrap { white-space: nowrap; }
 </style>

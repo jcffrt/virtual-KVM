@@ -450,6 +450,23 @@ fn set_exposure(
     state.send(Control::SetExposure { receiver, mode })
 }
 
+/// Take an unclaimed USB device of the hub's board as a receiver
+/// (ADR 0032); the hub answers with `ReceiverResult`.
+#[tauri::command]
+fn add_receiver(state: tauri::State<'_, Arc<AppState>>, vid: u16, pid: u16) -> Result<(), String> {
+    info!("add receiver {vid:04x}:{pid:04x}");
+    state.shared.clear_receiver_result();
+    state.send(Control::AddReceiver { vid, pid })
+}
+
+/// Close a receiver and remove its block from hub.toml.
+#[tauri::command]
+fn remove_receiver(state: tauri::State<'_, Arc<AppState>>, receiver: u8) -> Result<(), String> {
+    info!(receiver, "remove receiver");
+    state.shared.clear_receiver_result();
+    state.send(Control::RemoveReceiver { receiver })
+}
+
 /// Edge options travel with the layout: resend the layout in force (the
 /// hub's saved one, or the current arrangement if the hub still uses its
 /// seed) with the new options.
@@ -790,6 +807,8 @@ pub fn run() {
             canvas_reset,
             set_settings,
             set_exposure,
+            add_receiver,
+            remove_receiver,
             set_edge_options,
             get_autostart,
             set_autostart,
