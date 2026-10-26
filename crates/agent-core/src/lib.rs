@@ -37,6 +37,9 @@ pub struct OutputReport {
 
 pub type OutputSender = tokio::sync::mpsc::UnboundedSender<OutputReport>;
 pub type OutputReceiver = tokio::sync::mpsc::UnboundedReceiver<OutputReport>;
+/// Control messages a sink sends to the hub (a bridge's `BtStatus`).
+pub type ControlSender = tokio::sync::mpsc::UnboundedSender<Control>;
+pub type ControlReceiver = tokio::sync::mpsc::UnboundedReceiver<Control>;
 
 /// The OS side of an agent: the virtual HID devices.
 pub trait HidSink {
@@ -77,11 +80,27 @@ pub trait HidSink {
     fn unexposed(&self) -> Vec<u8> {
         Vec::new()
     }
+    /// Control messages the sink sends to the hub on its own (a Bluetooth
+    /// bridge's status, ADR 0033). Called once; sent while connected.
+    fn take_control(&mut self) -> Option<ControlReceiver> {
+        None
+    }
+    /// A session with the hub started: send again what the hub must know
+    /// (through [`take_control`](Self::take_control)'s channel).
+    fn connected(&mut self) {}
+    /// A control message the core does not handle (`BtDiscoverable`,
+    /// `BtForget` for a bridge).
+    fn on_control(&mut self, _msg: &Control) {}
 }
 
 /// Delay of the redundant copy of an output report datagram (the hub drops
 /// the duplicate by its sequence number).
 const OUTPUT_RESEND: Duration = Duration::from_millis(30);
+
+enum FromSink {
+    Output(OutputReport),
+    Control(Control),
+}
 
 /// Output reports to the hub, across sessions.
 struct Outputs {
@@ -93,6 +112,8 @@ struct Outputs {
     seq: [u16; 256],
     /// (device, length) of undeclared reports already logged.
     dropped: HashSet<(u8, usize)>,
+    /// The sink's own control messages for the hub.
+    ctl: Option<ControlReceiver>,
 }
 
 impl Outputs {
@@ -102,16 +123,37 @@ impl Outputs {
             last: BTreeMap::new(),
             seq: [0; 256],
             dropped: HashSet::new(),
+            ctl: None,
+        }
+    }
+
+    /// Next control message of the sink; never resolves if it has none.
+    async fn recv_control(ctl: &mut Option<ControlReceiver>) -> Control {
+        if let Some(rx) = ctl {
+            if let Some(m) = rx.recv().await {
+                return m;
+            }
+            *ctl = None;
+        }
+        std::future::pending().await
+    }
+
+    /// Whatever the sink sends next: an output report or a control message.
+    async fn next(&mut self) -> FromSink {
+        let Outputs { rx, ctl, .. } = self;
+        tokio::select! {
+            o = Self::recv_report(rx) => FromSink::Output(o),
+            m = Self::recv_control(ctl) => FromSink::Control(m),
         }
     }
 
     /// Next report from the sink; never resolves if it has none (left).
-    async fn recv(&mut self) -> OutputReport {
-        if let Some(rx) = &mut self.rx {
-            if let Some(o) = rx.recv().await {
+    async fn recv_report(rx: &mut Option<OutputReceiver>) -> OutputReport {
+        if let Some(r) = rx {
+            if let Some(o) = r.recv().await {
                 return o;
             }
-            self.rx = None;
+            *rx = None;
         }
         std::future::pending().await
     }
@@ -315,6 +357,7 @@ pub(crate) async fn fatal_pause(e: anyhow::Error) -> anyhow::Error {
 pub async fn run(opts: AgentOptions, sink: &mut dyn HidSink) -> Result<()> {
     let mut retry = Reconnect::new();
     let mut outputs = Outputs::new(sink.take_outputs());
+    outputs.ctl = sink.take_control();
     loop {
         let mut cfg = AgentConfig::load_or_init(&opts.config_path)?;
         cfg.token_bytes()?;
@@ -606,6 +649,7 @@ async fn session_inner(
         mut recv,
     } = handshake(opts, cfg, addr, NodeKind::Agent).await?;
     retry.connected();
+    sink.connected();
     let mut s = Session::new();
     let mut ping = tokio::time::interval(PING_EVERY);
     let mut stats = tokio::time::interval(STATS_EVERY);
@@ -647,11 +691,17 @@ async fn session_inner(
                         s.release_all(sink);
                         return Err(End::HubDown(reason));
                     }
-                    other => debug!(msg = other.name(), "ignored"),
+                    other => {
+                        debug!(msg = other.name(), "to the sink");
+                        sink.on_control(&other);
+                    }
                 }
             }
             dg = conn.read_datagram() => s.on_datagram(&dg?, sink),
-            o = outputs.recv() => outputs.on_report(o, &s.devices, &conn),
+            o = outputs.next() => match o {
+                FromSink::Output(o) => outputs.on_report(o, &s.devices, &conn),
+                FromSink::Control(m) => wire::write_frame(&mut send, &m).await?,
+            },
             _ = sleep_until(s.ready_at) => {
                 s.poll_ready(sink, Instant::now());
                 if let Some(m) = s.unexposed_changed(sink) {

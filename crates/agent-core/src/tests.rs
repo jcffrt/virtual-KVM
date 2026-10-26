@@ -192,6 +192,64 @@ async fn pairs_pins_and_receives_reports() {
     let _ = std::fs::remove_dir_all(&hub.dir);
 }
 
+/// A Bluetooth bridge's sink: says its status on every connection.
+struct BridgeSink {
+    tx: ControlSender,
+    rx: Option<ControlReceiver>,
+}
+
+impl HidSink for BridgeSink {
+    fn create(&mut self, _: &HidDevice) -> Result<()> {
+        Ok(())
+    }
+    fn input(&mut self, _: u8, _: &[u8]) -> Result<()> {
+        Ok(())
+    }
+    fn destroy_all(&mut self) {}
+    fn take_control(&mut self) -> Option<ControlReceiver> {
+        self.rx.take()
+    }
+    fn connected(&mut self) {
+        let _ = self.tx.send(Control::BtStatus {
+            status: proto::BridgeStatus {
+                bonded: Some("GAMER".into()),
+                ..Default::default()
+            },
+        });
+    }
+}
+
+#[tokio::test]
+async fn a_sink_reports_its_bridge_status_to_the_hub() {
+    let hub = start_hub().await;
+    let path = agent_config(&hub, &hub.cfg.token, "");
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut sink = BridgeSink { tx, rx: Some(rx) };
+    let opts = AgentOptions {
+        config_path: path,
+        os: Os::Bridge,
+    };
+    let test = async {
+        loop {
+            let st = hub.router.status();
+            if let Some(n) = st.nodes.iter().find(|n| n.bridge.is_some()) {
+                assert_eq!(n.os, Os::Bridge);
+                assert_eq!(n.assigned_index, 0);
+                assert_eq!(n.bridge.as_ref().unwrap().bonded.as_deref(), Some("GAMER"));
+                // A bridge alone is never made active.
+                assert_eq!(st.active, None);
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    };
+    tokio::select! {
+        r = run(opts, &mut sink) => panic!("agent stopped: {r:?}"),
+        r = tokio::time::timeout(Duration::from_secs(10), test) => r.expect("no bridge status at the hub"),
+    }
+    let _ = std::fs::remove_dir_all(&hub.dir);
+}
+
 #[tokio::test]
 async fn pair_pins_and_returns() {
     let hub = start_hub().await;
