@@ -86,10 +86,13 @@ impl NodeStore {
             .map(|e| e.id)
     }
 
-    /// Give `index` to `id`, taking it from whoever held it.
+    /// Give `index` to `id`, taking it from whoever held it. Index 0 is
+    /// shared: Bluetooth bridges (ADR 0033) are remembered with it, as
+    /// known agents without a hotkey digit.
     pub fn assign(&mut self, id: Uuid, index: u8, name: &str) {
         let before = self.entries.get(&id).cloned();
-        self.entries.retain(|k, e| *k == id || e.index != index);
+        self.entries
+            .retain(|k, e| *k == id || index == 0 || e.index != index);
         let entry = Entry {
             id,
             index,

@@ -629,8 +629,13 @@ impl Router {
         }
         let index = match hello.kind {
             NodeKind::Widget | NodeKind::EdgeHelper { .. } => 0,
-            // No hotkey digit: a bridge is never switched to.
-            NodeKind::Agent if hello.os == Os::Bridge => 0,
+            // No hotkey digit: a bridge is never switched to. Remembered
+            // with index 0, so it stays a known agent (an exposure target)
+            // while disconnected.
+            NodeKind::Agent if hello.os == Os::Bridge => {
+                st.store.assign(id, 0, &hello.node_name);
+                0
+            }
             NodeKind::Agent => Self::assign_index(&mut st, id, &hello.node_name)?,
         };
         st.next_generation += 1;
@@ -3651,6 +3656,30 @@ mod tests {
         // When the active agent leaves, the bridge does not take over.
         r.unregister(a.id, a.reg);
         assert_eq!(r.active(), None);
+    }
+
+    #[test]
+    fn a_disconnected_bridge_stays_a_known_agent() {
+        let dir = store_dir();
+        let r = router_with(&dir, Duration::ZERO);
+        let b1 = join_os(&r, Os::Bridge);
+        let b2 = join_os(&r, Os::Bridge);
+        let a = join(&r, NodeKind::Agent).unwrap();
+        assert_eq!(a.reg.index, 1, "bridges take no index");
+        let w = join(&r, NodeKind::Widget).unwrap();
+        r.unregister(b1.id, b1.reg);
+        r.unregister(b2.id, b2.reg);
+        let store = NodeStore::load(&NodeStore::path_in(&dir)).unwrap();
+        assert_eq!(store.index_of(&b1.id), Some(0));
+        assert_eq!(store.index_of(&b2.id), Some(0));
+        r.on_control(
+            w.id,
+            Control::SetExposure {
+                receiver: 0,
+                mode: exclusive(b1.id),
+            },
+        );
+        assert_eq!(r.settings().exposures[0].mode, exclusive(b1.id));
     }
 
     #[test]
