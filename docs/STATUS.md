@@ -816,3 +816,9 @@ Según [fase6-plan.md](fase6-plan.md); decisiones en el [ADR 0030](adr/0030-vari
   4. ponerlo «Exclusivo → Mac», comprobar que el teclado escribe en el Mac aunque el activo sea otro y que los bordes no lo mueven, y volver a la red con Ctrl, Ctrl, Esc;
   5. si hay un dongle de otra marca a mano, añadirlo como segundo `[[receiver]]`.
 - **Sigue sin asignar:** el hallazgo de empaquetado del postinst, que arranca el hub con una identidad nueva al instalar.
+- **Correcciones tras la revisión de Claude Desktop** (ADR 0030 actualizado):
+  1. `Deactivate { keep }`: el agente que deja de ser activo ya no suelta las teclas de un receptor exclusivo. Antes las soltaban agent-core y el mapper de macOS. Hay test en agent-core y en el router.
+  2. Una entrada `[[exposure]]` ilegible en `settings.toml` se avisa y se ignora, y el hub arranca igual.
+  3. Al reconectar el agente exclusivo, se le vuelven a aplicar los LEDs y el perfil HID++.
+  4. `settings.toml` se escribe fuera del lock del router.
+  5. El selector del widget vuelve a mostrar lo que dice el hub si este rechaza el cambio. Está hecho por lógica; no lo he comprobado con el widget en marcha.

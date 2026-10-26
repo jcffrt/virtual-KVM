@@ -44,11 +44,13 @@ Hasta la fase 6 el hub reenviaba las interfaces de **un** receptor, descrito por
   - tiene su propio detector por receptor, separado del de la red.
 - **Los bordes no actúan** sobre un puntero movido por un ratón exclusivo. Los bordes los detectan los helpers en cada PC, sobre la posición del puntero del sistema, y no saben qué ratón lo movió. Por eso el hub recuerda, por agente, si el último informe de ratón que le envió era de un receptor exclusivo, e ignora los `SwitchTo` de ese agente o de su helper mientras sea así. Basta un movimiento del ratón de la red para que los bordes vuelvan a funcionar. Los `SwitchTo` de un widget no se ven afectados.
 - Al cambiar de agente activo:
-  - los «nada pulsado» se envían solo de los dispositivos de receptores `Network`: las teclas mantenidas en un receptor exclusivo no se cortan;
-  - los LEDs que se reescriben son solo los de esos receptores.
+  - los «nada pulsado» se envían solo de los dispositivos de receptores `Network`;
+  - `Deactivate` lleva `keep`, los ids de los dispositivos de receptores exclusivos, y el agente que deja de ser activo **no los suelta**. Antes, agent-core soltaba todos sus dispositivos al recibir `Deactivate`, y el sink de macOS además vaciaba el mapper entero. El agente no sabe qué receptores le son exclusivos (`Settings` solo va a los widgets), así que el hub se lo dice ahí. Con `keep` no vacío, el sink de macOS no hace su vaciado global: las órdenes de soltar dispositivo a dispositivo de agent-core ya pasaron por el mapper. Así las teclas mantenidas en un receptor exclusivo no se cortan;
+  - los LEDs que se reescriben son solo los de los receptores `Network`.
 - **LEDs y perfil del teclado:** los informes de salida de un dispositivo exclusivo se escriben solo si vienen de su agente exclusivo. Al cambiar la exposición, se escribe el último estado del nuevo destino. Si el receptor HID++ pasa a exclusivo, el perfil del teclado (ADR 0014) sigue al agente exclusivo y no cambia con los cambios de activo.
 - **Al cambiar la exposición**, el hub suelta las teclas de ese receptor en el destino anterior, reescribe los LEDs para el nuevo, guarda y envía `Settings` a todos los widgets y un `Status` nuevo.
-- `DeviceList` sigue llegando igual a todos los nodos. `Activate` y `Deactivate` no cambian.
+- **Al reconectar el agente exclusivo**, el hub vuelve a escribir sus LEDs en los receptores que le son exclusivos y, si uno es el receptor HID++, vuelve a mandar su perfil de teclado: puede volver con otro sistema operativo.
+- `DeviceList` sigue llegando igual a todos los nodos. `Activate` no cambia; `Deactivate` gana `keep`.
 
 ### Protocolo (versión 8)
 
@@ -59,12 +61,15 @@ Hasta la fase 6 el hub reenviaba las interfaces de **un** receptor, descrito por
   - el `agent` no es un agente conocido: conectado como `Agent`, o en `nodes.toml` si está desconectado (un helper o un widget no lo son).
 
   Al rechazarlo, registra un aviso y devuelve al widget que lo pidió el `Settings` sin cambios, para que su selector vuelva atrás. No hace falta un mensaje de error nuevo.
+- `Deactivate { keep: Vec<u8> }`: ids de dispositivos que el agente no debe soltar. Los helpers lo ignoran.
 - `HubStatus.held: Vec<u8>`. El plan pedía decirlo «en `Status`», y este mensaje ya se reenvía cuando un nodo se conecta o se desconecta, que es justo cuando cambia.
 
 ### Persistencia
 
 - `settings.toml` gana entradas `[[exposure]]` con `receiver = "<name>"` y `exclusive = "<uuid>"`. Solo se guardan las exclusivas: un receptor sin entrada es `Network`.
-- Se guardan **por nombre**, no por índice, para que sobrevivan a reordenar los bloques de `hub.toml`. Una entrada con un nombre que ya no existe se avisa y se ignora. Una con un agente que no está en `nodes.toml` se carga igualmente, con un aviso: su entrada se descarta hasta que ese agente se conecte, o hasta pulsar modificador, modificador, `Esc`.
+- Se guardan **por nombre**, no por índice, para que sobrevivan a reordenar los bloques de `hub.toml`. Una entrada con un nombre que ya no existe, o que no se puede leer (un `exclusive` que no es un UUID, una clave de más), se avisa y se ignora sin impedir que el hub arranque. Una con un agente que no está en `nodes.toml` se carga igualmente, con un aviso: su entrada se descarta hasta que ese agente se conecte, o hasta pulsar modificador, modificador, `Esc`.
+
+- `settings.toml` se escribe **fuera del lock del router**. El cambio lo marca como pendiente, y la escritura se hace al soltar el lock, bajo un mutex propio que lee otra vez los ajustes. Así la vía de escape, que llega por el hilo lector del `hidraw`, no bloquea el reenvío mientras la SD hace `fsync`, y la última escritura es siempre el estado más nuevo. Lo mismo vale para el `Settings` de un widget.
 
 ### `.hidrec`
 

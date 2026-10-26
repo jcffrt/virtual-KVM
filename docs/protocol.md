@@ -55,7 +55,7 @@ Mensajes en régimen:
 | `Settings(HubSettings { hysteresis_ms, hotkey })` | hub → widgets (al conectar y al cambiar); widget → hub | ajustes de conmutación; el hub los aplica y guarda en `/var/lib/rawkvm/settings.toml`, que manda sobre `[switching]` de `hub.toml`. v6: `hotkey` es `Hotkey { enabled, modifier: Ctrl\|Shift\|Alt\|Gui, previous, release_keys }` (modificador dos veces, luego 1..4, 0 = anterior, Esc = liberar teclas). v8: `exposures: Vec<ReceiverExposure { receiver, name, mode }>`, una por bloque `[[receiver]]` del hub; la rellena el hub y en un `Settings` de widget se ignora (ver «Receptores y exposición») |
 | `SetExposure { receiver, mode: Exposure }` | widget → hub | v8. `Network` o `Exclusive { agent }`. Aceptado: el hub suelta las teclas de ese receptor en su destino anterior, lo guarda en `settings.toml` y envía `Settings` a todos los widgets y un `Status`. Rechazado (receptor inexistente, o `agent` que no es un agente conectado ni de `nodes.toml`): aviso en el registro y `Settings` sin cambios solo al que lo pidió |
 | `DeviceList` | hub → nodos | al conectar y cuando cambia el conjunto de dispositivos |
-| `Activate { entry: Option<Entry> }` / `Deactivate` | hub → agente y sus helpers | este agente empieza / deja de recibir. Sin `entry` (atajo, caída del activo, menú del widget) el helper no mueve el puntero |
+| `Activate { entry: Option<Entry> }` / `Deactivate { keep }` | hub → agente y sus helpers | este agente empieza / deja de recibir. Sin `entry` (atajo, caída del activo, menú del widget) el helper no mueve el puntero. v8: `keep` son los ids de dispositivos de receptores exclusivos, que el agente **no** suelta al desactivarse (los helpers lo ignoran) |
 | `PairingStart { timeout_s }` / `PairingStop` | widget → hub | abre (registro `0xB2` `01 00 <s>`) o cierra (`02`) el emparejamiento del receptor. Sin la interfaz HID++ abierta, `PairingEvent(Failed)` |
 | `PairingEvent` | hub → widgets | `Started { timeout_s }`, `DeviceFound { name }` (notificación `0x41` de una ranura nueva), `Paired { name, kind }` o `TimedOut` (notificación `0x4A` de cierre), `Failed { reason }` (error en `0x4A` o en la petición) |
 | `ReceiverDevices { devices: Vec<PairedDevice> }` | hub → widgets | v4. Dispositivos emparejados con el receptor (`slot`, `name`, `kind`, `wireless_pid`, `online`, `os_profiles`, `os_profile`), leídos por HID++; al conectar y al cambiar (dispositivo que se conecta, duerme, se empareja o se olvida; disposición cambiada) |
@@ -104,7 +104,7 @@ v8, ADR 0030. El hub puede leer varios receptores (`[[receiver]]` en `hub.toml`,
 
 - `Network`: sus informes van al agente activo y siguen la conmutación normal.
 - `Exclusive { agent }`: sus informes van siempre a `agent`, sea cual sea el activo; si no está conectado se **descartan** (y el receptor aparece en `HubStatus.held`). Ni el atajo ni los bordes actúan sobre ellos: el hub ignora los `SwitchTo` de un agente (o su helper) cuyo puntero movió por última vez un ratón exclusivo. Excepción: modificador, modificador, `Esc` en un teclado exclusivo devuelve ese receptor a `Network` (aunque el atajo esté desactivado) y suelta sus teclas; el `Esc` no se reenvía.
-- Al cambiar de agente activo, `RELEASE_ALL` y los LEDs solo afectan a los receptores `Network`. Los informes de salida de un dispositivo exclusivo solo se escriben si vienen de su agente.
+- Al cambiar de agente activo, `RELEASE_ALL` y los LEDs solo afectan a los receptores `Network`, y `Deactivate { keep }` lista los dispositivos exclusivos para que el agente no los suelte. Los informes de salida de un dispositivo exclusivo solo se escriben si vienen de su agente.
 - `DeviceList` es la misma para todos los nodos: cada agente crea todos los dispositivos, y la exposición solo decide quién recibe los informes.
 - Persistencia: `settings.toml`, `[[exposure]]` con `receiver = "<name>"` y `exclusive = "<uuid>"`, por nombre de receptor.
 
@@ -112,7 +112,7 @@ v8, ADR 0030. El hub puede leer varios receptores (`[[receiver]]` en `hub.toml`,
 
 1. El agente activo (o un widget) envía `SwitchTo`. Un agente inactivo no puede robar la entrada.
 2. Histéresis: se ignora un `SwitchTo` a menos de `hysteresis_ms` (150 ms) del cambio anterior. El atajo y la caída del agente activo no la respetan.
-3. El hub envía al origen un datagrama `RELEASE_ALL` por cada informe de entrada de páginas estándar de los receptores `Network` (las colecciones vendor ≥ 0xFF00, como HID++ o el ID 8 de página 0xFFBC, se omiten), luego `Deactivate`. Al recibir `Deactivate` el agente **también** sintetiza localmente esos informes, porque los datagramas pueden perderse.
+3. El hub envía al origen un datagrama `RELEASE_ALL` por cada informe de entrada de páginas estándar de los receptores `Network` (las colecciones vendor ≥ 0xFF00, como HID++ o el ID 8 de página 0xFFBC, se omiten), luego `Deactivate { keep }`. Al recibir `Deactivate` el agente **también** sintetiza localmente esos informes, salvo para los dispositivos de `keep`, porque los datagramas pueden perderse.
 4. El destino y sus helpers reciben `Activate { entry }` (`pos_ratio` acotado a 0..1); los helpers del origen, `Deactivate`.
 5. Si el agente activo se desconecta, pasa a ser activo el último agente que lo fue y sigue conectado (o el de índice menor).
 
