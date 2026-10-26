@@ -6,6 +6,7 @@
 //! build everywhere; BlueZ is only used by the Linux binaries.
 
 pub mod hidp;
+pub mod merge;
 pub mod sdp;
 
 /// Keyboard (report ID 1, boot layout with the LED output report) and
