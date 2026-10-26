@@ -16,6 +16,10 @@ use proto::HidDevice;
 pub const DEFAULT_ROOT: &str = "/sys/kernel/config/usb_gadget";
 pub const DEFAULT_NAME: &str = "rawkvm";
 
+/// Instances `usb_f_hid` allows (`HIDG_MINORS` in f_hid.c): the `mkdir` of
+/// a fifth `functions/hid.*` fails with `ENODEV`.
+pub const HIDG_MINORS: usize = 4;
+
 /// What the PC will see.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GadgetSpec {
@@ -25,6 +29,20 @@ pub struct GadgetSpec {
     pub product: String,
     pub serial: String,
     pub functions: Vec<FunctionSpec>,
+    /// Devices that should be presented but did not fit in the limit, by
+    /// hub id (ADR 0031).
+    pub left_out: Vec<u8>,
+}
+
+impl GadgetSpec {
+    /// The PC would see the same device: equal but for `left_out`.
+    pub fn same_gadget(&self, other: &GadgetSpec) -> bool {
+        let strip = |s: &GadgetSpec| GadgetSpec {
+            left_out: Vec::new(),
+            ..s.clone()
+        };
+        strip(self) == strip(other)
+    }
 }
 
 /// One HID interface (`functions/hid.<instance>`).
@@ -44,6 +62,8 @@ pub struct Options {
     /// `hid-logitech-dj` (Linux) should not see it: see ADR 0007.
     pub expose_hidpp: bool,
     pub serial: String,
+    /// Most HID functions to create: [`HIDG_MINORS`] on a real kernel.
+    pub max_functions: usize,
 }
 
 /// Longest input report including its ID byte: the interrupt IN endpoint's
@@ -75,30 +95,63 @@ pub fn is_vendor_only(info: &DescriptorInfo) -> bool {
     !info.applications.is_empty() && info.applications.iter().all(|(page, _)| *page >= 0xFF00)
 }
 
-/// The gadget for a device list, interfaces in hub id order so their
-/// numbers match the receiver's. `None` if nothing is left to present.
+/// How much an interface is worth when not all of them fit (ADR 0031):
+/// 0 keyboard or mouse, 1 any other standard collection (consumer keys,
+/// system control), 2 vendor-defined only (HID++) or unknown.
+pub fn priority(info: &DescriptorInfo) -> u8 {
+    const KEYBOARD_OR_MOUSE: [u16; 4] = [0x01, 0x02, 0x06, 0x07]; // pointer, mouse, keyboard, keypad
+    let apps = &info.applications;
+    if apps
+        .iter()
+        .any(|&(page, usage)| page == 0x01 && KEYBOARD_OR_MOUSE.contains(&usage))
+    {
+        0
+    } else if apps.iter().any(|&(page, _)| page < 0xFF00) {
+        1
+    } else {
+        2
+    }
+}
+
+/// The gadget for a device list. At most `opts.max_functions` interfaces,
+/// chosen by [`priority`] and then hub id (the first receiver wins a tie);
+/// those are linked in hub id order so their numbers follow the
+/// receiver's. `None` if nothing is left to present.
 pub fn spec_for(devices: &[HidDevice], opts: &Options) -> Option<GadgetSpec> {
-    let mut devs: Vec<&HidDevice> = devices.iter().collect();
-    devs.sort_by_key(|d| d.id);
+    let mut devs: Vec<(&HidDevice, DescriptorInfo)> = devices
+        .iter()
+        .map(|d| (d, DescriptorInfo::parse(&d.report_descriptor)))
+        .filter(|(_, info)| opts.expose_hidpp || !is_vendor_only(info))
+        .collect();
+    devs.sort_by_key(|(d, info)| (priority(info), d.id));
+    let left_out: Vec<u8> = {
+        let mut v: Vec<u8> = devs
+            .iter()
+            .skip(opts.max_functions)
+            .map(|(d, _)| d.id)
+            .collect();
+        v.sort_unstable();
+        v
+    };
+    devs.truncate(opts.max_functions);
+    devs.sort_by_key(|(d, _)| d.id);
     let functions: Vec<FunctionSpec> = devs
         .iter()
-        .filter_map(|d| {
-            let info = DescriptorInfo::parse(&d.report_descriptor);
-            if !opts.expose_hidpp && is_vendor_only(&info) {
-                return None;
-            }
-            let (subclass, protocol) = boot_class(&info);
-            Some(FunctionSpec {
+        .map(|(d, info)| {
+            let (subclass, protocol) = boot_class(info);
+            FunctionSpec {
                 dev_id: d.id,
                 instance: format!("usb{}", d.id),
                 subclass,
                 protocol,
-                report_length: report_length(&info),
+                report_length: report_length(info),
                 report_desc: d.report_descriptor.clone(),
-            })
+            }
         })
         .collect();
-    let first = devs.first()?;
+    // Identity of the lowest id overall, as before: the receiver the PC
+    // sees even if its HID++ interface is hidden.
+    let first = devices.iter().min_by_key(|d| d.id)?;
     if functions.is_empty() {
         return None;
     }
@@ -113,6 +166,7 @@ pub fn spec_for(devices: &[HidDevice], opts: &Options) -> Option<GadgetSpec> {
         product: first.name.clone(),
         serial: first.serial.clone().unwrap_or_else(|| opts.serial.clone()),
         functions,
+        left_out,
     })
 }
 
@@ -285,6 +339,16 @@ impl ApplyError {
         self.source.kind() == io::ErrorKind::NotFound
             || self.source.raw_os_error() == Some(libc::ENODEV)
     }
+
+    /// The `functions/hid.<instance>` directory of `gadget` whose creation
+    /// failed (`usb_f_hid` out of instances), as its instance name.
+    pub fn failed_function(&self, gadget: &Path) -> Option<&str> {
+        let Op::Mkdir(p) = &self.op else { return None };
+        if p.parent()? != gadget.join("functions") {
+            return None;
+        }
+        p.file_name()?.to_str()?.strip_prefix("hid.")
+    }
 }
 
 /// Filesystem primitives, so tests can mimic ConfigFS on a plain directory.
@@ -351,17 +415,17 @@ pub fn find_udc(class_dir: &Path) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    fn fixture(name: &str) -> Option<Vec<u8>> {
+    pub(crate) fn fixture(name: &str) -> Option<Vec<u8>> {
         let p = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../fixtures/unifying-c52b")
             .join(name);
         fs::read(p).ok()
     }
 
-    fn device(id: u8, desc: Vec<u8>) -> HidDevice {
+    pub(crate) fn device(id: u8, desc: Vec<u8>) -> HidDevice {
         HidDevice {
             id,
             name: "Logitech USB Receiver".into(),
@@ -376,13 +440,38 @@ mod tests {
     }
 
     /// The three receiver interfaces in a scrambled order.
-    fn receiver() -> Option<Vec<HidDevice>> {
+    pub(crate) fn receiver() -> Option<Vec<HidDevice>> {
         Some(vec![
             device(2, fixture("0003-046D-C52B.0009.nodj.bin")?),
             device(0, fixture("0003-046D-C52B.0007.nodj.bin")?),
             device(1, fixture("0003-046D-C52B.0008.nodj.bin")?),
         ])
     }
+
+    /// The Zero 2W's case (ADR 0031): the Logitech's three interfaces and
+    /// a second receiver with a keyboard and a mouse (ids 16 and 17).
+    pub(crate) fn two_receivers() -> Option<Vec<HidDevice>> {
+        let mut v = receiver()?;
+        for (id, f) in [
+            (16, "0003-046D-C52B.0007.nodj.bin"),
+            (17, "0003-046D-C52B.0008.nodj.bin"),
+        ] {
+            let mut d = device(id, fixture(f)?);
+            d.receiver = 1;
+            d.interface = id - 16;
+            d.vid = 0x25a7;
+            d.pid = 0xfa09;
+            d.name = "Compx 2.4G Receiver".into();
+            v.push(d);
+        }
+        Some(v)
+    }
+
+    /// Consumer control only (media keys), no keyboard or mouse.
+    const CONSUMER_ONLY: [u8; 23] = [
+        0x05, 0x0C, 0x09, 0x01, 0xA1, 0x01, 0x15, 0x00, 0x26, 0xFF, 0x03, 0x19, 0x00, 0x2A, 0xFF,
+        0x03, 0x75, 0x10, 0x95, 0x01, 0x81, 0x00, 0xC0,
+    ];
 
     /// ConfigFS semantics on a plain directory: `mkdir` of a gadget creates
     /// `strings/`, `configs/` and `functions/`; `mkdir` of a config creates
@@ -435,6 +524,7 @@ mod tests {
         Options {
             expose_hidpp,
             serial: "RK0001".into(),
+            max_functions: HIDG_MINORS,
         }
     }
 
@@ -469,6 +559,73 @@ mod tests {
         let ids: Vec<u8> = spec.functions.iter().map(|f| f.dev_id).collect();
         assert_eq!(ids, [0, 1]);
         assert!(spec_for(&[], &opts(true)).is_none());
+    }
+
+    #[test]
+    fn priority_puts_keyboards_and_mice_first_and_vendor_last() {
+        let Some(devs) = receiver() else { return };
+        let prio = |d: &HidDevice| priority(&DescriptorInfo::parse(&d.report_descriptor));
+        let by_id = |id| devs.iter().find(|d| d.id == id).unwrap();
+        assert_eq!(prio(by_id(0)), 0); // keyboard
+        assert_eq!(prio(by_id(1)), 0); // mouse (with consumer and system control)
+        assert_eq!(prio(by_id(2)), 2); // HID++
+        assert_eq!(prio(&device(3, CONSUMER_ONLY.to_vec())), 1);
+        assert_eq!(prio(&device(4, Vec::new())), 2); // unparsable
+    }
+
+    #[test]
+    fn five_interfaces_drop_hidpp_first() {
+        let Some(devs) = two_receivers() else { return };
+        let ids = |s: &GadgetSpec| s.functions.iter().map(|f| f.dev_id).collect::<Vec<u8>>();
+
+        let spec = spec_for(&devs, &opts(true)).unwrap();
+        assert_eq!(ids(&spec), [0, 1, 16, 17]);
+        assert_eq!(spec.left_out, [2]);
+        // Still the Logitech receiver to the PC.
+        assert_eq!((spec.vendor_id, spec.product_id), (0x046d, 0xc52b));
+
+        // A kernel with room for three: the second receiver's mouse goes too
+        // (same priority as the first's, higher id).
+        let three = Options {
+            max_functions: 3,
+            ..opts(true)
+        };
+        let spec = spec_for(&devs, &three).unwrap();
+        assert_eq!(ids(&spec), [0, 1, 16]);
+        assert_eq!(spec.left_out, [2, 17]);
+
+        // Consumer-only goes before HID++, after keyboards and mice.
+        let mut more = devs.clone();
+        more.push(device(3, CONSUMER_ONLY.to_vec()));
+        let five = Options {
+            max_functions: 5,
+            ..opts(true)
+        };
+        let spec = spec_for(&more, &five).unwrap();
+        assert_eq!(ids(&spec), [0, 1, 3, 16, 17]);
+        assert_eq!(spec.left_out, [2]);
+
+        // Hidden on purpose (--no-hidpp) is not "left out".
+        let spec = spec_for(&devs, &opts(false)).unwrap();
+        assert_eq!(ids(&spec), [0, 1, 16, 17]);
+        assert!(spec.left_out.is_empty());
+    }
+
+    #[test]
+    fn failed_function_names_the_instance() {
+        let g = Path::new("/cfg/rawkvm");
+        let err = |op| ApplyError {
+            op,
+            source: io::Error::from_raw_os_error(libc::ENODEV),
+        };
+        let e = err(Op::Mkdir(g.join("functions/hid.usb17")));
+        assert_eq!(e.failed_function(g), Some("usb17"));
+        assert_eq!(
+            err(Op::Mkdir(g.join("configs/c.1"))).failed_function(g),
+            None
+        );
+        let w = err(Op::Write(g.join("functions/hid.usb2/protocol"), vec![]));
+        assert_eq!(w.failed_function(g), None);
     }
 
     #[test]

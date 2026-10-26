@@ -152,6 +152,7 @@ fn main() -> Result<()> {
         Options {
             expose_hidpp: !args.no_hidpp,
             serial,
+            max_functions: configfs::HIDG_MINORS,
         },
     );
     // A previous run may have died with the gadget still bound.

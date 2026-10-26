@@ -71,6 +71,12 @@ pub trait HidSink {
     fn take_outputs(&mut self) -> Option<OutputReceiver> {
         None
     }
+    /// Devices of the last list this sink could not present to its PC
+    /// (a USB gadget out of HID functions, ADR 0031), by id. Asked after
+    /// [`devices_ready`](Self::devices_ready).
+    fn unexposed(&self) -> Vec<u8> {
+        Vec::new()
+    }
 }
 
 /// Delay of the redundant copy of an output report datagram (the hub drops

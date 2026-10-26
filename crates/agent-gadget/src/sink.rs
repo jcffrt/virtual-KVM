@@ -10,7 +10,7 @@ use proto::descriptor::{DescriptorInfo, USAGE_MOUSE, USAGE_PAGE_GENERIC_DESKTOP}
 use proto::HidDevice;
 use tracing::{debug, info, warn};
 
-use crate::configfs::{self, GadgetSpec, Options};
+use crate::configfs::{self, Backend, GadgetSpec, Options, RealFs};
 use crate::hidg::{self, Hidg};
 
 /// Where things live; overridable for tests.
@@ -100,11 +100,30 @@ impl Port {
     }
 }
 
+enum BuildError {
+    /// `usb_f_hid` ran out of instances after creating `fitted` functions.
+    NoRoom {
+        fitted: usize,
+    },
+    Other(anyhow::Error),
+}
+
+impl From<anyhow::Error> for BuildError {
+    fn from(e: anyhow::Error) -> Self {
+        BuildError::Other(e)
+    }
+}
+
 pub struct GadgetSink {
     paths: Paths,
     opts: Options,
+    fs: Box<dyn Backend + Send>,
     pending: Vec<HidDevice>,
+    /// The device list the gadget was last built for, sorted by id.
+    built_from: Vec<HidDevice>,
     spec: Option<GadgetSpec>,
+    /// Devices that should be on the PC and are not (ADR 0031).
+    unexposed: Vec<u8>,
     ports: BTreeMap<u8, Port>,
     dropped: u64,
     host: HostState,
@@ -113,11 +132,19 @@ pub struct GadgetSink {
 
 impl GadgetSink {
     pub fn new(paths: Paths, opts: Options) -> Self {
+        Self::with_backend(paths, opts, Box::new(RealFs))
+    }
+
+    /// With other filesystem primitives (tests: a simulated ConfigFS).
+    pub fn with_backend(paths: Paths, opts: Options, fs: Box<dyn Backend + Send>) -> Self {
         Self {
             paths,
             opts,
+            fs,
             pending: Vec::new(),
+            built_from: Vec::new(),
             spec: None,
+            unexposed: Vec::new(),
             ports: BTreeMap::new(),
             dropped: 0,
             host: HostState::default(),
@@ -141,21 +168,35 @@ impl GadgetSink {
             return Ok(());
         }
         let ops = configfs::teardown_ops(&g, &configfs::inspect(&g));
-        configfs::apply(&ops).with_context(|| format!("removing {}", g.display()))?;
+        configfs::apply_on(&ops, self.fs.as_mut())
+            .with_context(|| format!("removing {}", g.display()))?;
         info!("USB gadget removed");
         Ok(())
     }
 
-    fn build(&mut self, spec: GadgetSpec) -> Result<()> {
+    fn build(&mut self, spec: GadgetSpec) -> Result<(), BuildError> {
         self.teardown()?;
         let g = self.gadget_dir();
-        if let Err(e) = configfs::apply(&configfs::build_ops(&g, &spec)) {
+        if let Err(e) = configfs::apply_on(&configfs::build_ops(&g, &spec), self.fs.as_mut()) {
+            // A function after the first one failed: usb_f_hid is out of
+            // instances (HIDG_MINORS, or minors held by another gadget).
+            let fitted = e.failed_function(&g).and_then(|inst| {
+                spec.functions
+                    .iter()
+                    .position(|f| f.instance == inst)
+                    .filter(|&k| k > 0)
+            });
+            if let Some(fitted) = fitted {
+                return Err(BuildError::NoRoom { fitted });
+            }
             let hint = if e.is_missing_support() {
                 " (is libcomposite loaded and ConfigFS mounted?)"
             } else {
                 ""
             };
-            return Err(anyhow::Error::new(e).context(format!("creating {}{hint}", g.display())));
+            return Err(anyhow::Error::new(e)
+                .context(format!("creating {}{hint}", g.display()))
+                .into());
         }
         let udc = match &self.paths.udc {
             Some(u) => u.clone(),
@@ -166,7 +207,8 @@ impl GadgetSink {
                 )
             })?,
         };
-        std::fs::write(g.join("UDC"), format!("{udc}\n"))
+        self.fs
+            .write(&g.join("UDC"), format!("{udc}\n").as_bytes())
             .with_context(|| format!("binding to {udc} (is another gadget using it?)"))?;
         info!(
             "USB gadget {:04x}:{:04x} {:?} bound to {udc} with {} interfaces",
@@ -267,19 +309,78 @@ impl HidSink for GadgetSink {
     }
 
     fn devices_ready(&mut self) {
-        let Some(spec) = configfs::spec_for(&self.pending, &self.opts) else {
-            warn!("no device to present over USB");
-            return;
-        };
-        if self.spec.as_ref() == Some(&spec) {
-            // Same receiver as before a reconnection: keep the gadget, the
+        let mut devices = self.pending.clone();
+        devices.sort_by_key(|d| d.id);
+        if self.spec.is_some() && devices == self.built_from {
+            // Same receivers as before a reconnection: keep the gadget, the
             // PC sees no USB disconnect.
             debug!("device list unchanged; keeping the USB gadget");
             return;
         }
-        if let Err(e) = self.build(spec) {
-            warn!("{e:#}");
+        // A new list: try the full limit again, even if a previous build
+        // found the kernel had less room.
+        let mut opts = self.opts.clone();
+        loop {
+            let Some(spec) = configfs::spec_for(&devices, &opts) else {
+                warn!("no device to present over USB");
+                break;
+            };
+            if let Some(cur) = &mut self.spec {
+                if cur.same_gadget(&spec) {
+                    debug!("same interfaces fit; keeping the USB gadget");
+                    cur.left_out = spec.left_out;
+                    break;
+                }
+            }
+            match self.build(spec) {
+                Ok(()) => break,
+                Err(BuildError::NoRoom { fitted }) => {
+                    warn!(
+                        "the kernel has room for only {fitted} HID functions \
+                         (usb_f_hid allows {} in all); building the gadget with {fitted}",
+                        configfs::HIDG_MINORS
+                    );
+                    opts.max_functions = fitted;
+                }
+                Err(BuildError::Other(e)) => {
+                    warn!("{e:#}");
+                    break;
+                }
+            }
         }
+        self.built_from = devices;
+        self.unexposed = match &self.spec {
+            Some(spec) => spec.left_out.clone(),
+            // Nothing bound: every device that should be there is missing.
+            None => self
+                .built_from
+                .iter()
+                .filter(|d| {
+                    self.opts.expose_hidpp
+                        || !configfs::is_vendor_only(&DescriptorInfo::parse(&d.report_descriptor))
+                })
+                .map(|d| d.id)
+                .collect(),
+        };
+        // An emptied list keeps the old gadget; nothing is missing then.
+        let listed: Vec<u8> = self.built_from.iter().map(|d| d.id).collect();
+        self.unexposed.retain(|id| listed.contains(id));
+        if !self.unexposed.is_empty() {
+            let names: Vec<String> = self
+                .unexposed
+                .iter()
+                .filter_map(|id| self.built_from.iter().find(|d| d.id == *id))
+                .map(|d| format!("{} ({}, interface {})", d.id, d.name, d.interface))
+                .collect();
+            warn!(
+                "not presented to the PC on the USB cable: {}",
+                names.join(", ")
+            );
+        }
+    }
+
+    fn unexposed(&self) -> Vec<u8> {
+        self.unexposed.clone()
     }
 
     fn input(&mut self, dev_id: u8, report: &[u8]) -> Result<()> {
@@ -316,7 +417,12 @@ impl HidSink for GadgetSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::configfs::tests::{two_receivers, SimConfigFs};
     use std::fs;
+    use std::io;
+    use std::path::Path;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     fn fixture(name: &str) -> Option<Vec<u8>> {
         let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -360,6 +466,7 @@ mod tests {
         let opts = Options {
             expose_hidpp: true,
             serial: "X".into(),
+            max_functions: configfs::HIDG_MINORS,
         };
         let mut s = GadgetSink::new(paths.clone(), opts);
 
@@ -382,6 +489,173 @@ mod tests {
         assert!(g.join("marker").exists());
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    /// ConfigFS where `usb_f_hid` has room for `room` instances, like
+    /// HIDG_MINORS (or fewer, if another gadget holds some).
+    struct LimitedHid {
+        sim: SimConfigFs,
+        room: Arc<AtomicUsize>,
+        live: usize,
+    }
+
+    fn is_function(p: &Path) -> bool {
+        p.parent()
+            .and_then(|d| d.file_name())
+            .is_some_and(|n| n == "functions")
+    }
+
+    impl Backend for LimitedHid {
+        fn mkdir(&mut self, p: &Path) -> io::Result<()> {
+            if is_function(p) {
+                if self.live >= self.room.load(Ordering::SeqCst) {
+                    return Err(io::Error::from_raw_os_error(libc::ENODEV));
+                }
+                self.sim.mkdir(p)?;
+                self.live += 1;
+                return Ok(());
+            }
+            self.sim.mkdir(p)
+        }
+        fn write(&mut self, p: &Path, data: &[u8]) -> io::Result<()> {
+            self.sim.write(p, data)
+        }
+        fn symlink(&mut self, target: &Path, link: &Path) -> io::Result<()> {
+            self.sim.symlink(target, link)
+        }
+        fn unlink(&mut self, p: &Path) -> io::Result<()> {
+            self.sim.unlink(p)
+        }
+        fn rmdir(&mut self, p: &Path) -> io::Result<()> {
+            self.sim.rmdir(p)?;
+            if is_function(p) {
+                self.live -= 1;
+            }
+            Ok(())
+        }
+    }
+
+    struct Rig {
+        root: PathBuf,
+        sink: GadgetSink,
+        room: Arc<AtomicUsize>,
+    }
+
+    impl Rig {
+        fn new(room: usize) -> Self {
+            let root = std::env::temp_dir().join(format!("rawkvm-gsink-{}", uuid::Uuid::new_v4()));
+            let paths = Paths {
+                configfs: root.join("configfs"),
+                gadget_name: "rawkvm".into(),
+                udc_class: root.join("udc"),
+                sys_dev_char: root.join("sys"),
+                udc: None,
+            };
+            fs::create_dir_all(&paths.configfs).unwrap();
+            fs::create_dir_all(paths.udc_class.join("fe980000.usb")).unwrap();
+            let room = Arc::new(AtomicUsize::new(room));
+            let backend = LimitedHid {
+                sim: SimConfigFs {
+                    root: paths.configfs.clone(),
+                },
+                room: room.clone(),
+                live: 0,
+            };
+            let opts = Options {
+                expose_hidpp: true,
+                serial: "X".into(),
+                max_functions: configfs::HIDG_MINORS,
+            };
+            Rig {
+                sink: GadgetSink::with_backend(paths, opts, Box::new(backend)),
+                root,
+                room,
+            }
+        }
+
+        fn announce(&mut self, devices: &[HidDevice]) {
+            self.sink.destroy_all();
+            for d in devices {
+                self.sink.create(d).unwrap();
+            }
+            self.sink.devices_ready();
+        }
+
+        fn functions(&self) -> Vec<String> {
+            let mut v: Vec<String> = fs::read_dir(self.root.join("configfs/rawkvm/functions"))
+                .map(|it| {
+                    it.flatten()
+                        .map(|e| e.file_name().to_string_lossy().into_owned())
+                        .collect()
+                })
+                .unwrap_or_default();
+            v.sort();
+            v
+        }
+    }
+
+    impl Drop for Rig {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[test]
+    fn five_devices_bind_the_four_that_matter() {
+        let Some(devs) = two_receivers() else { return };
+        let mut rig = Rig::new(configfs::HIDG_MINORS);
+        rig.announce(&devs);
+        assert!(rig.sink.is_bound());
+        assert_eq!(
+            rig.functions(),
+            ["hid.usb0", "hid.usb1", "hid.usb16", "hid.usb17"]
+        );
+        assert_eq!(rig.sink.unexposed(), [2]);
+        // Reports for the left-out HID++ interface are dropped quietly.
+        rig.sink.input(2, &[0x10, 0xff, 0, 0, 0, 0, 0]).unwrap();
+    }
+
+    #[test]
+    fn less_room_than_expected_is_learned_and_retried_on_a_new_list() {
+        let Some(devs) = two_receivers() else { return };
+        // Another gadget holds one minor: the fourth mkdir fails.
+        let mut rig = Rig::new(3);
+        rig.announce(&devs);
+        assert!(rig.sink.is_bound());
+        assert_eq!(rig.functions(), ["hid.usb0", "hid.usb1", "hid.usb16"]);
+        assert_eq!(rig.sink.unexposed(), [2, 17]);
+
+        // The minor is free again, but the same list (a hub reconnection)
+        // keeps the gadget: no re-enumeration on the PC.
+        rig.room.store(configfs::HIDG_MINORS, Ordering::SeqCst);
+        let marker = rig.root.join("configfs/rawkvm/marker");
+        fs::write(&marker, "x").unwrap();
+        rig.announce(&devs);
+        assert!(marker.exists());
+        assert_eq!(rig.sink.unexposed(), [2, 17]);
+
+        // A new list is tried at full size again.
+        let mut more = devs.clone();
+        more.push(HidDevice {
+            id: 18,
+            interface: 2,
+            ..devs[3].clone()
+        });
+        rig.announce(&more);
+        assert_eq!(
+            rig.functions(),
+            ["hid.usb0", "hid.usb1", "hid.usb16", "hid.usb17"]
+        );
+        assert_eq!(rig.sink.unexposed(), [2, 18]);
+    }
+
+    #[test]
+    fn no_room_at_all_reports_every_device() {
+        let Some(devs) = two_receivers() else { return };
+        let mut rig = Rig::new(0);
+        rig.announce(&devs);
+        assert!(!rig.sink.is_bound());
+        assert_eq!(rig.sink.unexposed(), [0, 1, 2, 16, 17]);
     }
 
     #[test]
@@ -416,11 +690,14 @@ mod tests {
             Options {
                 expose_hidpp: true,
                 serial: "X".into(),
+                max_functions: configfs::HIDG_MINORS,
             },
         );
         s.create(&device(0, k)).unwrap();
         let spec = configfs::spec_for(&s.pending, &s.opts).unwrap();
-        let e = s.build(spec).unwrap_err();
+        let Err(BuildError::Other(e)) = s.build(spec) else {
+            panic!("built without a UDC");
+        };
         assert!(format!("{e:#}").contains("no USB device controller"));
         fs::remove_dir_all(root).unwrap();
     }
