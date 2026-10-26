@@ -47,8 +47,9 @@ use uuid::Uuid;
 ///   `UnclaimedReceivers` (hub -> widgets), `AddReceiver` and
 ///   `RemoveReceiver` (widget -> hub), `ReceiverResult` (hub -> widget).
 /// * 11: Bluetooth bridge (ADR 0033): [`Os::Bridge`], `BtStatus` (bridge ->
-///   hub -> widgets), `BtDiscoverable` and `BtForget` (widget -> hub ->
-///   bridge).
+///   hub) shown in [`NodeInfo::bridge`], `BtDiscoverable` and `BtForget`
+///   (widget -> hub -> bridge). Transport-neutral: any Bluetooth HID stack
+///   (BlueZ, Android's BluetoothHidDevice) speaks it the same way.
 pub const PROTO_VERSION: u16 = 11;
 
 /// DNS-SD service type the hub advertises on the LAN.
@@ -74,8 +75,10 @@ pub enum Os {
     MacOs,
     Linux,
     Other,
-    /// A Bluetooth bridge (`rawkvm-agent-bt`, ADR 0033): an agent with no
-    /// screens that only receives the receivers exposed to it exclusively.
+    /// A Bluetooth bridge (ADR 0033): an agent that presents the receivers
+    /// exposed to it exclusively to one PC as a Bluetooth keyboard and
+    /// mouse. No screens, no hotkey index, never the active node; its
+    /// `DeviceList` holds only its receivers' devices.
     Bridge,
 }
 
@@ -424,6 +427,8 @@ pub struct NodeInfo {
     /// Device ids this agent could not present to its PC (a USB gadget
     /// out of HID functions, ADR 0031). Empty for other nodes.
     pub unexposed: Vec<u8>,
+    /// A bridge's last `BtStatus` (ADR 0033); `None` for other nodes.
+    pub bridge: Option<BridgeStatus>,
 }
 
 /// Hub status broadcast to widgets (and agents) on change.
@@ -590,11 +595,9 @@ pub enum Control {
         ok: bool,
         message: String,
     },
-    /// bridge -> hub -> widgets. Sent by the bridge on change; the hub sets
-    /// `node` to the sender, keeps the last one and sends it to widgets as
-    /// they connect.
+    /// bridge -> hub, on connect and on change. Shown to widgets in
+    /// [`NodeInfo::bridge`].
     BtStatus {
-        node: Uuid,
         status: BridgeStatus,
     },
     /// widget -> hub -> bridge `node`. Open pairing for `secs` (0: close).
@@ -783,7 +786,6 @@ mod tests {
             },
             Control::Unexposed { devices: vec![2] },
             Control::BtStatus {
-                node: Uuid::new_v4(),
                 status: BridgeStatus {
                     bonded: Some("GAMER".into()),
                     connected: true,

@@ -536,6 +536,7 @@ mod tests {
             rtt_ms: Some(4.0),
             screens,
             unexposed: Vec::new(),
+            bridge: None,
         }
     }
 
@@ -803,6 +804,7 @@ mod tests {
                     rtt_ms: None,
                     screens: 1,
                     unexposed: Vec::new(),
+                    bridge: None,
                 }],
                 device_count: 3,
                 uptime_s: 1,

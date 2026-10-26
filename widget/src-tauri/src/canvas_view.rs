@@ -313,6 +313,7 @@ mod tests {
             rtt_ms: None,
             screens: 0,
             unexposed: Vec::new(),
+            bridge: None,
         }
     }
 

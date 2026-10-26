@@ -14,8 +14,8 @@ use bytes::Bytes;
 use proto::datagram::{Datagram, SeqTracker, FLAG_RELEASE_ALL};
 use proto::descriptor::{DescriptorInfo, USAGE_MOUSE, USAGE_PAGE_GENERIC_DESKTOP};
 use proto::{
-    Control, EdgeOptions, Exposure, HidDevice, HubSettings, HubStatus, NodeInfo, NodeKind, Os,
-    ReceiverExposure, RejectReason, Screen,
+    BridgeStatus, Control, EdgeOptions, Exposure, HidDevice, HubSettings, HubStatus, NodeInfo,
+    NodeKind, Os, ReceiverExposure, RejectReason, Screen,
 };
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, info, warn};
@@ -191,6 +191,8 @@ struct Node {
     out_seq: SeqTracker,
     /// Devices this agent cannot present to its PC (ADR 0031).
     unexposed: Vec<u8>,
+    /// A bridge's last status (ADR 0033).
+    bridge: Option<BridgeStatus>,
 }
 
 impl Node {
@@ -222,6 +224,17 @@ impl Node {
 
     fn is_agent(&self) -> bool {
         self.hello.kind == NodeKind::Agent
+    }
+
+    /// A Bluetooth bridge (ADR 0033): an agent that only takes the
+    /// receivers exposed to it exclusively.
+    fn is_bridge(&self) -> bool {
+        self.is_agent() && self.hello.os == Os::Bridge
+    }
+
+    /// An agent that can be the active node.
+    fn is_switchable(&self) -> bool {
+        self.is_agent() && !self.is_bridge()
     }
 }
 
@@ -401,11 +414,11 @@ impl Router {
             .iter()
             .rev()
             .copied()
-            .find(|n| st.nodes.get(n).is_some_and(Node::is_agent))
+            .find(|n| st.nodes.get(n).is_some_and(Node::is_switchable))
             .or_else(|| {
                 st.nodes
                     .values()
-                    .filter(|n| n.is_agent())
+                    .filter(|n| n.is_switchable())
                     .min_by_key(|n| n.index)
                     .map(|n| n.hello.node_id)
             })
@@ -568,15 +581,33 @@ impl Router {
         }
     }
 
-    fn device_list(st: &State) -> Vec<HidDevice> {
-        st.devices.values().map(|d| d.dev.clone()).collect()
+    /// The devices `node` is told about: all of them, or for a bridge only
+    /// those of the receivers exposed to it (its merged descriptor follows
+    /// that list, ADR 0033).
+    fn devices_for(st: &State, node: &Node) -> Vec<HidDevice> {
+        st.devices
+            .values()
+            .filter(|d| {
+                !node.is_bridge()
+                    || Self::exclusive_of(st, d.dev.receiver) == Some(node.hello.node_id)
+            })
+            .map(|d| d.dev.clone())
+            .collect()
     }
 
     fn broadcast_devices(&self, st: &State) {
-        let devices = Self::device_list(st);
         for n in st.nodes.values() {
             n.send(Control::DeviceList {
-                devices: devices.clone(),
+                devices: Self::devices_for(st, n),
+            });
+        }
+    }
+
+    /// Bridges again, after an exposure change.
+    fn send_bridge_devices(st: &State) {
+        for n in st.nodes.values().filter(|n| n.is_bridge()) {
+            n.send(Control::DeviceList {
+                devices: Self::devices_for(st, n),
             });
         }
     }
@@ -598,6 +629,8 @@ impl Router {
         }
         let index = match hello.kind {
             NodeKind::Widget | NodeKind::EdgeHelper { .. } => 0,
+            // No hotkey digit: a bridge is never switched to.
+            NodeKind::Agent if hello.os == Os::Bridge => 0,
             NodeKind::Agent => Self::assign_index(&mut st, id, &hello.node_name)?,
         };
         st.next_generation += 1;
@@ -611,6 +644,7 @@ impl Router {
             seq: [0; 256],
             out_seq: SeqTracker::new(),
             unexposed: Vec::new(),
+            bridge: None,
         };
         node.send(Control::HelloAck {
             hub_id: self.hub_id,
@@ -618,7 +652,7 @@ impl Router {
             assigned_index: index,
         });
         node.send(Control::DeviceList {
-            devices: Self::device_list(&st),
+            devices: Self::devices_for(&st, &node),
         });
         if let Some(layout) = &st.layout_sent {
             node.send(layout.clone());
@@ -648,6 +682,7 @@ impl Router {
             "node registered"
         );
         let is_agent = node.is_agent();
+        let switchable = node.is_switchable();
         let helps = node.helps();
         st.nodes.insert(id, node);
 
@@ -674,7 +709,9 @@ impl Router {
                     self.send_ctl(Cmd::Profile(self.profile_for(&st.nodes[&id])));
                 }
             }
-            if st.active == Some(id) {
+            if !switchable {
+                // A bridge: input only from its exclusive receivers.
+            } else if st.active == Some(id) {
                 // Same machine came back while still active.
                 st.nodes[&id].send(Control::Activate { entry: None });
             } else if st.active.is_none() {
@@ -857,6 +894,45 @@ impl Router {
                     ..new
                 };
                 self.settings_changed(st);
+            }
+            Control::BtStatus { status } if sender.is_bridge() => {
+                info!(
+                    node = %from,
+                    bonded = ?status.bonded,
+                    connected = status.connected,
+                    discoverable = ?status.discoverable_secs,
+                    repair_needed = status.repair_needed,
+                    "bridge status"
+                );
+                if let Some(n) = st.nodes.get_mut(&from) {
+                    if n.bridge.as_ref() == Some(&status) {
+                        return;
+                    }
+                    n.bridge = Some(status);
+                }
+                self.broadcast_status(st);
+            }
+            Control::BtDiscoverable { node, secs } if kind == NodeKind::Widget => {
+                match st.nodes.get(&node).filter(|n| n.is_bridge()) {
+                    Some(b) => {
+                        info!(widget = %from, bridge = %node, secs, "bridge pairing requested");
+                        b.send(Control::BtDiscoverable { node, secs });
+                    }
+                    None => {
+                        warn!(widget = %from, %node, "BtDiscoverable for a node that is not a connected bridge")
+                    }
+                }
+            }
+            Control::BtForget { node } if kind == NodeKind::Widget => {
+                match st.nodes.get(&node).filter(|n| n.is_bridge()) {
+                    Some(b) => {
+                        info!(widget = %from, bridge = %node, "bridge: forget the bonded PC");
+                        b.send(Control::BtForget { node });
+                    }
+                    None => {
+                        warn!(widget = %from, %node, "BtForget for a node that is not a connected bridge")
+                    }
+                }
             }
             Control::Unexposed { mut devices } if kind == NodeKind::Agent => {
                 devices.sort_unstable();
@@ -1318,6 +1394,9 @@ impl Router {
                 }
             }
         }
+        if before != after {
+            Self::send_bridge_devices(st);
+        }
         self.settings_changed(st);
         self.broadcast_status(st);
     }
@@ -1486,8 +1565,8 @@ impl Router {
             debug!("switch suppressed by hysteresis");
             return false;
         }
-        if !st.nodes.get(&target).is_some_and(Node::is_agent) {
-            warn!(node = %target, "switch target is not a connected agent");
+        if !st.nodes.get(&target).is_some_and(Node::is_switchable) {
+            warn!(node = %target, "switch target is not a connected agent (or is a bridge)");
             return false;
         }
 
@@ -1768,6 +1847,7 @@ impl Router {
                     .get(&n.hello.node_id)
                     .map_or(0, |s| s.len().min(u8::MAX as usize) as u8),
                 unexposed: n.unexposed.clone(),
+                bridge: n.bridge.clone(),
             })
             .collect();
         nodes.sort_by_key(|n| (n.kind == NodeKind::Widget, n.assigned_index));
@@ -3508,6 +3588,141 @@ mod tests {
         tap_twice(&r, 0);
         r.on_report(0, &key_report(0, 0x29));
         assert!(a.link.take().iter().any(|d| d.3[2] == 0x29));
+    }
+
+    fn lists(msgs: &[Control]) -> Vec<Vec<u8>> {
+        msgs.iter()
+            .filter_map(|m| match m {
+                Control::DeviceList { devices } => Some(devices.iter().map(|d| d.id).collect()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_bridge_is_never_active_and_gets_only_its_receivers() {
+        let r = two_receivers(None);
+        let mut bridge = join_os(&r, Os::Bridge);
+        assert_eq!(bridge.reg.index, 0, "no hotkey digit");
+        // Alone, it is not activated, and its list is empty.
+        assert_eq!(r.active(), None);
+        assert_eq!(lists(&bridge.msgs()), [Vec::<u8>::new()]);
+
+        let a = join(&r, NodeKind::Agent).unwrap();
+        assert_eq!(r.active(), Some(a.id));
+        let w = join(&r, NodeKind::Widget).unwrap();
+        // Not even a widget can switch to it.
+        r.on_control(
+            w.id,
+            Control::SwitchTo {
+                target: bridge.id,
+                entry: None,
+            },
+        );
+        assert_eq!(r.active(), Some(a.id));
+
+        // Receiver 1 exclusive to the bridge: its list follows, and so does
+        // the input.
+        bridge.msgs();
+        r.on_control(
+            w.id,
+            Control::SetExposure {
+                receiver: 1,
+                mode: exclusive(bridge.id),
+            },
+        );
+        assert_eq!(lists(&bridge.msgs()), [vec![16, 17]]);
+        bridge.link.take();
+        r.on_report(17, &MOUSE_MOVE);
+        r.on_report(1, &MOUSE_MOVE);
+        let got: Vec<u8> = bridge.link.take().iter().map(|d| d.0).collect();
+        assert_eq!(got, [17], "only its receiver's input");
+
+        // Back to the network: an empty list again.
+        r.on_control(
+            w.id,
+            Control::SetExposure {
+                receiver: 1,
+                mode: Exposure::Network,
+            },
+        );
+        assert_eq!(lists(&bridge.msgs()), [Vec::<u8>::new()]);
+
+        // When the active agent leaves, the bridge does not take over.
+        r.unregister(a.id, a.reg);
+        assert_eq!(r.active(), None);
+    }
+
+    #[test]
+    fn bridge_status_and_commands_go_through_the_hub() {
+        let r = two_receivers(None);
+        let mut bridge = join_os(&r, Os::Bridge);
+        let a = join(&r, NodeKind::Agent).unwrap();
+        let mut w = join(&r, NodeKind::Widget).unwrap();
+        bridge.msgs();
+        w.msgs();
+        let status = BridgeStatus {
+            bonded: Some("GAMER".into()),
+            connected: true,
+            discoverable_secs: None,
+            repair_needed: false,
+        };
+        r.on_control(
+            bridge.id,
+            Control::BtStatus {
+                status: status.clone(),
+            },
+        );
+        let st = w
+            .msgs()
+            .into_iter()
+            .find_map(|m| match m {
+                Control::Status(st) => Some(st),
+                _ => None,
+            })
+            .expect("a new status");
+        let node = |id| st.nodes.iter().find(|n| n.node_id == id).unwrap();
+        assert_eq!(node(bridge.id).bridge, Some(status.clone()));
+        assert_eq!(node(a.id).bridge, None);
+        // The same status again: nothing new.
+        r.on_control(bridge.id, Control::BtStatus { status });
+        assert!(w.msgs().is_empty());
+        // From an ordinary agent it is ignored.
+        r.on_control(
+            a.id,
+            Control::BtStatus {
+                status: BridgeStatus::default(),
+            },
+        );
+        assert!(w.msgs().is_empty());
+
+        // Widget commands reach the bridge, not other nodes.
+        r.on_control(
+            w.id,
+            Control::BtDiscoverable {
+                node: bridge.id,
+                secs: 60,
+            },
+        );
+        r.on_control(w.id, Control::BtForget { node: bridge.id });
+        let not_status = |msgs: Vec<Control>| -> Vec<Control> {
+            msgs.into_iter()
+                .filter(|m| !matches!(m, Control::Status(_)))
+                .collect()
+        };
+        assert_eq!(
+            not_status(bridge.msgs()),
+            [
+                Control::BtDiscoverable {
+                    node: bridge.id,
+                    secs: 60
+                },
+                Control::BtForget { node: bridge.id }
+            ]
+        );
+        r.on_control(w.id, Control::BtForget { node: a.id });
+        r.on_control(a.id, Control::BtForget { node: bridge.id });
+        assert!(not_status(bridge.msgs()).is_empty());
     }
 
     #[test]
