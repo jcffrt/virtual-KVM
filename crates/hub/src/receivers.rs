@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use anyhow::{anyhow, bail, Context, Result};
 use proto::descriptor::{DescriptorInfo, USAGE_PAGE_GENERIC_DESKTOP};
 use proto::{DeviceKind, UnclaimedReceiver};
-use toml_edit::{value, ArrayOfTables, DocumentMut, Item};
+use toml_edit::{value, ArrayOfTables, DocumentMut, Item, Table};
 
 use crate::config::{HubConfig, ReceiverMatch, MAX_RECEIVERS};
 
@@ -150,6 +150,23 @@ fn block_text(m: &ReceiverMatch, product: &str) -> String {
     )
 }
 
+/// One past the highest table position in `doc`. toml_edit writes the
+/// tables in position order, and a table without one (or with one from
+/// another document) lands after the first positioned table: every table
+/// added here gets `next_position`, so it goes last in the file and last
+/// in its array.
+fn next_position(doc: &DocumentMut) -> usize {
+    fn max_in(t: &Table) -> Option<usize> {
+        let inner = t.iter().filter_map(|(_, item)| match item {
+            Item::Table(t) => max_in(t),
+            Item::ArrayOfTables(a) => a.iter().filter_map(max_in).max(),
+            _ => None,
+        });
+        t.position().into_iter().chain(inner).max()
+    }
+    max_in(doc.as_table()).map_or(0, |p| p + 1)
+}
+
 /// The `[[receiver]]` array of `doc`, created from the effective blocks
 /// when the file has none (the default Logitech block) or a single
 /// `[receiver]` table; every block gets its `name` written, so a later
@@ -163,7 +180,7 @@ fn receiver_array<'a>(
     let mut aot = match item {
         None => {
             let mut aot = ArrayOfTables::new();
-            for m in effective {
+            for (position, m) in (next_position(doc)..).zip(effective) {
                 let text = block_text(m, "");
                 let parsed: DocumentMut = text.parse()?;
                 let mut t = parsed["receiver"]
@@ -173,6 +190,7 @@ fn receiver_array<'a>(
                     .ok_or_else(|| anyhow!("rendering a receiver block"))?;
                 t.decor_mut()
                     .set_prefix("\n# The default receiver, written out to add another.\n");
+                t.set_position(position);
                 aot.push(t);
             }
             aot
@@ -217,7 +235,12 @@ pub fn add_to_config(text: &str, block: &ReceiverMatch, product: &str) -> Result
         .collect::<Vec<_>>()
         .join("\n");
     table.decor_mut().set_prefix(format!("{comment}\n"));
-    receiver_array(&mut doc, &effective)?.push(table);
+    receiver_array(&mut doc, &effective)?;
+    table.set_position(next_position(&doc));
+    doc["receiver"]
+        .as_array_of_tables_mut()
+        .ok_or_else(|| anyhow!("rebuilding [[receiver]]"))?
+        .push(table);
     let out = doc.to_string();
     let cfg = HubConfig::parse(&out)?;
     if cfg.receivers.len() > MAX_RECEIVERS {
@@ -381,6 +404,49 @@ mod tests {
         let back = remove_from_config(&out, &block.name).unwrap();
         assert_eq!(HubConfig::parse(&back).unwrap(), before);
         assert!(back.contains("# keep this comment"), "{back}");
+    }
+
+    fn names(text: &str) -> Vec<String> {
+        HubConfig::parse(text)
+            .unwrap()
+            .receivers
+            .into_iter()
+            .map(|r| r.name)
+            .collect()
+    }
+
+    /// The new block is the last one of the array, wherever the blocks and
+    /// the other tables are in the file (the order is the receiver index
+    /// after a restart).
+    #[test]
+    fn the_new_block_goes_last() {
+        let block = new_block(
+            0x25a7,
+            0xfa09,
+            "Compx",
+            &["logitech".into(), "areson".into()],
+        );
+        // Like the hub's real file.
+        let real = "# RawKVM hub configuration\nname = \"rawkvm-hub\"\n\n\
+            [[receiver]]\nname = \"logitech\"\nmatch = \"receiver\"\nvid = 1133\n\
+            pids = [\n    50475, # Unifying\n    50482,\n]\n\n\
+            [[receiver]]\nname = \"areson\"\nvid = 0x25a7\npids = [0xfa08]\n\n\
+            [switching]\nhysteresis_ms = 150\n";
+        let out = add_to_config(real, &block, "Compx").unwrap();
+        assert_eq!(names(&out), ["logitech", "areson", "compx"], "{out}");
+        // Blocks after another table.
+        let after = "[switching]\nhysteresis_ms = 150\n\n[[receiver]]\nname = \"logitech\"\n\n\
+            [[receiver]]\nname = \"areson\"\nvid = 0x25a7\npids = [0xfa08]\n\n[edge]\npush_ms = 0\n";
+        let out = add_to_config(after, &block, "Compx").unwrap();
+        assert_eq!(names(&out), ["logitech", "areson", "compx"], "{out}");
+        // The implicit default block, with other tables around.
+        let implicit = "[switching]\nhysteresis_ms = 150\n[edge]\npush_ms = 0\n";
+        let out = add_to_config(implicit, &block, "Compx").unwrap();
+        assert_eq!(names(&out), ["receiver-0", "compx"], "{out}");
+        // And twice in a row.
+        let second = new_block(0x1234, 0x0001, "Other", &names(&out));
+        let out = add_to_config(&out, &second, "Other").unwrap();
+        assert_eq!(names(&out), ["receiver-0", "compx", "other"], "{out}");
     }
 
     #[test]
