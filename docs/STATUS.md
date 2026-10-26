@@ -862,3 +862,51 @@ Según [fase6-plan.md](fase6-plan.md); decisiones en el [ADR 0030](adr/0030-vari
   - tests del workspace;
   - `npm run build`.
 - **Al desplegar en la Zero:** se puede quitar `RAWKVM_GADGET_ARGS="--no-hidpp"` de `/etc/default/rawkvm-agent-gadget`, porque el PC GAMER es Windows. Con los dos receptores debe aparecer `bound to … with 4 interfaces` y el aviso del id 2. Con solo el Logitech vuelven las 3 interfaces.
+
+## Fase 8: añadir y quitar receptores desde el widget, sin reiniciar el hub (2026-10-26, VS Code)
+
+Según [fase8-plan.md](fase8-plan.md); decisiones en el [ADR 0032](adr/0032-receptores-desde-el-widget.md). **Protocolo 10** y **versión 0.8.0**: el hub, el gadget, los agentes, los helpers y el widget se actualizan a la vez.
+
+- **«Sin configurar».** En cada pasada (2 s), el hilo de escaneo junta las interfaces `hidraw` USB que:
+  - ningún bloque reconoce;
+  - el hub no tiene abiertas;
+  - no cuelgan de otro HID.
+
+  Las agrupa por dispositivo USB (vid, pid y número de serie o puerto) y las anuncia a los widgets (`UnclaimedReceivers`) con nombre, interfaces y si traen teclado, ratón u otra cosa. `rawkvm-hub --list` las lista al final. El hub nunca toma nada por su cuenta.
+- **Añadir** (`AddReceiver`):
+  - el bloque nuevo lleva `name` sacado del producto (`compx-2-4g-receiver`, único con `-2`…), `pids = [pid]`, `grab_evdev` y los valores por defecto del fabricante;
+  - se añade a `hub.toml` con `toml_edit`, que conserva los comentarios y el resto del fichero. La tabla `[receiver]` antigua o el bloque implícito se escriben como array, y todos los bloques reciben su `name`;
+  - se valida con las reglas de la fase 6, y la memoria solo cambia si la escritura sale bien;
+  - el hilo de escaneo abre el receptor en ≤ 2 s, sin reiniciar el hub.
+- **Quitar** (`RemoveReceiver`, nunca el último):
+  - borra el bloque y su `[[exposure]]`;
+  - suelta sus teclas en su destino y saca sus dispositivos (`DeviceList`);
+  - el hilo de escaneo cierra sus lectores, que ahora esperan con `poll` (250 ms) para poder pararse, y suelta el grab.
+
+  **Índices congelados:** el hueco no se reutiliza hasta reiniciar el hub.
+- **Respuesta:** `ReceiverResult { ok, message }` al widget que lo pidió, con el motivo si el hub no lo hizo.
+- **Widget, pestaña Hub:** botón «Quitar» con confirmación en cada fila de «Receptores» (desactivado si solo hay uno), sección «Sin configurar» con «Añadir como receptor», y la respuesta del hub.
+- **`.hidrec`:** la reproducción sincroniza en cada pasada los dispositivos grabados con los bloques del router (`Replay::sync`). `two-receivers.hidrec` con solo el bloque Logitech hace de grabación con un dispositivo sin configurar.
+- **Tests nuevos:**
+  - agrupación;
+  - nombre derivado y único;
+  - edición de `hub.toml`: comentarios conservados, formas antiguas y bloque implícito, nombres escritos antes de quitar;
+  - rechazos: solape, nombre, último, más de 16;
+  - router de punta a punta con el `.hidrec`: añadir, ids 16 y 17, segundo añadido rechazado, exclusivo y quitar con el `settings.toml` limpio, el hueco no se reutiliza (el siguiente es el 2);
+  - escritura fallida que no cambia nada;
+  - estado y vista del widget;
+  - protocolo de ida y vuelta.
+- **Verificado en el Mac:**
+  - fmt;
+  - clippy `-D warnings` del workspace en macOS y `x86_64-unknown-linux-gnu`, y de hub, proto, agent-core y los crates de Windows en `x86_64-pc-windows-gnu`;
+  - 231 tests del workspace;
+  - widget: clippy y 13 tests;
+  - `npm run build`.
+- **Sin ejecutar:** el código de Linux (`devices.rs`, `read_loop_until`) solo se ha compilado; sus tests corren en la CI.
+- **Qué probar en la RPi 3B+ tras desplegar:**
+  1. con `logitech` y `areson` configurados, el hub arranca igual;
+  2. quitar `areson` desde el widget: sus dispositivos desaparecen de Mac, Ubuntu y gadget, y el Logitech no se corta; `hub.toml` conserva sus comentarios y ya no tiene el bloque;
+  3. en «Sin configurar» aparece el Compx `25a7:fa09` con 2 interfaces, teclado y ratón; añadirlo: vuelve con ids 32 y 33 (índice 2, por el hueco) en todos los agentes, en ≤ 2 s;
+  4. reiniciar el hub: el bloque sigue, ahora con índice 1 (ids 16 y 17);
+  5. `sudo rawkvm-hub --list` muestra «unclaimed USB HID devices» con lo que haya enchufado sin configurar.
+- **Sigue sin asignar:** el hallazgo de empaquetado del postinst (identidad nueva al instalar).

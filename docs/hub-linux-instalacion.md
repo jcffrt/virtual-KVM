@@ -52,7 +52,21 @@ Desde la fase 6 (protocolo 8), `hub.toml` puede describir varios receptores con 
 
 ## Varios receptores
 
-El hub puede leer a la vez varios receptores USB, de Logitech o de otro fabricante (por ejemplo, el dongle de 2,4 GHz de un ratón genérico). Cada uno se describe en un bloque `[[receiver]]` de `/etc/rawkvm/hub.toml`. Decisiones: [ADR 0030](adr/0030-varios-receptores-y-exposicion.md).
+El hub puede leer a la vez varios receptores USB, de Logitech o de otro fabricante (por ejemplo, el dongle de 2,4 GHz de un ratón genérico). Cada uno se describe en un bloque `[[receiver]]` de `/etc/rawkvm/hub.toml`. Decisiones: [ADR 0030](adr/0030-varios-receptores-y-exposicion.md) y [ADR 0032](adr/0032-receptores-desde-el-widget.md).
+
+### Desde el widget (hub 0.8.0 o posterior)
+
+1. Enchufar el receptor nuevo en la placa del hub.
+2. En el widget, pestaña **Hub**, sección **Sin configurar**: en unos segundos aparece con su nombre, `vid:pid`, sus interfaces y qué contiene (teclado, ratón). Pulsar **Añadir como receptor**.
+3. El hub escribe el bloque en `hub.toml` (solo ese producto, `pids = [pid]`), sin tocar el resto del fichero, y abre el receptor en menos de 2 s, **sin reiniciarse**: los demás receptores no se cortan. El receptor nuevo aparece en la tabla «Receptores», en «Red local», y sus dispositivos en todos los equipos.
+
+Para dejar de usarlo, **Quitar** en su fila (con confirmación): el hub lo cierra, borra su bloque de `hub.toml` y su exposición de `settings.toml`, y el dispositivo vuelve a «Sin configurar». El último receptor no se puede quitar. Un receptor quitado deja libre su número sin reutilizarlo hasta reiniciar el hub. El hub nunca toma un dispositivo por su cuenta: un teclado enchufado en la placa para mantenimiento sigue funcionando en su consola.
+
+Por SSH, `sudo rawkvm-hub --list` muestra al final los dispositivos sin configurar.
+
+### A mano
+
+Sigue valiendo para cambiar un bloque existente (`pids`, nombre) o si no hay widget a mano:
 
 1. Enchufar el receptor nuevo en la placa y buscar su fabricante y producto:
 

@@ -1,4 +1,4 @@
-# Protocolo RawKVM (versión 9)
+# Protocolo RawKVM (versión 10)
 
 Fuente de verdad: `crates/proto`. Este documento lo resume.
 
@@ -41,7 +41,7 @@ hub  -> todos Status(HubStatus)       (en cada cambio)
 - `assigned_index` 1..4 para agentes (dígito del atajo de emergencia; se conserva al reconectar mientras viva el hub), 0 para widgets. Un quinto agente recibe `Reject { TooManyNodes }`.
 - `Reject { BadToken | VersionMismatch }` es definitivo: el agente se detiene. `TooManyNodes` se reintenta.
 - `kind`: `Agent`, `Widget` o `EdgeHelper { for_node }` (v2). Un helper vigila el puntero en nombre del agente `for_node`, que no puede hacerlo (gadget USB, daemon root fuera de la sesión gráfica). No recibe índice ni informes; sus `Screens` cuentan como del agente, puede enviar `SwitchTo` mientras ese agente es el activo, y recibe sus `Activate`/`Deactivate`.
-- **Versiones**: hub y nodos deben tener la misma `PROTO_VERSION`; si no, `Reject { VersionMismatch }` y el nodo se detiene con un mensaje que pide actualizar. `Hello` y las variantes hasta `Reject` no cambian nunca de forma, para que un nodo de otra versión siempre reciba ese rechazo (test `handshake_stays_decodable_across_versions`). Historia: v1, fases 0 y 1; v2 añade `EdgeHelper`, `screen` en `SwitchTo`/`Activate` y `options` en `Layout`; v3 (widget) añade `Entry` opcional, `canvas` en `Layout`, `Settings`, `version` en `HubStatus` y `screens` en `NodeInfo`, y fija el significado de `Screen::scale`; v4 (Fase 3) añade los datagramas de salida agente → hub (`FLAG_OUTPUT`), `ReceiverDevices` y `Unpair`; v5 (Fase 4.1) añade `battery`, `pointer_speed` y `fn_swap` a `PairedDevice`, y `SetPointerSpeed` y `SetFnSwap`; v6 (Fase 4.2) cambia `HubSettings.hotkey` de `bool` a `Hotkey { enabled, modifier, previous, release_keys }`. v7 (Fase 5.3b) añade `Shutdown` y `ShuttingDown` (apagado limpio del hub, ADR 0025); v8 (Fase 6) añade varios receptores: `HidDevice.receiver`, `HubSettings.exposures`, `SetExposure` y `HubStatus.held` (ADR 0030); v9 añade `Unexposed` y `NodeInfo.unexposed` (gadget con más interfaces de las que caben, ADR 0031).
+- **Versiones**: hub y nodos deben tener la misma `PROTO_VERSION`; si no, `Reject { VersionMismatch }` y el nodo se detiene con un mensaje que pide actualizar. `Hello` y las variantes hasta `Reject` no cambian nunca de forma, para que un nodo de otra versión siempre reciba ese rechazo (test `handshake_stays_decodable_across_versions`). Historia: v1, fases 0 y 1; v2 añade `EdgeHelper`, `screen` en `SwitchTo`/`Activate` y `options` en `Layout`; v3 (widget) añade `Entry` opcional, `canvas` en `Layout`, `Settings`, `version` en `HubStatus` y `screens` en `NodeInfo`, y fija el significado de `Screen::scale`; v4 (Fase 3) añade los datagramas de salida agente → hub (`FLAG_OUTPUT`), `ReceiverDevices` y `Unpair`; v5 (Fase 4.1) añade `battery`, `pointer_speed` y `fn_swap` a `PairedDevice`, y `SetPointerSpeed` y `SetFnSwap`; v6 (Fase 4.2) cambia `HubSettings.hotkey` de `bool` a `Hotkey { enabled, modifier, previous, release_keys }`. v7 (Fase 5.3b) añade `Shutdown` y `ShuttingDown` (apagado limpio del hub, ADR 0025); v8 (Fase 6) añade varios receptores: `HidDevice.receiver`, `HubSettings.exposures`, `SetExposure` y `HubStatus.held` (ADR 0030); v9 añade `Unexposed` y `NodeInfo.unexposed` (gadget con más interfaces de las que caben, ADR 0031); v10 (fase 8) añade `UnclaimedReceivers`, `AddReceiver`, `RemoveReceiver` y `ReceiverResult` (receptores desde el widget, ADR 0032).
 - Si el mismo `node_id` se reconecta, la conexión nueva sustituye a la vieja.
 
 Mensajes en régimen:
@@ -63,6 +63,10 @@ Mensajes en régimen:
 | `SetPointerSpeed { slot, value }` | widget → hub | v5. Velocidad del puntero (HID++ `POINTER_SPEED` 0x2205, en 1/256: 256 = 1×). El hub la limita a 0x2E..=0x1FF, el rango que admite Solaar |
 | `SetFnSwap { slot, on }` | widget → hub | v5. `on`: F1…F12 dan su función especial sin Fn (HID++ 0x40A3, en el host actual) |
 | `Status(HubStatus)` | hub → nodos | en cada cambio. v8: `held` = receptores exclusivos cuyo agente no está conectado (su entrada se descarta). v9: `nodes[].unexposed` = ids de dispositivos que ese agente no puede presentar a su PC |
+| `UnclaimedReceivers { receivers }` | hub → widgets | v10. Al conectar y al cambiar: los dispositivos USB HID de la placa que ningún bloque `[[receiver]]` reconoce, uno por dispositivo USB (`vid`, `pid`, `name`, `serial`, `interfaces`, `kinds`: `Keyboard`, `Mouse`, `Other`). El hub nunca los toma por su cuenta |
+| `AddReceiver { vid, pid }` | widget → hub | v10. Añadir ese dispositivo «sin configurar» como receptor: el hub escribe un bloque `[[receiver]]` en `hub.toml` (`pids = [pid]`) y abre sus interfaces en ≤ 2 s, sin reiniciar. Responde con `ReceiverResult`; si sale bien, además `Settings` a los widgets y `DeviceList` a todos |
+| `RemoveReceiver { receiver }` | widget → hub | v10. Cerrar el receptor y borrar su bloque y su exposición. Se rechaza si es el único. El índice queda libre sin reutilizarse hasta reiniciar el hub. Responde con `ReceiverResult`; si sale bien, `DeviceList`, `Settings` y `Status` |
+| `ReceiverResult { ok, message }` | hub → el widget que lo pidió | v10. Resultado de `AddReceiver` / `RemoveReceiver`; `message` (en inglés) dice el motivo de un rechazo: solape con otro bloque, último receptor, no está en «sin configurar», error al escribir `hub.toml` |
 | `Unexposed { devices: Vec<u8> }` | agente → hub | v9. Ids del `DeviceList` que el agente no puede presentar a su PC (el gadget USB solo admite cuatro interfaces HID, ADR 0031). Se envía cuando el conjunto cambia, también a vacío; el hub lo pone en `NodeInfo.unexposed` y envía un `Status`. De nodos que no son agentes se ignora |
 | `Shutdown` | widget → hub | v7. Apagar la placa del hub: libera las teclas en todos los agentes, envía `ShuttingDown` a todos, para el gadget, `sync` y `systemctl poweroff` (ADR 0025). Un segundo `Shutdown` durante el apagado solo recibe `ShuttingDown` |
 | `ShuttingDown { reason }` | hub → nodos | v7. El hub se apaga (`reason`: «requested from GAMER»). Los nodos cierran la sesión y reintentan cada 30 s en vez del backoff normal hasta que vuelve. Para el widget que lo pidió es la confirmación |
@@ -74,7 +78,7 @@ Mensajes en régimen:
 
 Cada uno vale `None` si el dispositivo no tiene esa función o no ha respondido.
 
-**Solo widgets**: el hub atiende `PairingStart`, `PairingStop`, `Unpair`, `SetPointerSpeed`, `SetFnSwap`, `Shutdown`, `Settings`, `SetExposure` y `Layout` únicamente de nodos `Widget` (que ya presentaron el token); de un agente o un helper los ignora. `ReceiverDevices` y `PairingEvent` solo van a widgets.
+**Solo widgets**: el hub atiende `PairingStart`, `PairingStop`, `Unpair`, `SetPointerSpeed`, `SetFnSwap`, `Shutdown`, `Settings`, `SetExposure`, `AddReceiver`, `RemoveReceiver` y `Layout` únicamente de nodos `Widget` (que ya presentaron el token); de un agente o un helper los ignora. `ReceiverDevices`, `PairingEvent`, `UnclaimedReceivers` y `ReceiverResult` solo van a widgets.
 
 ## Datagramas (informes HID)
 
@@ -108,6 +112,7 @@ v8, ADR 0030. El hub puede leer varios receptores (`[[receiver]]` en `hub.toml`,
 - Al cambiar de agente activo, `RELEASE_ALL` y los LEDs solo afectan a los receptores `Network`, y `Deactivate { keep }` lista los dispositivos exclusivos para que el agente no los suelte. Los informes de salida de un dispositivo exclusivo solo se escriben si vienen de su agente.
 - `DeviceList` es la misma para todos los nodos: cada agente crea todos los dispositivos, y la exposición solo decide quién recibe los informes.
 - Persistencia: `settings.toml`, `[[exposure]]` con `receiver = "<name>"` y `exclusive = "<uuid>"`, por nombre de receptor.
+- v10: los receptores se pueden añadir y quitar desde el widget con el hub en marcha (ADR 0032). Un receptor quitado deja un hueco: su índice no se reutiliza hasta reiniciar el hub, y `HubSettings.exposures` no lo incluye.
 
 ## Conmutación
 
