@@ -199,13 +199,13 @@ async fn serve(args: Args) -> Result<()> {
                 version: VERSION.to_string(),
                 node_options: cfg.node_options.clone(),
                 os_profile: cfg.hidpp.os_profile,
-                receivers: cfg.receiver_names(),
-                hidpp_receiver: cfg.hidpp_receiver().map(|r| r as u8),
+                receivers: cfg.receivers.clone(),
             },
         )
         .with_store(store, RESTORE_GRACE)
         .with_layout_file(LayoutFile::path_in(&cfg.state_dir))?
         .with_settings_file(rawkvm_hub::settings::path_in(&cfg.state_dir))?
+        .with_config_file(args.config.clone())
         .with_poweroff(poweroff_tx),
     );
     tokio::spawn(rawkvm_hub::poweroff::serve(router.clone(), poweroff_rx));
@@ -246,8 +246,7 @@ async fn serve(args: Args) -> Result<()> {
 
     match &args.replay {
         Some(path) => {
-            let mut rec = hidrec::load(path)?;
-            rec.assign_receivers(&cfg.receivers);
+            let rec = hidrec::load(path)?;
             info!(
                 "replaying {} ({} devices, {} reports)",
                 path.display(),
@@ -372,7 +371,7 @@ fn start_devices(cfg: &HubConfig, router: Arc<Router>) -> Result<()> {
             if r.pids.is_empty() { "any".to_string() } else { format!("{:04x?}", r.pids) }
         );
     }
-    devices::spawn(router, cfg.receivers.clone(), cfg.hidpp_receiver());
+    devices::spawn(router);
     Ok(())
 }
 
@@ -396,7 +395,7 @@ fn list(args: &Args) -> Result<()> {
         );
     }
     for i in &all {
-        let block = devices::is_forwarded(i, &cfg.receivers);
+        let block = devices::is_forwarded(i, cfg.receivers.iter().map(Some));
         let fwd = block.is_some();
         let d = DescriptorInfo::parse(&i.descriptor);
         println!(
@@ -435,6 +434,31 @@ fn list(args: &Args) -> Result<()> {
             println!("    saved {}", path.display());
         }
     }
+    // What a widget would offer to add (ADR 0032).
+    let candidates: Vec<_> = all
+        .iter()
+        .filter(|i| devices::is_forwarded(i, cfg.receivers.iter().map(Some)).is_none())
+        .filter_map(devices::candidate)
+        .collect();
+    let unclaimed = rawkvm_hub::receivers::group_unclaimed(&candidates);
+    if unclaimed.is_empty() {
+        println!("unclaimed USB HID devices: none");
+    } else {
+        println!("unclaimed USB HID devices (add them from the widget, Hub tab):");
+    }
+    for u in unclaimed {
+        println!(
+            "  {:04x}:{:04x} {:?}  {} interface(s)  {:?}{}",
+            u.vid,
+            u.pid,
+            u.name,
+            u.interfaces,
+            u.kinds,
+            u.serial
+                .map(|s| format!("  serial {s}"))
+                .unwrap_or_default()
+        );
+    }
     Ok(())
 }
 
@@ -445,7 +469,7 @@ fn dump(args: &Args) -> Result<()> {
     let cfg = HubConfig::load_or_default(&args.config)?;
     let ifaces: Vec<_> = hidraw::enumerate()?
         .into_iter()
-        .filter_map(|i| devices::is_forwarded(&i, &cfg.receivers).map(|r| (i, r)))
+        .filter_map(|i| devices::is_forwarded(&i, cfg.receivers.iter().map(Some)).map(|r| (i, r)))
         .collect();
     anyhow::ensure!(
         !ifaces.is_empty(),
@@ -522,7 +546,7 @@ fn open_hidpp(args: &Args) -> Result<Arc<rawkvm_hub::hidpp::Hidpp>> {
     })?;
     let iface = hidraw::enumerate()?
         .into_iter()
-        .filter(|i| devices::is_forwarded(i, &cfg.receivers) == Some(logitech))
+        .filter(|i| devices::is_forwarded(i, cfg.receivers.iter().map(Some)) == Some(logitech))
         .find(|i| receiver::is_dj_interface(&DescriptorInfo::parse(&i.descriptor)))
         .ok_or_else(|| anyhow::anyhow!("no HID++ interface of the receiver found; try --list"))?;
     eprintln!(

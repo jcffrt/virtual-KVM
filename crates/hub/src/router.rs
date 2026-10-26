@@ -21,7 +21,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use crate::config::{NodeOptions, OsProfile};
+use crate::config::{NodeOptions, OsProfile, ReceiverMatch, MAX_RECEIVERS};
 use crate::hidpp::OsKind;
 use crate::hotkey::{Action, Detector};
 use crate::layout::{self, LayoutFile, LinkSpec};
@@ -68,11 +68,9 @@ pub struct Options {
     pub node_options: Vec<NodeOptions>,
     /// Set the keyboards' OS layout on every switch (`[hidpp] os_profile`).
     pub os_profile: bool,
-    /// Receiver names by index (the `[[receiver]]` blocks of the config).
-    pub receivers: Vec<String>,
-    /// The receiver whose HID++ interface the receiver thread uses
-    /// (`HubConfig::hidpp_receiver`).
-    pub hidpp_receiver: Option<u8>,
+    /// The `[[receiver]]` blocks of the config at start, by index. Widgets
+    /// add and remove blocks at run time (ADR 0032).
+    pub receivers: Vec<ReceiverMatch>,
 }
 
 impl Default for Options {
@@ -86,8 +84,10 @@ impl Default for Options {
             version: String::new(),
             node_options: Vec::new(),
             os_profile: true,
-            receivers: vec!["receiver-0".into()],
-            hidpp_receiver: Some(0),
+            receivers: vec![ReceiverMatch {
+                name: "receiver-0".into(),
+                ..ReceiverMatch::default()
+            }],
         }
     }
 }
@@ -278,6 +278,16 @@ struct State {
     /// The settings changed and `settings.toml` must be written once
     /// `state` is unlocked.
     settings_dirty: bool,
+    /// The receiver blocks by protocol index. A block removed from the
+    /// widget leaves `None`: indices are not reused until the hub restarts
+    /// (ADR 0032).
+    receivers: Vec<Option<ReceiverMatch>>,
+    /// The receiver HID++ works with: the first Logitech one at start, then
+    /// the one whose HID++ interface was last attached.
+    hidpp_receiver: Option<u8>,
+    /// USB HID devices on the board that no block matches, from the scan
+    /// thread; sent to widgets.
+    unclaimed: Vec<proto::UnclaimedReceiver>,
 }
 
 pub struct Router {
@@ -299,6 +309,11 @@ pub struct Router {
     /// Serializes writes of `settings.toml`, done outside `state` (they
     /// fsync on an SD card) by [`Router::save_settings`].
     save: Mutex<()>,
+    /// `hub.toml`, rewritten when a widget adds or removes a receiver;
+    /// `None` in tests (the change is only in memory).
+    config_path: Option<std::path::PathBuf>,
+    /// Serializes `AddReceiver` / `RemoveReceiver` (file edit included).
+    config_lock: Mutex<()>,
 }
 
 impl Router {
@@ -309,6 +324,12 @@ impl Router {
             hotkey: opts.hotkey,
             exposures: Vec::new(),
         };
+        let receivers: Vec<_> = opts.receivers.iter().cloned().map(Some).collect();
+        let hidpp_receiver = opts
+            .receivers
+            .iter()
+            .position(ReceiverMatch::is_logitech)
+            .map(|i| i as u8);
         Self {
             hub_id,
             hub_name,
@@ -317,12 +338,16 @@ impl Router {
             started: Instant::now(),
             state: Mutex::new(State {
                 settings,
+                receivers,
+                hidpp_receiver,
                 ..Default::default()
             }),
             hidpp: Mutex::new(None),
             ctl: Mutex::new(None),
             poweroff: None,
             save: Mutex::new(()),
+            config_path: None,
+            config_lock: Mutex::new(()),
         }
     }
 
@@ -411,7 +436,8 @@ impl Router {
 
     /// The receiver's HID++ interface is open: start the receiver thread
     /// (paired devices, keyboard layout, pairing) on it.
-    pub fn attach_receiver(self: &Arc<Self>, h: Arc<crate::hidpp::Hidpp>) {
+    pub fn attach_receiver(self: &Arc<Self>, h: Arc<crate::hidpp::Hidpp>, receiver: u8) {
+        self.lock().hidpp_receiver = Some(receiver);
         self.set_hidpp(Some(h.clone()));
         let tx =
             crate::receiver_ctl::spawn(h, RouterEvents(Arc::downgrade(self)), self.opts.os_profile);
@@ -595,6 +621,9 @@ impl Router {
         }
         if node.hello.kind == NodeKind::Widget {
             node.send(Control::Settings(self.settings_msg(&st)));
+            node.send(Control::UnclaimedReceivers {
+                receivers: st.unclaimed.clone(),
+            });
             if let Some(devices) = &st.receiver_devices {
                 node.send(Control::ReceiverDevices {
                     devices: devices.clone(),
@@ -637,7 +666,7 @@ impl Router {
                 .collect();
             if !mine.is_empty() {
                 Self::apply_outputs(&mut st, id, |d| mine.contains(&d.dev.receiver));
-                if self.opts.hidpp_receiver.is_some_and(|r| mine.contains(&r)) {
+                if st.hidpp_receiver.is_some_and(|r| mine.contains(&r)) {
                     self.send_ctl(Cmd::Profile(self.profile_for(&st.nodes[&id])));
                 }
             }
@@ -715,6 +744,12 @@ impl Router {
     // ---- control -------------------------------------------------------
 
     pub fn on_control(&self, from: Uuid, msg: Control) {
+        // These edit hub.toml: not under the state lock.
+        match msg {
+            Control::AddReceiver { vid, pid } => return self.add_receiver(from, vid, pid),
+            Control::RemoveReceiver { receiver } => return self.remove_receiver(from, receiver),
+            _ => {}
+        }
         let mut guard = self.lock();
         self.control_locked(&mut guard, from, msg);
         self.unlock_and_save(guard);
@@ -836,7 +871,7 @@ impl Router {
                 self.broadcast_status(st);
             }
             Control::SetExposure { receiver, mode } if kind == NodeKind::Widget => {
-                let refusal = if self.opts.receivers.get(receiver as usize).is_none() {
+                let refusal = if !Self::has_receiver(st, receiver) {
                     Some(format!("the hub has no receiver {receiver}"))
                 } else {
                     match mode {
@@ -938,7 +973,11 @@ impl Router {
                 info!(settings = ?saved.settings, "using the settings in {}", path.display());
                 st.settings = saved.settings;
                 for (name, mode) in saved.exposures {
-                    let Some(i) = self.opts.receivers.iter().position(|r| *r == name) else {
+                    let Some(i) = st
+                        .receivers
+                        .iter()
+                        .position(|r| r.as_ref().is_some_and(|r| r.name == name))
+                    else {
                         warn!(
                             "{} exposes receiver {name:?}, which hub.toml does not have; ignored",
                             path.display()
@@ -969,15 +1008,16 @@ impl Router {
 
     /// The settings as widgets get them, with every receiver's exposure.
     fn settings_msg(&self, st: &State) -> HubSettings {
-        let exposures = self
-            .opts
+        let exposures = st
             .receivers
             .iter()
             .enumerate()
-            .map(|(i, name)| ReceiverExposure {
-                receiver: i as u8,
-                name: name.clone(),
-                mode: st.exposures.get(&(i as u8)).copied().unwrap_or_default(),
+            .filter_map(|(i, m)| {
+                Some(ReceiverExposure {
+                    receiver: i as u8,
+                    name: m.as_ref()?.name.clone(),
+                    mode: st.exposures.get(&(i as u8)).copied().unwrap_or_default(),
+                })
             })
             .collect();
         HubSettings {
@@ -1023,6 +1063,186 @@ impl Router {
         }
     }
 
+    // ---- receivers (ADR 0032) -----------------------------------------
+
+    /// Rewrite `path` (`hub.toml`) when a widget adds or removes a
+    /// receiver.
+    pub fn with_config_file(mut self, path: std::path::PathBuf) -> Self {
+        self.config_path = Some(path);
+        self
+    }
+
+    /// The receiver blocks by index, `None` for one removed while the hub
+    /// runs. The scan thread reads it on every pass.
+    pub fn receivers(&self) -> Vec<Option<ReceiverMatch>> {
+        self.lock().receivers.clone()
+    }
+
+    fn has_receiver(st: &State, receiver: u8) -> bool {
+        st.receivers
+            .get(receiver as usize)
+            .is_some_and(Option::is_some)
+    }
+
+    /// The USB HID devices no block matches, from the scan thread; sent to
+    /// widgets when they change.
+    pub fn set_unclaimed(&self, unclaimed: Vec<proto::UnclaimedReceiver>) {
+        let mut st = self.lock();
+        if st.unclaimed == unclaimed {
+            return;
+        }
+        st.unclaimed = unclaimed;
+        Self::broadcast_unclaimed(&st);
+    }
+
+    fn broadcast_unclaimed(st: &State) {
+        for w in st
+            .nodes
+            .values()
+            .filter(|n| n.hello.kind == NodeKind::Widget)
+        {
+            w.send(Control::UnclaimedReceivers {
+                receivers: st.unclaimed.clone(),
+            });
+        }
+    }
+
+    /// Is `from` a widget? Other nodes' receiver changes are ignored.
+    fn from_widget(st: &State, from: Uuid, what: &str) -> bool {
+        match st.nodes.get(&from) {
+            Some(n) if n.hello.kind == NodeKind::Widget => true,
+            Some(_) => {
+                warn!(node = %from, "{what} from a node that is not a widget ignored");
+                false
+            }
+            None => false,
+        }
+    }
+
+    fn reply(st: &State, to: Uuid, ok: bool, message: String) {
+        if let Some(n) = st.nodes.get(&to) {
+            n.send(Control::ReceiverResult { ok, message });
+        }
+    }
+
+    /// Apply `edit` to hub.toml and write it. Nothing to do without a file.
+    fn edit_config(&self, edit: impl FnOnce(&str) -> anyhow::Result<String>) -> anyhow::Result<()> {
+        let Some(path) = &self.config_path else {
+            return Ok(());
+        };
+        use anyhow::Context;
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        let out = edit(&text)?;
+        crate::config::write_private(path, out.as_bytes())
+    }
+
+    /// `AddReceiver`: write a block for that unclaimed device and take it
+    /// at once (the scan thread opens its interfaces on its next pass).
+    fn add_receiver(&self, from: Uuid, vid: u16, pid: u16) {
+        let _one_at_a_time = self.config_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let plan = {
+            let st = self.lock();
+            if !Self::from_widget(&st, from, "AddReceiver") {
+                return;
+            }
+            let taken: Vec<String> = st
+                .receivers
+                .iter()
+                .flatten()
+                .map(|m| m.name.clone())
+                .collect();
+            if st.receivers.len() >= MAX_RECEIVERS {
+                Err(format!(
+                    "the hub has {MAX_RECEIVERS} receiver slots in use (removed ones are freed \
+                     when the hub restarts)"
+                ))
+            } else {
+                match st.unclaimed.iter().find(|u| u.vid == vid && u.pid == pid) {
+                    Some(u) => Ok((
+                        crate::receivers::new_block(vid, pid, &u.name, &taken),
+                        u.name.clone(),
+                    )),
+                    None => Err(format!(
+                        "{vid:04x}:{pid:04x} is not an unclaimed device on the hub (unplugged?)"
+                    )),
+                }
+            }
+        };
+        let result = plan.and_then(|(block, product)| {
+            self.edit_config(|text| crate::receivers::add_to_config(text, &block, &product))
+                .map(|()| block)
+                .map_err(|e| format!("{e:#}"))
+        });
+        let mut st = self.lock();
+        match result {
+            Ok(block) => {
+                let r = st.receivers.len();
+                info!(node = %from, receiver = r, name = %block.name, "receiver {vid:04x}:{pid:04x} added by a widget");
+                let message = format!("{} added as receiver {r}", block.name);
+                st.receivers.push(Some(block));
+                st.unclaimed.retain(|u| !(u.vid == vid && u.pid == pid));
+                Self::broadcast_unclaimed(&st);
+                self.settings_changed(&mut st);
+                Self::reply(&st, from, true, message);
+            }
+            Err(why) => {
+                warn!(node = %from, "adding receiver {vid:04x}:{pid:04x} refused: {why}");
+                Self::reply(&st, from, false, why);
+            }
+        }
+        self.unlock_and_save(st);
+    }
+
+    /// `RemoveReceiver`: remove the block and the exposure, and drop its
+    /// devices now (the scan thread closes the interfaces).
+    fn remove_receiver(&self, from: Uuid, receiver: u8) {
+        let _one_at_a_time = self.config_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let plan = {
+            let st = self.lock();
+            if !Self::from_widget(&st, from, "RemoveReceiver") {
+                return;
+            }
+            match st.receivers.get(receiver as usize).cloned().flatten() {
+                None => Err(format!("the hub has no receiver {receiver}")),
+                Some(_) if st.receivers.iter().flatten().count() == 1 => {
+                    Err("it is the only receiver; the hub needs at least one".to_string())
+                }
+                Some(m) => Ok(m.name),
+            }
+        };
+        let result = plan.and_then(|name| {
+            self.edit_config(|text| crate::receivers::remove_from_config(text, &name))
+                .map(|()| name)
+                .map_err(|e| format!("{e:#}"))
+        });
+        let mut st = self.lock();
+        match result {
+            Ok(name) => {
+                info!(node = %from, receiver, %name, "receiver removed by a widget");
+                if let Some(dest) = Self::destination(&st, receiver) {
+                    self.release_receiver(&mut st, dest, receiver);
+                }
+                st.receivers[receiver as usize] = None;
+                st.exposures.remove(&receiver);
+                st.escape.remove(&receiver);
+                let before = st.devices.len();
+                st.devices.retain(|_, d| d.dev.receiver != receiver);
+                if st.devices.len() != before {
+                    self.broadcast_devices(&st);
+                }
+                self.settings_changed(&mut st);
+                self.broadcast_status(&st);
+                Self::reply(&st, from, true, format!("{name} removed"));
+            }
+            Err(why) => {
+                warn!(node = %from, receiver, "removing a receiver refused: {why}");
+                Self::reply(&st, from, false, why);
+            }
+        }
+        self.unlock_and_save(st);
+    }
+
     // ---- exposures (ADR 0030) -----------------------------------------
 
     /// The agent `receiver` is exposed exclusively to, if it is.
@@ -1041,7 +1261,7 @@ impl Router {
 
     /// Where the keyboard layout (HID++) should follow.
     fn hidpp_destination(&self, st: &State) -> Option<Uuid> {
-        match self.opts.hidpp_receiver {
+        match st.hidpp_receiver {
             Some(r) => Self::destination(st, r),
             None => st.active,
         }
@@ -1087,7 +1307,7 @@ impl Router {
             }
             if let Some(new) = after {
                 Self::apply_outputs(st, new, |d| d.dev.receiver == receiver);
-                if self.opts.hidpp_receiver == Some(receiver) {
+                if st.hidpp_receiver == Some(receiver) {
                     if let Some(n) = st.nodes.get(&new) {
                         self.send_ctl(Cmd::Profile(self.profile_for(n)));
                     }
@@ -1305,8 +1525,7 @@ impl Router {
         st.last_switch = Some(now);
         let n = &st.nodes[&target];
         info!(node = %target, name = %n.hello.node_name, index = n.index, ?entry, "switched");
-        if !self
-            .opts
+        if !st
             .hidpp_receiver
             .is_some_and(|r| st.exposures.contains_key(&r))
         {
@@ -1802,7 +2021,10 @@ mod tests {
         let mut w = join(&r, NodeKind::Widget).unwrap();
         assert_eq!(w.reg.index, 0);
         assert_eq!(r.status().nodes.len(), 3);
-        assert_eq!(w.events(), ["HelloAck", "DeviceList", "Settings"]);
+        assert_eq!(
+            w.events(),
+            ["HelloAck", "DeviceList", "Settings", "UnclaimedReceivers"]
+        );
     }
 
     #[test]
@@ -3068,7 +3290,7 @@ mod tests {
             Uuid::new_v4(),
             "hub".into(),
             Options {
-                receivers: vec!["logi".into(), "other".into()],
+                receivers: blocks(&["logi", "other"]),
                 ..Default::default()
             },
         );
@@ -3091,6 +3313,22 @@ mod tests {
             });
         }
         r
+    }
+
+    /// Receiver blocks by name: "logi..." is Logitech, any other another
+    /// vendor (0x248a).
+    fn blocks(names: &[&str]) -> Vec<ReceiverMatch> {
+        names
+            .iter()
+            .map(|n| ReceiverMatch {
+                name: n.to_string(),
+                ..if n.starts_with("logi") {
+                    ReceiverMatch::default()
+                } else {
+                    ReceiverMatch::for_vendor(0x248a)
+                }
+            })
+            .collect()
     }
 
     const MOUSE_MOVE: [u8; 8] = [0x02, 0, 0, 0x0a, 0, 0, 0, 0];
@@ -3353,7 +3591,7 @@ mod tests {
             Uuid::new_v4(),
             "hub".into(),
             Options {
-                receivers: vec!["other".into(), "logi".into()],
+                receivers: blocks(&["other", "logi"]),
                 ..Default::default()
             },
         )
@@ -3453,20 +3691,17 @@ mod tests {
         .unwrap();
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../fixtures/two-receivers.hidrec");
-        let mut rec = crate::hidrec::load(&path).unwrap();
-        rec.assign_receivers(&cfg.receivers);
+        let rec = crate::hidrec::load(&path).unwrap();
+        let reports = rec.reports.clone();
         let r = Router::new(
             Uuid::new_v4(),
             "hub".into(),
             Options {
-                receivers: cfg.receiver_names(),
-                hidpp_receiver: cfg.hidpp_receiver().map(|i| i as u8),
+                receivers: cfg.receivers.clone(),
                 ..Default::default()
             },
         );
-        for d in &rec.devices {
-            r.add_device(d.clone());
-        }
+        crate::hidrec::Replay::new(rec).sync(&r);
         let a = join(&r, NodeKind::Agent).unwrap();
         let b = join(&r, NodeKind::Agent).unwrap();
         let w = join(&r, NodeKind::Widget).unwrap();
@@ -3479,12 +3714,248 @@ mod tests {
         );
         a.link.take();
         b.link.take();
-        for (_, id, data) in &rec.reports {
+        for (_, id, data) in &reports {
             r.on_report(*id, data);
         }
         let ids = |n: &TestNode| n.link.take().iter().map(|d| d.0).collect::<Vec<_>>();
         assert_eq!(ids(&a), [0, 0, 1]);
         assert_eq!(ids(&b), [16, 16, 17]);
+    }
+
+    // ---- receivers added and removed from the widget (ADR 0032) -------
+
+    fn device_ids(n: &mut TestNode) -> Option<Vec<u8>> {
+        n.msgs().into_iter().rev().find_map(|m| match m {
+            Control::DeviceList { devices } => Some(devices.iter().map(|d| d.id).collect()),
+            _ => None,
+        })
+    }
+
+    fn results(msgs: &[Control]) -> Vec<(bool, String)> {
+        msgs.iter()
+            .filter_map(|m| match m {
+                Control::ReceiverResult { ok, message } => Some((*ok, message.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// `two-receivers.hidrec` with only the Logitech block configured: the
+    /// other receiver is unclaimed, a widget adds it (hub.toml rewritten,
+    /// its interfaces taken at once), makes it exclusive and removes it.
+    #[test]
+    fn receivers_added_and_removed_at_run_time() {
+        let dir = store_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = dir.join("hub.toml");
+        let text =
+            "# hand-written\nname = \"pi\"\n\n[[receiver]]\nname = \"logitech\"  # the Unifying\n";
+        std::fs::write(&config, text).unwrap();
+        let cfg = crate::config::HubConfig::parse(text).unwrap();
+        let r = Router::new(
+            Uuid::new_v4(),
+            "hub".into(),
+            Options {
+                receivers: cfg.receivers.clone(),
+                ..Default::default()
+            },
+        )
+        .with_settings_file(crate::settings::path_in(&dir))
+        .unwrap()
+        .with_config_file(config.clone());
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/two-receivers.hidrec");
+        let mut replay = crate::hidrec::Replay::new(crate::hidrec::load(&path).unwrap());
+        replay.sync(&r);
+
+        let mut a = join(&r, NodeKind::Agent).unwrap();
+        let mut w = join(&r, NodeKind::Widget).unwrap();
+        assert_eq!(device_ids(&mut a), Some(vec![0, 1]));
+        let unclaimed: Vec<_> = w
+            .msgs()
+            .into_iter()
+            .filter_map(|m| match m {
+                Control::UnclaimedReceivers { receivers } => Some(receivers),
+                _ => None,
+            })
+            .collect();
+        let [u] = &unclaimed[..] else {
+            panic!("{unclaimed:?}")
+        };
+        let [u] = &u[..] else { panic!("{u:?}") };
+        assert_eq!((u.vid, u.pid, u.interfaces), (0x248a, 0x8367, 2));
+        assert_eq!(u.name, "Telink Wireless Receiver");
+        assert_eq!(
+            u.kinds,
+            [
+                proto::DeviceKind::Keyboard,
+                proto::DeviceKind::Mouse,
+                proto::DeviceKind::Other
+            ]
+        );
+
+        // Only widgets may add one.
+        r.on_control(
+            a.id,
+            Control::AddReceiver {
+                vid: 0x248a,
+                pid: 0x8367,
+            },
+        );
+        assert!(results(&a.msgs()).is_empty());
+        assert_eq!(r.receivers().len(), 1);
+
+        r.on_control(
+            w.id,
+            Control::AddReceiver {
+                vid: 0x248a,
+                pid: 0x8367,
+            },
+        );
+        let msgs = w.msgs();
+        assert_eq!(
+            results(&msgs),
+            [(
+                true,
+                "telink-wireless-receiver added as receiver 1".to_string()
+            )]
+        );
+        assert!(msgs.contains(&Control::UnclaimedReceivers { receivers: vec![] }));
+        let names: Vec<_> = r
+            .settings()
+            .exposures
+            .iter()
+            .map(|e| (e.receiver, e.name.clone()))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                (0, "logitech".to_string()),
+                (1, "telink-wireless-receiver".to_string())
+            ]
+        );
+        let written = std::fs::read_to_string(&config).unwrap();
+        assert!(
+            written.contains("# hand-written") && written.contains("# the Unifying"),
+            "{written}"
+        );
+        let reloaded = crate::config::HubConfig::parse(&written).unwrap();
+        assert_eq!(reloaded.receivers[0], cfg.receivers[0]);
+        assert_eq!(reloaded.receivers[1].pids, [0x8367]);
+
+        // Its interfaces come in with the next pass, as receiver 1.
+        replay.sync(&r);
+        assert_eq!(device_ids(&mut a), Some(vec![0, 1, 16, 17]));
+        // No longer unclaimed: a second add is refused.
+        r.on_control(
+            w.id,
+            Control::AddReceiver {
+                vid: 0x248a,
+                pid: 0x8367,
+            },
+        );
+        let res = results(&w.msgs());
+        assert!(
+            !res[0].0 && res[0].1.contains("not an unclaimed device"),
+            "{res:?}"
+        );
+
+        // Exclusive, then removed: devices, exposure and block go.
+        r.on_control(
+            w.id,
+            Control::SetExposure {
+                receiver: 1,
+                mode: exclusive(a.id),
+            },
+        );
+        let settings = std::fs::read_to_string(crate::settings::path_in(&dir)).unwrap();
+        assert!(settings.contains("telink-wireless-receiver"), "{settings}");
+        w.msgs();
+        a.link.take();
+        r.on_control(w.id, Control::RemoveReceiver { receiver: 1 });
+        assert_eq!(
+            results(&w.msgs()),
+            [(true, "telink-wireless-receiver removed".to_string())]
+        );
+        assert_eq!(device_ids(&mut a), Some(vec![0, 1]));
+        // Its keys were released on the agent that had it.
+        assert!(a
+            .link
+            .take()
+            .iter()
+            .any(|d| d.0 == 16 && d.1 == FLAG_RELEASE_ALL));
+        assert_eq!(r.settings().exposures.len(), 1);
+        let settings = std::fs::read_to_string(crate::settings::path_in(&dir)).unwrap();
+        assert!(!settings.contains("[[exposure]]"), "{settings}");
+        let written = std::fs::read_to_string(&config).unwrap();
+        assert_eq!(
+            crate::config::HubConfig::parse(&written).unwrap().receivers,
+            cfg.receivers
+        );
+        assert!(written.contains("# the Unifying"), "{written}");
+        // Reports of a closing interface go nowhere.
+        r.on_report(16, &key_report(0, 0x05));
+        assert!(a.link.take().is_empty());
+        replay.sync(&r);
+        assert_eq!(device_ids(&mut a), None);
+
+        // Refusals: a removed index, the last receiver.
+        r.on_control(w.id, Control::RemoveReceiver { receiver: 1 });
+        r.on_control(w.id, Control::RemoveReceiver { receiver: 0 });
+        let res = results(&w.msgs());
+        assert!(res[0].1.contains("no receiver 1"), "{res:?}");
+        assert!(res[1].1.contains("only receiver"), "{res:?}");
+        assert!(res.iter().all(|(ok, _)| !ok));
+
+        // Added again: index 2, the removed slot is not reused.
+        r.on_control(
+            w.id,
+            Control::AddReceiver {
+                vid: 0x248a,
+                pid: 0x8367,
+            },
+        );
+        assert!(results(&w.msgs())[0].1.ends_with("receiver 2"));
+        replay.sync(&r);
+        let mut ids = device_ids(&mut a).unwrap();
+        ids.sort();
+        assert_eq!(ids, [0, 1, 16, 17]);
+        assert_eq!(
+            r.receivers()
+                .iter()
+                .map(Option::is_some)
+                .collect::<Vec<_>>(),
+            [true, false, true]
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Without a writable hub.toml nothing changes in memory.
+    #[test]
+    fn a_failed_write_changes_nothing() {
+        let dir = store_dir();
+        let r = Router::new(Uuid::new_v4(), "hub".into(), Options::default())
+            .with_config_file(dir.join("missing").join("hub.toml"));
+        r.set_unclaimed(vec![proto::UnclaimedReceiver {
+            vid: 0x25a7,
+            pid: 0xfa09,
+            name: "Compx".into(),
+            serial: None,
+            interfaces: 2,
+            kinds: vec![],
+        }]);
+        let mut w = join(&r, NodeKind::Widget).unwrap();
+        w.msgs();
+        r.on_control(
+            w.id,
+            Control::AddReceiver {
+                vid: 0x25a7,
+                pid: 0xfa09,
+            },
+        );
+        let res = results(&w.msgs());
+        assert!(!res[0].0 && res[0].1.contains("reading"), "{res:?}");
+        assert_eq!(r.receivers().len(), 1);
     }
 
     /// The exclusive agent of the HID++ receiver reconnects (with another

@@ -242,6 +242,45 @@ pub fn grab(path: &Path) -> Result<File> {
     Ok(f)
 }
 
+/// [`read_loop`] that also ends, within a quarter of a second, once `stop`
+/// is set (a receiver removed from the widget, ADR 0032). Waits with
+/// `poll` so a blocked `read` never holds the file open.
+pub fn read_loop_until(
+    mut f: File,
+    stop: &std::sync::atomic::AtomicBool,
+    mut on_report: impl FnMut(&[u8]),
+) -> io::Error {
+    let mut buf = [0u8; 4096];
+    loop {
+        if stop.load(std::sync::atomic::Ordering::Relaxed) {
+            return io::Error::other("closed by the hub");
+        }
+        let mut pfd = libc::pollfd {
+            fd: f.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one valid pollfd for the duration of the call.
+        let n = unsafe { libc::poll(&mut pfd, 1, 250) };
+        if n < 0 {
+            let e = io::Error::last_os_error();
+            if e.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return e;
+        }
+        if n == 0 {
+            continue;
+        }
+        match f.read(&mut buf) {
+            Ok(0) => return io::ErrorKind::UnexpectedEof.into(),
+            Ok(n) => on_report(&buf[..n]),
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return e,
+        }
+    }
+}
+
 /// Read reports until the device goes away. Each `read` returns exactly one
 /// report.
 pub fn read_loop(mut f: File, mut on_report: impl FnMut(&[u8])) -> io::Error {

@@ -1065,7 +1065,7 @@ dependencies = [
 
 [[package]]
 name = "rawkvm-agent-core"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "dirs",
@@ -1086,7 +1086,7 @@ dependencies = [
 
 [[package]]
 name = "rawkvm-agent-gadget"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1101,7 +1101,7 @@ dependencies = [
 
 [[package]]
 name = "rawkvm-agent-linux"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1118,7 +1118,7 @@ dependencies = [
 
 [[package]]
 name = "rawkvm-agent-macos"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1132,7 +1132,7 @@ dependencies = [
 
 [[package]]
 name = "rawkvm-agent-windows"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1148,7 +1148,7 @@ dependencies = [
 
 [[package]]
 name = "rawkvm-edge-macos"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1163,7 +1163,7 @@ dependencies = [
 
 [[package]]
 name = "rawkvm-edge-windows"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1179,7 +1179,7 @@ dependencies = [
 
 [[package]]
 name = "rawkvm-hub"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1198,6 +1198,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "toml 0.8.23",
+ "toml_edit 0.22.27",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -1205,7 +1206,7 @@ dependencies = [
 
 [[package]]
 name = "rawkvm-proto"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "bytes",
  "hex",

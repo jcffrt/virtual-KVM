@@ -2,13 +2,17 @@
 //!
 //! A scan thread looks for interfaces matching any `[[receiver]]` block
 //! every few seconds, so a receiver can be plugged in after the hub started
-//! or re-plugged. Each open
-//! interface gets a blocking reader thread. Device ids are keyed by the
-//! physical path and stay stable while the hub runs.
+//! or re-plugged. The blocks come from the router on every pass: a widget
+//! may add or remove one at run time (ADR 0032); the interfaces of a
+//! removed block are closed. USB HID interfaces no block matches are
+//! reported to the router as unclaimed. Each open interface gets a reader
+//! thread. Device ids are keyed by the physical path and stay stable while
+//! the hub runs.
 
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -26,9 +30,28 @@ use crate::router::{ReportWriter, Router};
 const SCAN_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Which receiver block forwards this hidraw node, if any: the index of the
-/// first one that matches (the config rejects overlapping blocks).
-pub fn is_forwarded(iface: &RawInterface, receivers: &[ReceiverMatch]) -> Option<usize> {
-    receivers.iter().position(|m| matches_block(iface, m))
+/// first one that matches (the config rejects overlapping blocks). `None`
+/// entries are blocks removed while the hub runs.
+pub fn is_forwarded<'a>(
+    iface: &RawInterface,
+    receivers: impl IntoIterator<Item = Option<&'a ReceiverMatch>>,
+) -> Option<usize> {
+    receivers
+        .into_iter()
+        .position(|m| m.is_some_and(|m| matches_block(iface, m)))
+}
+
+/// A USB HID interface that no block matches, as an unclaimed candidate
+/// (`dj-children` and other HID-on-HID nodes are not offered).
+pub fn candidate(iface: &RawInterface) -> Option<crate::receivers::Candidate> {
+    (iface.bus == BUS_USB && iface.parent_hid.is_none()).then(|| crate::receivers::Candidate {
+        vid: iface.vid,
+        pid: iface.pid,
+        serial: iface.serial.clone(),
+        name: iface.name.clone(),
+        phys: iface.phys.clone(),
+        descriptor: iface.descriptor.clone(),
+    })
 }
 
 /// Does this hidraw node belong to receiver block `m`?
@@ -177,6 +200,10 @@ impl ReportWriter for HidrawWriter {
 
 struct OpenIface {
     grabs: HashMap<PathBuf, File>,
+    /// Index of the block it was opened for.
+    receiver: usize,
+    /// Set when that block is removed: the reader thread ends.
+    stop: Arc<AtomicBool>,
 }
 
 /// Grab the evdev nodes of `iface` not grabbed yet. They may appear a moment
@@ -196,22 +223,36 @@ fn grab_new(iface: &RawInterface, grabs: &mut HashMap<PathBuf, File>) {
     }
 }
 
-/// Read the interfaces of `receivers`. HID++ (paired devices, pairing,
-/// keyboard layout) runs only on receiver `hidpp_receiver` (ADR 0030).
-pub fn spawn(router: Arc<Router>, receivers: Vec<ReceiverMatch>, hidpp_receiver: Option<usize>) {
+/// Read the interfaces of the router's receiver blocks. HID++ (paired
+/// devices, pairing, keyboard layout) runs only on the first Logitech
+/// block (ADR 0030).
+pub fn spawn(router: Arc<Router>) {
     thread::Builder::new()
         .name("hid-scan".into())
-        .spawn(move || scan_loop(router, receivers, hidpp_receiver))
+        .spawn(move || scan_loop(router))
         .expect("spawning the scan thread");
 }
 
-fn scan_loop(router: Arc<Router>, receivers: Vec<ReceiverMatch>, hidpp_receiver: Option<usize>) {
+fn scan_loop(router: Arc<Router>) {
     let open: Arc<Mutex<HashMap<String, OpenIface>>> = Arc::default();
     let mut ids: HashMap<String, u8> = HashMap::new();
     let mut warned_empty = false;
     // phys -> driver already reported as refused, to log once per change.
     let mut refused: HashMap<String, Option<String>> = HashMap::new();
     loop {
+        let receivers = router.receivers();
+        let hidpp_receiver = receivers
+            .iter()
+            .position(|m| m.as_ref().is_some_and(ReceiverMatch::is_logitech));
+        // Close the interfaces of blocks removed from the widget.
+        for (phys, o) in open.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+            if !matches!(receivers.get(o.receiver), Some(Some(_)))
+                && !o.stop.swap(true, Ordering::Relaxed)
+            {
+                info!("closing {phys}: its receiver was removed");
+                ids.remove(phys);
+            }
+        }
         let found = match hidraw::enumerate() {
             Ok(list) => list,
             Err(e) => {
@@ -219,10 +260,19 @@ fn scan_loop(router: Arc<Router>, receivers: Vec<ReceiverMatch>, hidpp_receiver:
                 Vec::new()
             }
         };
-        let matching: Vec<_> = found
-            .into_iter()
-            .filter_map(|i| is_forwarded(&i, &receivers).map(|r| (i, r)))
-            .collect();
+        let mut matching = Vec::new();
+        let mut unclaimed = Vec::new();
+        {
+            let open_g = open.lock().unwrap_or_else(|e| e.into_inner());
+            for i in found {
+                match is_forwarded(&i, receivers.iter().map(Option::as_ref)) {
+                    Some(r) => matching.push((i, r)),
+                    None if !open_g.contains_key(&i.phys) => unclaimed.extend(candidate(&i)),
+                    None => {}
+                }
+            }
+        }
+        router.set_unclaimed(crate::receivers::group_unclaimed(&unclaimed));
         if matching.is_empty() && !warned_empty {
             warn!(
                 "no matching hidraw node; waiting for the receivers (run --list to see what is there)"
@@ -231,7 +281,9 @@ fn scan_loop(router: Arc<Router>, receivers: Vec<ReceiverMatch>, hidpp_receiver:
         warned_empty = matching.is_empty();
 
         for (iface, r) in matching {
-            let m = &receivers[r];
+            let Some(m) = &receivers[r] else {
+                continue;
+            };
             if let Some(why) = refusal(&iface, m) {
                 if refused.get(&iface.phys) != Some(&iface.driver) {
                     error!("{why}");
@@ -271,8 +323,11 @@ fn scan_loop(router: Arc<Router>, receivers: Vec<ReceiverMatch>, hidpp_receiver:
                     iface.driver
                 );
             }
+            let stop = Arc::new(AtomicBool::new(false));
             let mut o = OpenIface {
                 grabs: HashMap::new(),
+                receiver: r,
+                stop: stop.clone(),
             };
             if m.grab_evdev {
                 grab_new(&iface, &mut o.grabs);
@@ -301,7 +356,7 @@ fn scan_loop(router: Arc<Router>, receivers: Vec<ReceiverMatch>, hidpp_receiver:
             .flatten()
             .map(|w| Arc::new(Hidpp::new(w)));
             if let Some(h) = &hidpp {
-                router.attach_receiver(h.clone());
+                router.attach_receiver(h.clone(), r as u8);
             }
             router.add_device_with_writer(dev, writer);
 
@@ -312,7 +367,7 @@ fn scan_loop(router: Arc<Router>, receivers: Vec<ReceiverMatch>, hidpp_receiver:
             let spawned = thread::Builder::new()
                 .name(format!("hid-{id}"))
                 .spawn(move || {
-                    let err = hidraw::read_loop(file, |r| {
+                    let err = hidraw::read_loop_until(file, &stop, |r| {
                         let Some(h) = &hidpp else {
                             return router.on_report(id, r);
                         };
@@ -406,9 +461,24 @@ mod tests {
             vid: 0x1234,
             ..other(0)
         };
-        assert_eq!(is_forwarded(&logi, &cfg.receivers), Some(0));
-        assert_eq!(is_forwarded(&other(1), &cfg.receivers), Some(1));
-        assert_eq!(is_forwarded(&unknown, &cfg.receivers), None);
+        let blocks = || cfg.receivers.iter().map(Some);
+        assert_eq!(is_forwarded(&logi, blocks()), Some(0));
+        assert_eq!(is_forwarded(&other(1), blocks()), Some(1));
+        assert_eq!(is_forwarded(&unknown, blocks()), None);
+        // A removed block leaves a hole that keeps the indices.
+        let holed = [None, Some(&cfg.receivers[1])];
+        assert_eq!(is_forwarded(&logi, holed), None);
+        assert_eq!(is_forwarded(&other(1), holed), Some(1));
+        // Unclaimed: USB, not a HID child.
+        assert_eq!(
+            candidate(&unknown).map(|c| (c.vid, c.phys)),
+            Some((0x1234, unknown.phys.clone()))
+        );
+        let child = RawInterface {
+            parent_hid: Some((BUS_USB, 0x046d, 0xc52b)),
+            ..unknown.clone()
+        };
+        assert!(candidate(&child).is_none());
         // Another vendor needs neither hid-generic nor the DJ switch.
         assert!(refusal(&other(0), &cfg.receivers[1]).is_none());
         assert!(refusal(

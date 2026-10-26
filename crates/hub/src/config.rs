@@ -278,6 +278,16 @@ fn default_name() -> String {
 }
 
 impl ReceiverMatch {
+    /// A block for `vid` with that vendor's defaults (ADR 0030) and no
+    /// name.
+    pub fn for_vendor(vid: u16) -> Self {
+        ReceiverSpec {
+            vid: Some(vid),
+            ..Default::default()
+        }
+        .into()
+    }
+
     pub fn matches(&self, vid: u16, pid: u16) -> bool {
         vid == self.vid && (self.pids.is_empty() || self.pids.contains(&pid))
     }

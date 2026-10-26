@@ -10,9 +10,12 @@
 //! `t_us` is the time since the start of the recording in microseconds.
 //!
 //! A `D` line does not say which receiver the device belongs to: a replay
-//! takes it from the `[[receiver]]` blocks of the hub config, the first
-//! block matching the device's `vid` and `pid` ([`Recording::assign_receivers`]).
+//! takes it from the router's receiver blocks, the first one matching the
+//! device's `vid` and `pid`, on every pass ([`Replay::sync`]). A device no
+//! block matches is announced as unclaimed and, once a widget adds a block
+//! for it, replayed from the next pass (ADR 0032).
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
@@ -84,21 +87,60 @@ pub fn parse(text: &str) -> Result<Recording> {
     Ok(rec)
 }
 
-impl Recording {
-    /// Set each device's receiver to the first block matching its `vid`
-    /// and `pid`; a device no block matches stays with receiver 0.
-    pub fn assign_receivers(&mut self, receivers: &[ReceiverMatch]) {
-        for d in &mut self.devices {
-            match receivers.iter().position(|r| r.matches(d.vid, d.pid)) {
-                Some(i) => d.receiver = i as u8,
-                None => tracing::warn!(
-                    id = d.id,
-                    "recorded device {:04x}:{:04x} matches no [[receiver]]; replayed as receiver 0",
-                    d.vid,
-                    d.pid
-                ),
+/// The block a recorded device belongs to: the first one matching its
+/// `vid` and `pid` (`None` entries are removed blocks).
+pub fn receiver_of(d: &HidDevice, receivers: &[Option<ReceiverMatch>]) -> Option<usize> {
+    receivers
+        .iter()
+        .position(|r| r.as_ref().is_some_and(|r| r.matches(d.vid, d.pid)))
+}
+
+/// The devices of a recording, kept in step with the router's blocks.
+pub struct Replay {
+    rec: Recording,
+    /// Recorded id -> receiver it was added with.
+    present: HashMap<u8, u8>,
+}
+
+impl Replay {
+    pub fn new(rec: Recording) -> Self {
+        Self {
+            rec,
+            present: HashMap::new(),
+        }
+    }
+
+    /// Add the devices a block now matches, remove those whose block went
+    /// away, and announce the rest as unclaimed.
+    pub fn sync(&mut self, router: &Router) {
+        let receivers = router.receivers();
+        let mut unclaimed = Vec::new();
+        for d in &self.rec.devices {
+            match receiver_of(d, &receivers) {
+                Some(r) if self.present.get(&d.id) == Some(&(r as u8)) => {}
+                Some(r) => {
+                    router.add_device(HidDevice {
+                        receiver: r as u8,
+                        ..d.clone()
+                    });
+                    self.present.insert(d.id, r as u8);
+                }
+                None => {
+                    if self.present.remove(&d.id).is_some() {
+                        router.remove_device(d.id);
+                    }
+                    unclaimed.push(crate::receivers::Candidate {
+                        vid: d.vid,
+                        pid: d.pid,
+                        serial: d.serial.clone(),
+                        name: d.name.clone(),
+                        phys: format!("replay-{:04x}:{:04x}/input{}", d.vid, d.pid, d.interface),
+                        descriptor: d.report_descriptor.clone(),
+                    });
+                }
             }
         }
+        router.set_unclaimed(crate::receivers::group_unclaimed(&unclaimed));
     }
 }
 
@@ -149,17 +191,20 @@ pub fn spawn_replay(router: Arc<Router>, rec: Recording) {
     thread::Builder::new()
         .name("replay".into())
         .spawn(move || {
-            for d in &rec.devices {
-                router.add_device(d.clone());
-            }
-            if rec.reports.is_empty() {
+            let reports = rec.reports.clone();
+            let mut replay = Replay::new(rec);
+            if reports.is_empty() {
                 info!("recording has no reports; devices only");
-                return;
+                loop {
+                    replay.sync(&router);
+                    thread::sleep(Duration::from_secs(2));
+                }
             }
-            let span = rec.reports.last().map(|r| r.0).unwrap_or(0);
+            let span = reports.last().map(|r| r.0).unwrap_or(0);
             loop {
+                replay.sync(&router);
                 let start = Instant::now();
-                for (t, id, data) in &rec.reports {
+                for (t, id, data) in &reports {
                     let due = start + Duration::from_micros(*t);
                     if let Some(wait) = due.checked_duration_since(Instant::now()) {
                         thread::sleep(wait);
@@ -211,10 +256,19 @@ mod tests {
         .unwrap();
         let path =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/two-receivers.hidrec");
-        let mut rec = load(&path).unwrap();
-        rec.assign_receivers(&cfg.receivers);
-        let by_id: Vec<_> = rec.devices.iter().map(|d| (d.id, d.receiver)).collect();
-        assert_eq!(by_id, [(0, 0), (1, 0), (16, 1), (17, 1)]);
+        let rec = load(&path).unwrap();
+        let blocks: Vec<_> = cfg.receivers.into_iter().map(Some).collect();
+        let by_id: Vec<_> = rec
+            .devices
+            .iter()
+            .map(|d| (d.id, receiver_of(d, &blocks)))
+            .collect();
+        assert_eq!(
+            by_id,
+            [(0, Some(0)), (1, Some(0)), (16, Some(1)), (17, Some(1))]
+        );
+        let only_logitech = [blocks[0].clone()];
+        assert_eq!(receiver_of(&rec.devices[2], &only_logitech), None);
     }
 
     #[test]

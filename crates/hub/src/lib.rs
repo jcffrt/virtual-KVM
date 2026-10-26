@@ -15,6 +15,7 @@ pub mod nodes;
 pub mod poweroff;
 pub mod receiver;
 pub mod receiver_ctl;
+pub mod receivers;
 pub mod router;
 pub mod server;
 pub mod settings;
