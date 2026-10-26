@@ -941,3 +941,8 @@ Según [fase8-plan.md](fase8-plan.md); decisiones en el [ADR 0032](adr/0032-rece
 - **Qué probar tras instalarlo:**
   - en `/var/log/rawkvm-agent.log`, «watching the keyboard LEDs … registry_id=…» y, tras «virtual keyboard identity 046d:c52b», en ≤ 5 s «created again» y otro «watching … registry_id» distinto;
   - con el Mac activo, Bloq Mayús enciende y apaga el LED del teclado Logitech, y el log dice «output report sent to the hub».
+
+## 0.8.1 en el Mac: LED de Bloq Mayús verificado (2026-10-26 17:40)
+
+- `v0.8.1` etiquetada y publicada; instalada solo en el Mac (protocolo 10 sin cambio). Log: «created again registry_id=…» tras la identidad nueva del teclado virtual y, al pulsar Bloq Mayús con el Mac activo, «output report sent to the hub dev=0 report=[2]» / «[0]». El LED del Logitech sigue al Mac. Cerrado.
+- Fase 7 completa en la rama `fase7` (f331946) salvo BlueZ, binario y `.deb`, en pausa hasta una placa con Bluetooth Broadcom o la variante Android (Mi A1, `BluetoothHidDevice`); `bridge-core` y el ADR 0033 permiten reimplementarla.
