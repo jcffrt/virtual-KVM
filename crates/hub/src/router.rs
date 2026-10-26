@@ -496,7 +496,9 @@ impl Router {
                 Os::Windows => Some(OsKind::Windows),
                 Os::MacOs => Some(OsKind::MacOs),
                 Os::Linux => Some(OsKind::Linux),
-                Os::Other => None,
+                // A bridge's PC is unknown to the hub: the keyboard keeps
+                // its layout (ADR 0033).
+                Os::Other | Os::Bridge => None,
             },
         }
     }

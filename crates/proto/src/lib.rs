@@ -46,7 +46,10 @@ use uuid::Uuid;
 /// * 10: receivers added and removed from the widget (ADR 0032):
 ///   `UnclaimedReceivers` (hub -> widgets), `AddReceiver` and
 ///   `RemoveReceiver` (widget -> hub), `ReceiverResult` (hub -> widget).
-pub const PROTO_VERSION: u16 = 10;
+/// * 11: Bluetooth bridge (ADR 0033): [`Os::Bridge`], `BtStatus` (bridge ->
+///   hub -> widgets), `BtDiscoverable` and `BtForget` (widget -> hub ->
+///   bridge).
+pub const PROTO_VERSION: u16 = 11;
 
 /// DNS-SD service type the hub advertises on the LAN.
 pub const SERVICE_TYPE: &str = "_rawkvm._udp.local.";
@@ -71,6 +74,22 @@ pub enum Os {
     MacOs,
     Linux,
     Other,
+    /// A Bluetooth bridge (`rawkvm-agent-bt`, ADR 0033): an agent with no
+    /// screens that only receives the receivers exposed to it exclusively.
+    Bridge,
+}
+
+/// State of a Bluetooth bridge and the one PC it is bonded with.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+pub struct BridgeStatus {
+    /// Name (or address) of the bonded PC.
+    pub bonded: Option<String>,
+    pub connected: bool,
+    /// Seconds left of discoverability (pairing open).
+    pub discoverable_secs: Option<u32>,
+    /// The merged descriptor changed since the PC paired: forget the
+    /// device on the PC and pair again. Input is held back meanwhile.
+    pub repair_needed: bool,
 }
 
 /// Role of a node. Agents own a virtual HID device; widgets only observe and
@@ -571,6 +590,22 @@ pub enum Control {
         ok: bool,
         message: String,
     },
+    /// bridge -> hub -> widgets. Sent by the bridge on change; the hub sets
+    /// `node` to the sender, keeps the last one and sends it to widgets as
+    /// they connect.
+    BtStatus {
+        node: Uuid,
+        status: BridgeStatus,
+    },
+    /// widget -> hub -> bridge `node`. Open pairing for `secs` (0: close).
+    BtDiscoverable {
+        node: Uuid,
+        secs: u8,
+    },
+    /// widget -> hub -> bridge `node`. Forget the bonded PC.
+    BtForget {
+        node: Uuid,
+    },
 }
 
 impl Control {
@@ -605,6 +640,9 @@ impl Control {
             Control::AddReceiver { .. } => "AddReceiver",
             Control::RemoveReceiver { .. } => "RemoveReceiver",
             Control::ReceiverResult { .. } => "ReceiverResult",
+            Control::BtStatus { .. } => "BtStatus",
+            Control::BtDiscoverable { .. } => "BtDiscoverable",
+            Control::BtForget { .. } => "BtForget",
         }
     }
 }
@@ -744,6 +782,22 @@ mod tests {
                 mode: Exposure::Network,
             },
             Control::Unexposed { devices: vec![2] },
+            Control::BtStatus {
+                node: Uuid::new_v4(),
+                status: BridgeStatus {
+                    bonded: Some("GAMER".into()),
+                    connected: true,
+                    discoverable_secs: Some(42),
+                    repair_needed: true,
+                },
+            },
+            Control::BtDiscoverable {
+                node: Uuid::new_v4(),
+                secs: 60,
+            },
+            Control::BtForget {
+                node: Uuid::new_v4(),
+            },
             Control::UnclaimedReceivers {
                 receivers: vec![UnclaimedReceiver {
                     vid: 0x25a7,

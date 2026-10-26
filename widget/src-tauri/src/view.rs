@@ -391,6 +391,7 @@ fn os_name(os: Os) -> &'static str {
         Os::Windows => "Windows",
         Os::Linux => "Linux",
         Os::Other => "otro",
+        Os::Bridge => "puente Bluetooth",
     }
 }
 
