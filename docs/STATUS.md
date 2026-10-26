@@ -781,3 +781,38 @@ Decisión del usuario tras el segundo cuelgue del Wi‑Fi: el hub pasa a una **R
 - **Corte (05:48):** hub de la Zero parado y deshabilitado (la primera orden abortó entera porque incluía `rawkvm-netwatch`, que allí no está instalado: el hub viejo siguió vivo un minuto), hub nuevo arrancado: abre las tres interfaces del receptor, apaga el modo DJ, registra al gadget en 1 s. El **Mac** saltó solo por mDNS (`found hub "rawkvm-hub" via mDNS`, 192.168.1.39). **Ubuntu** tenía `.28` fija: su configuración está en `~/.config/rawkvm/{agent,edge}.toml` como servicio **de usuario**, se editó sin sudo y `systemctl --user restart rawkvm-agent`. **GAMER**: `setup.ps1 -Pair -Hub 192.168.1.39` por el usuario; edge y widget registrados a las 05:59 sin aviso de certificado.
 - **Estado del hub nuevo:** 5 nodos (gadget, Mac + edge, Ubuntu + edge, GAMER edge + widget), 47,8 °C, 182 MB usados de 905.
 - **Pendiente:** apagar el Wi‑Fi de la Zero; probar los cruces en los tres equipos con el hub nuevo; `.deb` del gadget 0.5.0 arm64 reconstruido pero no reinstalado en la Zero (misma versión); fase 6 en `docs/fase6-plan.md` esperando a VS Code (la sesión antigua sigue viva pero sin socket de mensajería: hay que abrir una conversación nueva).
+
+## Fase 6: varios receptores y exposición por receptor (2026-10-26, VS Code)
+
+Según [fase6-plan.md](fase6-plan.md); decisiones en el [ADR 0030](adr/0030-varios-receptores-y-exposicion.md). **Protocolo 8** y **versión 0.6.0**: el hub, el gadget, los agentes, los helpers y el widget se actualizan a la vez.
+
+- **`hub.toml`:**
+  - admite varios `[[receiver]]`; el `[receiver]` único de antes carga igual (hay un test con el fichero que generaba el hub 0.5.0);
+  - `name` vale por defecto `receiver-N`, con N desde 0;
+  - los valores por defecto dependen del `vid`: para otra marca, cualquier producto y sin `force_normal_mode` ni `require_hid_generic`; si se fuerza `force_normal_mode`, se avisa y se ignora;
+  - el hub no arranca si hay bloques solapados, nombres repetidos, ninguno o más de 16.
+- **HID++ solo con el primer receptor Logitech:** pairing, batería, perfil del teclado y `--hidpp-*`.
+- **Ids de dispositivo:** `16 × receptor + interfaz`; el primer receptor sigue con 0, 1, 2. `HidDevice.receiver` dice a qué receptor pertenece cada uno.
+- **Router:** cada receptor tiene una exposición, `Network` o `Exclusive { agent }`.
+  - En `Exclusive`, los informes van solo a ese agente; si no está conectado se descartan, y `HubStatus.held` lo dice.
+  - Ni el atajo ni los bordes actúan sobre un receptor exclusivo: el hub ignora el `SwitchTo` de un agente cuyo puntero movió por última vez un ratón exclusivo.
+  - Modificador, modificador, `Esc` en un teclado exclusivo lo devuelve a `Network`, aunque el atajo esté desactivado.
+  - Al cambiar de activo, los «nada pulsado» y los LEDs solo afectan a los receptores de la red. Los LEDs y el perfil del teclado de un receptor exclusivo siguen a su agente.
+  - Se guarda en `settings.toml`, `[[exposure]]`, por nombre del receptor.
+- **Mensajes:** `SetExposure` (widget → hub; si lo rechaza, el hub registra un aviso y devuelve `Settings` sin cambios) y `HubSettings.exposures`.
+- **Widget:** tabla «Receptores» en la pestaña Hub, con un selector «Red local» o «Exclusivo → agente», el aviso de entrada descartada y la vía de escape.
+- **`fixtures/two-receivers.hidrec`:** el C52B real más un receptor sintético `248a:8367`. Al reproducirlo, el receptor de cada dispositivo sale del bloque de la configuración que casa con su `vid` y su `pid`.
+- **Docs:** `protocol.md` (versión 8, sección «Receptores y exposición»), «Varios receptores» en `hub-linux-instalacion.md` y `hub.toml.example`.
+- **Verificado en el Mac:**
+  - fmt;
+  - clippy `-D warnings` del workspace en macOS y `x86_64-unknown-linux-gnu`, y de los crates de Windows en `x86_64-pc-windows-gnu`;
+  - los tests del workspace (hub: 99; nuevos: 8 del router, 3 de configuración, 1 de `hidrec`, y `settings` ampliado) y los del widget (clippy y 11 tests);
+  - `npm run build`.
+- **Sin ejecutar:** el test `devices::two_receivers`, que es solo de Linux (lo correrá la CI), y todo lo que necesita hardware.
+- **Qué probar en la RPi 3B+ tras desplegar:**
+  1. el `hub.toml` actual, con `[receiver]`, arranca sin cambios: «reading receiver 046d» y los mismos ids 0, 1, 2;
+  2. todos los nodos en 0.6.0: uno en 0.5.0 recibe `Reject { VersionMismatch }`;
+  3. en el widget, «Receptores» muestra `receiver-0` con 3 interfaces;
+  4. ponerlo «Exclusivo → Mac», comprobar que el teclado escribe en el Mac aunque el activo sea otro y que los bordes no lo mueven, y volver a la red con Ctrl, Ctrl, Esc;
+  5. si hay un dongle de otra marca a mano, añadirlo como segundo `[[receiver]]`.
+- **Sigue sin asignar:** el hallazgo de empaquetado del postinst, que arranca el hub con una identidad nueva al instalar.
