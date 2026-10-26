@@ -4,6 +4,12 @@ Brief para la sesión de código (VS Code). Contexto y motivación: [puente-blue
 
 Decidido el 2026-10-26 por el usuario. Lleva **un ADR** (0030) con las decisiones de abajo; si alguna se cambia al implementar, se documenta en el ADR, no se pregunta.
 
+## Contexto operativo (2026-10-26)
+
+- El hub ya corre en una **Raspberry Pi 3B+** por Ethernet (`rawkvm-hub.local`, 192.168.1.39, Raspberry Pi OS Trixie arm64); la Zero 2W solo lleva `rawkvm-agent-gadget`. Detalles y hallazgos en la última sección de `docs/STATUS.md`. Las pruebas de hardware del vigilante quedan en segundo plano: en las dos placas la ruta va por Ethernet y el vigilante está en reposo por diseño.
+- Hallazgo de empaquetado, **sin asignar todavía**: el postinst arranca el hub al instalar y, sin estado previo, genera identidad y token nuevos y los anuncia por mDNS; al migrar hubo que pararlo y restaurar el estado encima. Candidatos: `rawkvm-hub --import-state <tar>` (para, vuelca, arranca) o que el postinst no arranque si existe una marca de migración. Se decide después de esta fase.
+- Al terminar: commit en `main`, fmt/clippy/tests limpios, y el despliegue en la RPi 3B+ lo hace la sesión de Claude Desktop.
+
 ## Objetivo
 
 1. `hub.toml` admite **varios bloques `[[receiver]]`**, cada uno con su fabricante; el bloque único `[receiver]` sigue funcionando.
