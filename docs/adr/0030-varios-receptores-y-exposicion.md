@@ -85,6 +85,7 @@ Hasta la fase 6 el hub reenviaba las interfaces de **un** receptor, descrito por
 - La fase 7 (agente puente Bluetooth) solo tiene que conectarse como agente y que el widget le asigne un receptor en exclusiva.
 - **`PROTO_VERSION` 8:** el hub, todos los agentes, el gadget, los helpers y el widget se actualizan a la vez.
 - Riesgo: con un receptor exclusivo y su agente apagado, ese teclado no hace nada salvo la vía de escape. Es intencionado.
+- **Límite del agente gadget:** `usb_f_hid` admite como mucho cuatro interfaces HID (`HIDG_MINORS`) en toda la placa. Con dos receptores (3 + 2 interfaces), el gadget no puede presentarlas todas. Desde la 0.7.0 elige por prioridad: primero teclado y ratón, después otras colecciones estándar y al final las de fabricante (HID++). Avisa en su log y en el widget (`Unexposed`, protocolo 9). Ver [ADR 0031](0031-gadget-con-mas-de-cuatro-interfaces.md). En la 0.6.0 la quinta interfaz tiraba el gadget entero.
 
 ## Descartadas
 

@@ -27,6 +27,7 @@ El hub de la Orange Pi tiene un segundo USB-C con OTG en modo periférico y podr
 ## Límites
 
 - **Un gadget = un PC.** Cada PC por cable necesita su placa.
+- **Cuatro interfaces HID como mucho** (`HIDG_MINORS` de `usb_f_hid`, contando todos los gadgets de la placa). Si hay más, se eligen por prioridad: ver [ADR 0031](0031-gadget-con-mas-de-cuatro-interfaces.md).
 - **Latencia**: Wi‑Fi hub→placa (RTT 4–10 ms medido) + 1 ms de sondeo USB. Sin la ventaja del cable entre el receptor y el PC.
 - El PC ve un receptor sin dispositivos emparejados: el software Logitech no podrá gestionarlo.
 - Las salidas del host (LED de Bloq Mayús) no llegan al teclado real.

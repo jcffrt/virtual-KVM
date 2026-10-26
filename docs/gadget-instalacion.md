@@ -46,6 +46,22 @@ os_profile = "windows"   # "macos", "linux" (= Windows) o "none" (no tocar)
 
 Si el PC tiene instalados Logitech Options+, Logi Options o G HUB, intentarán hablar HID++ con el «receptor» del gadget y no obtendrán respuesta (el gadget descarta lo que el PC envía). Es inocuo: teclado y ratón funcionan igual, pero esos programas no verán el receptor como gestionable (ni batería, ni emparejar, ni botones configurables). La configuración de los botones se hace en el PC donde esté el receptor real, o no se hace.
 
+### Varios receptores: como mucho cuatro interfaces
+
+El módulo del kernel `usb_f_hid` admite **cuatro interfaces HID como mucho** en toda la placa. Un receptor Logitech ocupa tres (teclado, ratón y HID++), y un dongle genérico suele ocupar dos. Con dos receptores en el hub, el gadget no puede presentar las cinco interfaces.
+
+Si no caben todas, el gadget elige así ([ADR 0031](adr/0031-gadget-con-mas-de-cuatro-interfaces.md)):
+
+1. primero teclado y ratón, de cada receptor;
+2. después otras interfaces estándar (solo multimedia o solo control del sistema);
+3. al final las de fabricante, como el HID++ del Logitech.
+
+Si hay empate, gana el receptor que va antes en `hub.toml`.
+
+Con el Logitech y el Areson entran los dos teclados y los dos ratones, y se queda fuera el HID++, que sin Logitech Options+ no hace nada en el PC. El log del gadget lo avisa (`not presented to the PC on the USB cable: 2 (…)`). El widget lo muestra en la pestaña Hub, bajo el equipo: «No llegan a su PC por USB: …». Ya no hace falta `--no-hidpp` para que el gadget enlace; sigue haciendo falta si el PC es Linux.
+
+Si otro gadget HID de la placa ocupa alguna de las cuatro, el gadget lo detecta al crear las funciones y se queda con las que caben (`the kernel has room for only N HID functions`). Vuelve a intentar con las cuatro cuando cambia la lista de dispositivos del hub.
+
 ## Placas
 
 | Placa | Puerto al PC | Notas |
@@ -129,6 +145,8 @@ Después: pasar la entrada a este agente (**Ctrl, Ctrl, N** o si es el único co
 | `binding to … (is another gadget using it?)` | Otro gadget usa el UDC (`g_ether`/`g_serial` en `modules-load`, o `usb_gadget` de otra herramienta): quitarlo. |
 | `the USB host is not reading reports` | El PC duerme o está apagado, el cable no lleva datos o no está conectado. Los informes se descartan sin esperar hasta `the USB host is reading reports again`. |
 | El PC Linux reconoce el receptor pero no escribe | Falta `--no-hidpp` (modo DJ). |
+| `not presented to the PC on the USB cable: …` | Hay más de cuatro interfaces (varios receptores): las que se nombran no llegan al PC. Ver «Varios receptores: como mucho cuatro interfaces». |
+| `the kernel has room for only N HID functions` | Otro gadget HID de la placa ocupa parte de las cuatro interfaces de `usb_f_hid`: quitarlo. |
 | El gadget sale con menos de 3 interfaces (`bound to … with 1 interfaces`) | El hub no reenvía todo el receptor: en la placa del hub `hid_logitech_dj` se cargó desde el initramfs. Ver «Problemas conocidos» en `docs/fase0-validacion.md` (`update-initramfs -u` y reiniciar). |
 
 El agente espera a que la lista de dispositivos del hub lleve 500 ms sin cambios antes de crear el gadget (el hub anuncia las interfaces una a una al abrirlas), así el PC ve una sola enumeración.

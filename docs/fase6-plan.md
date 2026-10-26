@@ -75,7 +75,7 @@ Decidido el 2026-10-26 por el usuario. Lleva **un ADR** (0030) con las decisione
 - HID++ para más de un receptor Logitech.
 - Cambiar el formato del datagrama.
 
-## Defecto del gadget con más de cuatro interfaces (2026-10-26, abierto)
+## Defecto del gadget con más de cuatro interfaces (2026-10-26, corregido en 0.7.0)
 
 Encontrado en hardware con dos receptores (Logitech C52B, 3 interfaces, y Areson/Compx `25a7:fa09`, 2 interfaces): el gadget de la Zero 2W falla al crear la quinta función, `Mkdir("/sys/kernel/config/usb_gadget/rawkvm/functions/hid.usb17"): No such device`, y el PC se queda sin ningún `/dev/hidg*`. Causa: `usb_f_hid` admite como máximo `HIDG_MINORS = 4` instancias. Con `--no-hidpp` (cuatro interfaces: ids 0, 1, 16, 17) enlaza bien.
 
@@ -85,3 +85,5 @@ Pedido a la sesión de código:
 2. Un `mkdir` fallido de una función no tira todo el gadget: se construye con las que quepan.
 3. Documentar el límite en `gadget-instalacion.md` y en las consecuencias del ADR 0030.
 4. Test del sink con cinco dispositivos y un límite simulado.
+
+**Corregido en 0.7.0** ([ADR 0031](adr/0031-gadget-con-mas-de-cuatro-interfaces.md)). El gadget elige por prioridad: teclado y ratón, después otras colecciones estándar y al final las de fabricante. Si un `mkdir` falla, aprende cuántas funciones caben y reconstruye con esas. Avisa en el log y en el widget, con el protocolo 9 (`Unexposed`, `NodeInfo.unexposed`).

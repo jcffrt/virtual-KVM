@@ -832,3 +832,33 @@ Según [fase6-plan.md](fase6-plan.md); decisiones en el [ADR 0030](adr/0030-vari
 - **DEFECTO encontrado (abierto, para VS Code):** el gadget de la Zero no puede crear la quinta función HID: `Mkdir(".../functions/hid.usb17"): No such device`. `usb_f_hid` limita las instancias a `HIDG_MINORS = 4`, y el gadget se quedó sin ninguna interfaz (el GAMER sin teclado ni ratón). **Apaño temporal:** `RAWKVM_GADGET_ARGS="--no-hidpp"` en `/etc/default/rawkvm-agent-gadget` de la Zero: cuatro interfaces (ids 0, 1, 16, 17) y el gadget enlaza. Pedido: que el gadget elija qué interfaces entran cuando hay más de cuatro (teclado y ratón de cada receptor antes que HID++), que un `mkdir` fallido no tire todo el gadget, aviso en el log y en el widget, documentación del límite y test del sink. El brief completo está en `docs/fase6-plan.md` → «Defecto del gadget».
 - **Pendientes:** pruebas 3 y 4 (widget: tabla «Receptores», exclusivo → Mac, vuelta con Ctrl, Ctrl, Esc) las está haciendo el usuario; el hallazgo del postinst sigue sin asignar; apagar el Wi‑Fi de la Zero.
 - **Pruebas 3 y 4 (14:30, usuario):** OK. En el widget, la tabla «Receptores» muestra `logitech` (3 interfaces) y `areson` (2). `areson` en «Exclusivo → orangepizero2w» (el GAMER): el ratón Compx solo mueve el GAMER mientras el Logitech sigue cruzando bordes entre Mac y GAMER; vuelta a «Red local» desde el widget. El log del hub registra `exposure set by a widget receiver=1 mode=Exclusive`/`Network` y los `switched` del Logitech entre medias. Con dos ratones en red, los dos mueven el equipo activo. El receptor Logitech exclusivo se probó antes (14:18) con la misma mecánica.
+
+## Gadget con más de cuatro interfaces: 0.7.0, protocolo 9 (2026-10-26, VS Code)
+
+- **Defecto de la prueba 5 corregido** ([ADR 0031](adr/0031-gadget-con-mas-de-cuatro-interfaces.md)). Con más interfaces de las que admite `usb_f_hid` (`HIDG_MINORS = 4`), `configfs::spec_for` elige por prioridad:
+  1. teclado, keypad, ratón o puntero de Generic Desktop;
+  2. otras colecciones estándar;
+  3. solo de fabricante (HID++) o descriptor ilegible.
+
+  Desempata por id del hub y enlaza las elegidas en orden de id. Con el Logitech y el Areson quedan 0, 1, 16 y 17, y sale el 2.
+- **Un `mkdir` fallido ya no tira el gadget.** Si falla la función k (k > 0), el sink reconstruye con k funciones. El límite aprendido vale para esa lista: con la misma lista (reconexión del hub) conserva el gadget, y con una lista nueva prueba otra vez con cuatro. `HidSink` tiene un backend de ficheros inyectable (`GadgetSink::with_backend`) para los tests.
+- **Aviso:**
+  - en el log del gadget: `not presented to the PC on the USB cable: 2 (Logitech USB Receiver, interface 2)`;
+  - en el protocolo 9: `Control::Unexposed { devices }` (agente → hub, al cambiar) y `NodeInfo.unexposed`. agent-core lo envía cuando cambia `HidSink::unexposed()`;
+  - en el widget: en la tabla «Equipos», bajo el agente, «No llegan a su PC por USB: logitech, interfaz 2 (HID++ (vendor))».
+- **Tests nuevos:**
+  - prioridad de las interfaces;
+  - cinco interfaces con límites 4, 3 y 5 (con una solo multimedia);
+  - `failed_function`;
+  - sink con cinco dispositivos y límite de kernel simulado de 4, 3 (aprende, conserva el gadget en la reconexión, reintenta con lista nueva) y 0;
+  - `Unexposed` en el router del hub y en agent-core;
+  - etiqueta en la vista del widget.
+- **Documentación:** `gadget-instalacion.md` («Varios receptores: como mucho cuatro interfaces», más dos filas de problemas), ADR 0030 (consecuencias), ADR 0007 (límites) y `protocol.md` v9.
+- **Versión 0.7.0** (workspace y widget), `PROTO_VERSION` 9: hay que actualizar todos los nodos a la vez.
+- **Verificado en el Mac:**
+  - fmt;
+  - clippy `-D warnings` del workspace en macOS y en `x86_64-unknown-linux-gnu` (zig cc como `CC`), y de proto, agent-core, hub y los crates de Windows en `x86_64-pc-windows-gnu`;
+  - clippy y tests del widget;
+  - tests del workspace;
+  - `npm run build`.
+- **Al desplegar en la Zero:** se puede quitar `RAWKVM_GADGET_ARGS="--no-hidpp"` de `/etc/default/rawkvm-agent-gadget`, porque el PC GAMER es Windows. Con los dos receptores debe aparecer `bound to … with 4 interfaces` y el aviso del id 2. Con solo el Logitech vuelven las 3 interfaces.
