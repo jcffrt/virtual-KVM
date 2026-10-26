@@ -140,7 +140,14 @@
       {#each view.nodes as n (n.id)}
         <tr class:grey={n.role === 'agent' && !n.has_helper} class:active={n.active}>
           <td>{n.role === 'agent' ? n.index : ''}</td>
-          <td>{n.name}{#if n.active} <span class="badge">activo</span>{/if}</td>
+          <td>
+            {n.name}{#if n.active} <span class="badge">activo</span>{/if}
+            {#if n.unexposed.length > 0}
+              <div class="bad small" title="usb_f_hid admite cuatro interfaces HID por gadget (ADR 0031)">
+                No llegan a su PC por USB: {n.unexposed.join('; ')}
+              </div>
+            {/if}
+          </td>
           <td>{n.os}</td>
           <td>
             {roleLabel[n.role]}{#if n.helper_of} de {n.helper_of}{/if}
@@ -235,6 +242,7 @@
   dt { color: var(--muted); }
   dd { margin: 0; }
   .bad { color: var(--bad); }
+  .small { font-size: 12px; }
   tr.grey td { color: var(--muted); }
   tr.active td { font-weight: 600; }
   .badge { font-size: 11px; color: var(--ok); border: 1px solid var(--ok); border-radius: 4px; padding: 0 4px; font-weight: 500; }

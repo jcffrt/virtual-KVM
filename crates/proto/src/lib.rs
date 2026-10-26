@@ -41,7 +41,9 @@ use uuid::Uuid;
 /// * 8: several receivers: [`HidDevice::receiver`], per-receiver
 ///   [`Exposure`] in [`HubSettings::exposures`], `SetExposure` (widget ->
 ///   hub), [`HubStatus::held`], `keep` in `Deactivate`.
-pub const PROTO_VERSION: u16 = 8;
+/// * 9: `Unexposed` (agent -> hub) and [`NodeInfo::unexposed`]: devices a
+///   USB gadget could not present (ADR 0031).
+pub const PROTO_VERSION: u16 = 9;
 
 /// DNS-SD service type the hub advertises on the LAN.
 pub const SERVICE_TYPE: &str = "_rawkvm._udp.local.";
@@ -369,6 +371,9 @@ pub struct NodeInfo {
     /// Screens the hub knows for this node (reported by it or its edge
     /// helper). 0 for an agent: no edge helper yet.
     pub screens: u8,
+    /// Device ids this agent could not present to its PC (a USB gadget
+    /// out of HID functions, ADR 0031). Empty for other nodes.
+    pub unexposed: Vec<u8>,
 }
 
 /// Hub status broadcast to widgets (and agents) on change.
@@ -507,6 +512,12 @@ pub enum Control {
         receiver: u8,
         mode: Exposure,
     },
+    /// agent -> hub. Device ids of the `DeviceList` the agent cannot
+    /// present to its PC (ADR 0031); sent when that set changes, also to
+    /// empty. Shown in [`NodeInfo::unexposed`].
+    Unexposed {
+        devices: Vec<u8>,
+    },
 }
 
 impl Control {
@@ -536,6 +547,7 @@ impl Control {
             Control::Shutdown => "Shutdown",
             Control::ShuttingDown { .. } => "ShuttingDown",
             Control::SetExposure { .. } => "SetExposure",
+            Control::Unexposed { .. } => "Unexposed",
         }
     }
 }
@@ -674,6 +686,7 @@ mod tests {
                 receiver: 0,
                 mode: Exposure::Network,
             },
+            Control::Unexposed { devices: vec![2] },
             Control::Hello {
                 proto_ver: PROTO_VERSION,
                 node_id: Uuid::new_v4(),

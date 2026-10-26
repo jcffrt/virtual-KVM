@@ -417,6 +417,44 @@ fn sinks_without_settle_time_are_ready_at_once() {
     assert_eq!(sink.events(), [Ev::DestroyAll, Ev::Create(0), Ev::Ready]);
 }
 
+/// A sink that cannot present some devices (a full USB gadget).
+struct PartialSink(Vec<u8>);
+
+impl HidSink for PartialSink {
+    fn create(&mut self, _: &HidDevice) -> Result<()> {
+        Ok(())
+    }
+    fn input(&mut self, _: u8, _: &[u8]) -> Result<()> {
+        Ok(())
+    }
+    fn destroy_all(&mut self) {}
+    fn unexposed(&self) -> Vec<u8> {
+        self.0.clone()
+    }
+}
+
+#[test]
+fn unexposed_is_sent_only_when_it_changes() {
+    let mut s = Session::new();
+    let mut sink = PartialSink(Vec::new());
+    assert_eq!(s.unexposed_changed(&sink), None);
+    sink.0 = vec![2];
+    assert_eq!(
+        s.unexposed_changed(&sink),
+        Some(Control::Unexposed { devices: vec![2] })
+    );
+    assert_eq!(s.unexposed_changed(&sink), None);
+    sink.0.clear();
+    assert_eq!(
+        s.unexposed_changed(&sink),
+        Some(Control::Unexposed { devices: vec![] })
+    );
+    // A new connection starts from "everything presented".
+    let mut s = Session::new();
+    sink.0 = vec![2];
+    assert!(s.unexposed_changed(&sink).is_some());
+}
+
 #[derive(Clone)]
 struct FakeScreen {
     screens: Vec<proto::Screen>,

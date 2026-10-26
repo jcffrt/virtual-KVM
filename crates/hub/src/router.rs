@@ -189,6 +189,8 @@ struct Node {
     seq: [u16; 256],
     /// Sequence numbers of the node's output report datagrams.
     out_seq: SeqTracker,
+    /// Devices this agent cannot present to its PC (ADR 0031).
+    unexposed: Vec<u8>,
 }
 
 impl Node {
@@ -578,6 +580,7 @@ impl Router {
             ctl,
             seq: [0; 256],
             out_seq: SeqTracker::new(),
+            unexposed: Vec::new(),
         };
         node.send(Control::HelloAck {
             hub_id: self.hub_id,
@@ -815,6 +818,22 @@ impl Router {
                     ..new
                 };
                 self.settings_changed(st);
+            }
+            Control::Unexposed { mut devices } if kind == NodeKind::Agent => {
+                devices.sort_unstable();
+                devices.dedup();
+                if devices.is_empty() {
+                    info!(node = %from, "the agent presents every device again");
+                } else {
+                    warn!(node = %from, ?devices, "the agent cannot present these devices to its PC");
+                }
+                if let Some(n) = st.nodes.get_mut(&from) {
+                    if n.unexposed == devices {
+                        return;
+                    }
+                    n.unexposed = devices;
+                }
+                self.broadcast_status(st);
             }
             Control::SetExposure { receiver, mode } if kind == NodeKind::Widget => {
                 let refusal = if self.opts.receivers.get(receiver as usize).is_none() {
@@ -1529,6 +1548,7 @@ impl Router {
                     .screens
                     .get(&n.hello.node_id)
                     .map_or(0, |s| s.len().min(u8::MAX as usize) as u8),
+                unexposed: n.unexposed.clone(),
             })
             .collect();
         nodes.sort_by_key(|n| (n.kind == NodeKind::Widget, n.assigned_index));
@@ -1681,6 +1701,55 @@ mod tests {
 
     fn key_report(mods: u8, key: u8) -> Vec<u8> {
         vec![mods, 0, key, 0, 0, 0, 0, 0]
+    }
+
+    #[test]
+    fn unexposed_devices_of_an_agent_reach_the_widgets() {
+        let r = router();
+        let gadget = join(&r, NodeKind::Agent).unwrap();
+        let mut w = join(&r, NodeKind::Widget).unwrap();
+        w.msgs();
+        let last_status = |w: &mut TestNode| {
+            w.msgs().into_iter().rev().find_map(|m| match m {
+                Control::Status(st) => Some(st),
+                _ => None,
+            })
+        };
+        let of = |st: &HubStatus, id: Uuid| {
+            st.nodes
+                .iter()
+                .find(|n| n.node_id == id)
+                .unwrap()
+                .unexposed
+                .clone()
+        };
+
+        r.on_control(
+            gadget.id,
+            Control::Unexposed {
+                devices: vec![17, 2, 2],
+            },
+        );
+        let st = last_status(&mut w).expect("a new status");
+        assert_eq!(of(&st, gadget.id), [2, 17]);
+        assert!(of(&st, w.id).is_empty());
+
+        // The same set again changes nothing.
+        r.on_control(
+            gadget.id,
+            Control::Unexposed {
+                devices: vec![2, 17],
+            },
+        );
+        assert!(last_status(&mut w).is_none());
+
+        // A widget cannot claim it.
+        r.on_control(w.id, Control::Unexposed { devices: vec![0] });
+        assert!(last_status(&mut w).is_none());
+
+        r.on_control(gadget.id, Control::Unexposed { devices: vec![] });
+        let st = last_status(&mut w).expect("a new status");
+        assert!(of(&st, gadget.id).is_empty());
     }
 
     #[test]

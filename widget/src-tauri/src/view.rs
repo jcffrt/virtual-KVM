@@ -253,6 +253,33 @@ fn kind_name(page: u16, usage: u16) -> String {
     }
 }
 
+/// "logitech, interfaz 2 (HID++ (vendor))" for a device id of the hub.
+fn device_label(st: &WidgetState, id: u8) -> String {
+    let Some(d) = st.devices.iter().find(|d| d.id == id) else {
+        return format!("dispositivo {id}");
+    };
+    let receiver = st
+        .settings
+        .as_ref()
+        .and_then(|s| s.exposures.iter().find(|e| e.receiver == d.receiver))
+        .map_or_else(|| format!("receptor {}", d.receiver), |e| e.name.clone());
+    let mut kinds: Vec<String> = DescriptorInfo::parse(&d.report_descriptor)
+        .applications
+        .iter()
+        .map(|&(p, u)| kind_name(p, u))
+        .collect();
+    kinds.dedup();
+    if kinds.is_empty() {
+        format!("{receiver}, interfaz {}", d.interface)
+    } else {
+        format!(
+            "{receiver}, interfaz {} ({})",
+            d.interface,
+            kinds.join(", ")
+        )
+    }
+}
+
 pub fn devices(st: &WidgetState) -> Vec<DeviceView> {
     st.devices
         .iter()
@@ -293,6 +320,9 @@ pub struct NodeView {
     pub has_helper: bool,
     pub active: bool,
     pub rtt_ms: Option<f32>,
+    /// Interfaces this agent cannot present to its PC (a USB gadget with
+    /// more interfaces than the kernel allows, ADR 0031), as labels.
+    pub unexposed: Vec<String>,
 }
 
 fn os_name(os: Os) -> &'static str {
@@ -335,6 +365,7 @@ pub fn view(st: &WidgetState, cfg: &AgentConfig) -> View {
                 has_helper: n.kind == NodeKind::Agent && n.screens > 0,
                 active: Some(n.node_id) == active,
                 rtt_ms: n.rtt_ms,
+                unexposed: n.unexposed.iter().map(|&id| device_label(st, id)).collect(),
             }
         })
         .collect();
@@ -435,7 +466,53 @@ mod tests {
             assigned_index: index,
             rtt_ms: Some(4.0),
             screens,
+            unexposed: Vec::new(),
         }
+    }
+
+    #[test]
+    fn unexposed_devices_are_named() {
+        let mut gadget = info("orangepi", NodeKind::Agent, 1, 0, Os::Linux);
+        gadget.unexposed = vec![2, 40];
+        let hidpp = [
+            0x06, 0x00, 0xFF, 0x09, 0x01, 0xA1, 0x01, 0x75, 0x08, 0x95, 0x06, 0x81, 0x00, 0xC0,
+        ];
+        let st = WidgetState {
+            status: Some(HubStatus {
+                hub_name: "hub".into(),
+                active: None,
+                nodes: vec![gadget],
+                device_count: 1,
+                uptime_s: 1,
+                version: String::new(),
+                held: Vec::new(),
+            }),
+            settings: Some(HubSettings {
+                exposures: vec![proto::ReceiverExposure {
+                    receiver: 0,
+                    name: "logitech".into(),
+                    mode: Exposure::Network,
+                }],
+                ..Default::default()
+            }),
+            devices: vec![proto::HidDevice {
+                id: 2,
+                name: "Logitech USB Receiver".into(),
+                vid: 0x046d,
+                pid: 0xc52b,
+                serial: None,
+                interface: 2,
+                report_descriptor: hidpp.to_vec(),
+                uses_report_ids: false,
+                receiver: 0,
+            }],
+            ..Default::default()
+        };
+        let v = view(&st, &AgentConfig::default());
+        assert_eq!(
+            v.nodes[0].unexposed,
+            ["logitech, interfaz 2 (HID++ (vendor))", "dispositivo 40"]
+        );
     }
 
     #[test]
@@ -656,6 +733,7 @@ mod tests {
                     assigned_index: 2,
                     rtt_ms: None,
                     screens: 1,
+                    unexposed: Vec::new(),
                 }],
                 device_count: 3,
                 uptime_s: 1,

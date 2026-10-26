@@ -352,6 +352,8 @@ struct Session {
     t0: Instant,
     /// When to call `devices_ready` for a list still settling.
     ready_at: Option<Instant>,
+    /// What the hub was last told the sink cannot present.
+    unexposed: Vec<u8>,
 }
 
 impl Session {
@@ -364,6 +366,7 @@ impl Session {
             active: false,
             t0: Instant::now(),
             ready_at: None,
+            unexposed: Vec::new(),
         }
     }
 
@@ -407,6 +410,16 @@ impl Session {
             self.ready_at = None;
             sink.devices_ready();
         }
+    }
+
+    /// `Unexposed` for the hub if the sink's set changed since the last one.
+    fn unexposed_changed(&mut self, sink: &dyn HidSink) -> Option<Control> {
+        let now = sink.unexposed();
+        if now == self.unexposed {
+            return None;
+        }
+        self.unexposed = now.clone();
+        Some(Control::Unexposed { devices: now })
     }
 
     fn release_all(&self, sink: &mut dyn HidSink) {
@@ -583,6 +596,9 @@ async fn session_inner(
                         if first {
                             outputs.resend_all(&s.devices, &conn);
                         }
+                        if let Some(m) = s.unexposed_changed(sink) {
+                            wire::write_frame(&mut send, &m).await?;
+                        }
                     }
                     Control::Activate { entry } => {
                         let (enter_edge, pos_ratio) = (entry.map(|e| e.edge), entry.map(|e| e.pos_ratio));
@@ -610,7 +626,12 @@ async fn session_inner(
             }
             dg = conn.read_datagram() => s.on_datagram(&dg?, sink),
             o = outputs.recv() => outputs.on_report(o, &s.devices, &conn),
-            _ = sleep_until(s.ready_at) => s.poll_ready(sink, Instant::now()),
+            _ = sleep_until(s.ready_at) => {
+                s.poll_ready(sink, Instant::now());
+                if let Some(m) = s.unexposed_changed(sink) {
+                    wire::write_frame(&mut send, &m).await?;
+                }
+            }
             _ = ping.tick() => {
                 let t = s.t0.elapsed().as_micros() as u64;
                 wire::write_frame(&mut send, &Control::Ping(t)).await?;

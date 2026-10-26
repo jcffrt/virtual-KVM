@@ -478,6 +478,7 @@ mod tests {
             assigned_index: 1,
             rtt_ms: None,
             screens: 0,
+            unexposed: Vec::new(),
         }
     }
 
