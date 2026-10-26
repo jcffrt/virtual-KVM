@@ -133,15 +133,22 @@ impl Merged {
             with_ids: Vec::new(),
         };
         let mut kept_any = false;
-        for (n, d) in devs.iter().enumerate() {
+        for d in devs {
             let its = items(&d.report_descriptor)?;
             let uses_ids = its.iter().any(|i| i.is(TYPE_GLOBAL, GLOBAL_REPORT_ID));
-            if uses_ids {
-                m.with_ids.push(d.id);
-            }
-            kept_any |= m.add(d.id, uses_ids, &its)?;
-            if n + 1 < devs.len() {
+            // An interface with nothing kept (HID++) leaves no byte behind,
+            // so adding or removing it never changes the descriptor.
+            let before = m.descriptor.len();
+            if kept_any {
                 m.descriptor.extend_from_slice(&RESET_GLOBALS);
+            }
+            if m.add(d.id, uses_ids, &its)? {
+                kept_any = true;
+                if uses_ids {
+                    m.with_ids.push(d.id);
+                }
+            } else {
+                m.descriptor.truncate(before);
             }
         }
         if !kept_any {
@@ -395,6 +402,24 @@ mod tests {
             .outputs
             .iter()
             .any(|o| o.report_id == Some(kbd_id) && o.len == 1));
+    }
+
+    #[test]
+    fn interfaces_left_out_leave_no_trace() {
+        let devs = c52b();
+        let without = Merged::build(&devs[..2]).unwrap();
+        let with = Merged::build(&devs).unwrap();
+        assert_eq!(with.descriptor, without.descriptor);
+        assert_eq!(with, without);
+        // HID++ first in id order would not change it either.
+        let mut hidpp_first = devs[2].clone();
+        hidpp_first.id = 0;
+        let mut rest = devs[..2].to_vec();
+        rest[0].id = 1;
+        rest[1].id = 3;
+        let a = Merged::build(&[hidpp_first, rest[0].clone(), rest[1].clone()]).unwrap();
+        let b = Merged::build(&rest).unwrap();
+        assert_eq!(a.descriptor, b.descriptor);
     }
 
     #[test]
