@@ -186,6 +186,7 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>, v: &view::View) -> tauri::Result<M
     }
     if let Some(hint) = v
         .settings
+        .as_ref()
         .and_then(|s| view::hotkey_extras(&s.hotkey))
         .filter(|_| !agents.is_empty())
     {
@@ -428,7 +429,25 @@ fn set_settings(
     state.send(Control::Settings(proto::HubSettings {
         hysteresis_ms,
         hotkey,
+        // The hub ignores them here: they change with SetExposure.
+        exposures: Vec::new(),
     }))
+}
+
+/// Where the input of one receiver goes: every PC (`agent` = None) or
+/// only that agent (ADR 0030).
+#[tauri::command]
+fn set_exposure(
+    state: tauri::State<'_, Arc<AppState>>,
+    receiver: u8,
+    agent: Option<Uuid>,
+) -> Result<(), String> {
+    let mode = match agent {
+        Some(agent) => proto::Exposure::Exclusive { agent },
+        None => proto::Exposure::Network,
+    };
+    info!(receiver, ?mode, "exposure");
+    state.send(Control::SetExposure { receiver, mode })
 }
 
 /// Edge options travel with the layout: resend the layout in force (the
@@ -770,6 +789,7 @@ pub fn run() {
             canvas_apply,
             canvas_reset,
             set_settings,
+            set_exposure,
             set_edge_options,
             get_autostart,
             set_autostart,

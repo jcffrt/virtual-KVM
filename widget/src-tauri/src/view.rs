@@ -4,7 +4,7 @@
 use agent_core::widget::WidgetState;
 use agent_core::AgentConfig;
 use proto::descriptor::DescriptorInfo;
-use proto::{EdgeOptions, HubSettings, NodeKind, Os, PairingEvent};
+use proto::{EdgeOptions, Exposure, HubSettings, NodeKind, Os, PairingEvent};
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -42,12 +42,64 @@ pub struct View {
     pub options: EdgeOptions,
     /// The hub keeps a layout set by a widget (not its config seed).
     pub custom_layout: bool,
+    /// The hub's receivers and where their input goes (ADR 0030); empty
+    /// until the hub sends its settings.
+    pub exposures: Vec<ExposureView>,
+}
+
+/// One receiver of the hub and its exposure.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ExposureView {
+    pub receiver: u8,
+    pub name: String,
+    /// Interfaces of this receiver the hub forwards now (0: not plugged).
+    pub devices: usize,
+    /// Exclusive to this agent; `None`: the local network (every PC).
+    pub agent: Option<Uuid>,
+    pub agent_name: Option<String>,
+    /// Exclusive to an agent that is not connected: its input is dropped.
+    pub held: bool,
+}
+
+fn exposures(st: &WidgetState) -> Vec<ExposureView> {
+    let status = st.status.as_ref();
+    let Some(settings) = &st.settings else {
+        return Vec::new();
+    };
+    settings
+        .exposures
+        .iter()
+        .map(|e| {
+            let agent = match e.mode {
+                Exposure::Network => None,
+                Exposure::Exclusive { agent } => Some(agent),
+            };
+            ExposureView {
+                receiver: e.receiver,
+                name: e.name.clone(),
+                devices: st
+                    .devices
+                    .iter()
+                    .filter(|d| d.receiver == e.receiver)
+                    .count(),
+                agent,
+                agent_name: agent.and_then(|a| {
+                    status
+                        .and_then(|s| s.nodes.iter().find(|n| n.node_id == a))
+                        .map(|n| n.node_name.clone())
+                }),
+                held: status.is_some_and(|s| s.held.contains(&e.receiver)),
+            }
+        })
+        .collect()
 }
 
 /// One HID interface of the receiver the hub forwards.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DeviceView {
     pub id: u8,
+    /// Index of the hub's receiver it belongs to.
+    pub receiver: u8,
     pub interface: u8,
     pub name: String,
     /// "046d:c52b".
@@ -214,6 +266,7 @@ pub fn devices(st: &WidgetState) -> Vec<DeviceView> {
             kinds.dedup();
             DeviceView {
                 id: d.id,
+                receiver: d.receiver,
                 interface: d.interface,
                 name: d.name.clone(),
                 vid_pid: format!("{:04x}:{:04x}", d.vid, d.pid),
@@ -313,11 +366,12 @@ pub fn view(st: &WidgetState, cfg: &AgentConfig) -> View {
         devices: devices(st),
         receiver_devices: paired(st),
         pairing: pairing(st),
-        settings: st.settings,
+        settings: st.settings.clone(),
         platform: if cfg!(windows) { "windows" } else { "macos" },
-        hotkey: st.settings.and_then(|s| hotkey_prefix(&s.hotkey)),
+        hotkey: st.settings.as_ref().and_then(|s| hotkey_prefix(&s.hotkey)),
         options: st.options,
         custom_layout: !st.canvas.is_empty(),
+        exposures: exposures(st),
     }
 }
 
@@ -359,7 +413,7 @@ pub fn tray_key(v: &View) -> String {
         v.hub_off.is_some(),
         v.hub_name,
         v.active,
-        v.settings.map(|s| s.hotkey)
+        v.settings.as_ref().map(|s| s.hotkey)
     );
     for n in v.nodes.iter().filter(|n| n.role == "agent") {
         k.push_str(&format!("|{}:{}:{}", n.index, n.name, n.has_helper));
@@ -409,6 +463,7 @@ mod tests {
                 device_count: 3,
                 uptime_s: 1,
                 version: "0.1.0 (0f83e4e)".into(),
+                held: Vec::new(),
             }),
             rtt_ms: Some(5.2),
             ..Default::default()
@@ -454,6 +509,7 @@ mod tests {
             interface: id,
             report_descriptor: desc.to_vec(),
             uses_report_ids: false,
+            receiver: 0,
         };
         let st = WidgetState {
             devices: vec![
@@ -557,5 +613,68 @@ mod tests {
         assert_eq!(tray_key(&v), tray_key(&w), "RTT does not rebuild the menu");
         w.connected = true;
         assert_ne!(tray_key(&v), tray_key(&w));
+    }
+
+    #[test]
+    fn exposures_name_the_agent_and_say_when_held() {
+        let mac = Uuid::new_v4();
+        let gone = Uuid::new_v4();
+        let dev = |id: u8, receiver: u8| proto::HidDevice {
+            id,
+            name: String::new(),
+            vid: 0x046d,
+            pid: 0xc52b,
+            serial: None,
+            interface: id,
+            report_descriptor: Vec::new(),
+            uses_report_ids: false,
+            receiver,
+        };
+        let e = |receiver: u8, name: &str, mode| proto::ReceiverExposure {
+            receiver,
+            name: name.into(),
+            mode,
+        };
+        let st = WidgetState {
+            devices: vec![dev(0, 0), dev(1, 0), dev(16, 1)],
+            settings: Some(HubSettings {
+                exposures: vec![
+                    e(0, "logi", Exposure::Network),
+                    e(1, "otro", Exposure::Exclusive { agent: mac }),
+                    e(2, "bt", Exposure::Exclusive { agent: gone }),
+                ],
+                ..Default::default()
+            }),
+            status: Some(proto::HubStatus {
+                hub_name: "hub".into(),
+                active: None,
+                nodes: vec![proto::NodeInfo {
+                    node_id: mac,
+                    node_name: "MacBook".into(),
+                    os: Os::MacOs,
+                    kind: NodeKind::Agent,
+                    assigned_index: 2,
+                    rtt_ms: None,
+                    screens: 1,
+                }],
+                device_count: 3,
+                uptime_s: 1,
+                version: String::new(),
+                held: vec![2],
+            }),
+            ..Default::default()
+        };
+        let v = exposures(&st);
+        assert_eq!(
+            v.iter()
+                .map(|x| (x.devices, x.agent_name.as_deref(), x.held))
+                .collect::<Vec<_>>(),
+            [
+                (2, None, false),
+                (1, Some("MacBook"), false),
+                (0, None, true)
+            ]
+        );
+        assert_eq!(v[2].agent, Some(gone));
     }
 }

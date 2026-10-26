@@ -55,6 +55,24 @@
     }
   }
 
+  async function setExposure(receiver, value) {
+    message = '';
+    try {
+      await invoke('set_exposure', { receiver, agent: value === 'network' ? null : value });
+    } catch (e) {
+      message = String(e);
+    }
+  }
+
+  // Connected agents, plus the exclusive one of `e` if it is not connected.
+  function exposureTargets(e) {
+    const agents = view.nodes.filter((n) => n.role === 'agent').map((n) => ({ id: n.id, name: n.name }));
+    if (e.agent && !agents.some((a) => a.id === e.agent)) {
+      agents.push({ id: e.agent, name: `${e.agent_name ?? e.agent.slice(0, 8)} (desconectado)` });
+    }
+    return agents;
+  }
+
   const roleLabel = { agent: 'agente', helper: 'helper de borde', widget: 'widget' };
 </script>
 
@@ -133,6 +151,43 @@
       {/each}
     </tbody>
   </table>
+
+  {#if view.exposures.length > 0}
+    <h3 class="section">Receptores</h3>
+    <table>
+      <thead>
+        <tr><th>N.º</th><th>Nombre</th><th>Interfaces</th><th>Entrada para</th></tr>
+      </thead>
+      <tbody>
+        {#each view.exposures as e (e.receiver)}
+          <tr class:grey={e.devices === 0}>
+            <td>{e.receiver}</td>
+            <td>{e.name}{#if e.devices === 0} <span class="muted">· sin conectar</span>{/if}</td>
+            <td>{e.devices}</td>
+            <td>
+              <select
+                value={e.agent ?? 'network'}
+                disabled={!view.connected}
+                onchange={(ev) => setExposure(e.receiver, ev.currentTarget.value)}
+              >
+                <option value="network">Red local (todos los equipos)</option>
+                {#each exposureTargets(e) as a (a.id)}
+                  <option value={a.id}>Exclusivo → {a.name}</option>
+                {/each}
+              </select>
+              {#if e.held}<span class="bad"> · su equipo no está conectado: la entrada se descarta</span>{/if}
+            </td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
+    {#if view.exposures.some((e) => e.agent)}
+      <p class="muted">
+        Un receptor exclusivo no cambia de equipo con los bordes ni con el atajo.
+        {#if view.hotkey}Para devolverlo a la red desde su teclado: {view.hotkey}, Esc.{:else}Para devolverlo a la red desde su teclado: el modificador del atajo dos veces y Esc.{/if}
+      </p>
+    {/if}
+  {/if}
 {:else}
   <div class="card">
     <h3>Emparejar con un hub</h3>
@@ -178,4 +233,5 @@
   .form { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; align-items: flex-start; }
   .form label { display: flex; gap: 8px; align-items: center; }
   h3 { margin: 0 0 8px; font-size: 14px; }
+  h3.section { margin-top: 18px; }
 </style>

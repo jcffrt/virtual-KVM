@@ -332,6 +332,7 @@ mod tests {
                 device_count: 3,
                 uptime_s: 1,
                 version: String::new(),
+                held: Vec::new(),
             }),
             ..Default::default()
         };
