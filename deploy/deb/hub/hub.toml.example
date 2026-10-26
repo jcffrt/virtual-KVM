@@ -11,7 +11,14 @@
 # state_dir = "/var/lib/rawkvm"       # certificate, layout, settings
 # mdns = true                         # advertise the hub on the LAN
 
-# [receiver]
+# One [[receiver]] block per USB receiver whose devices are forwarded (a
+# single [receiver] table, as hubs before 0.6 wrote it, still works). The
+# defaults below are Logitech's; for another vendor `pids` defaults to any
+# product and `force_normal_mode` and `require_hid_generic` to false, and
+# HID++ (pairing, battery, keyboard layout) is Logitech only. See
+# "Varios receptores" in docs/hub-linux-instalacion.md.
+# [[receiver]]
+# name = "receiver-0"                 # receiver-N, N = block index from 0
 # match = "receiver"                  # or "dj-children" (ADR 0003)
 # vid = 1133                          # 0x046d, Logitech
 # pids = [50475, 50482, 50484, 50489, 50495, 50503, 50504]

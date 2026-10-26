@@ -166,6 +166,9 @@ async fn serve(args: Args) -> Result<()> {
         cfg.hub_id,
         args.config.display()
     );
+    for w in cfg.warnings() {
+        warn!("{w}");
+    }
     let identity = server::load_or_create_identity(&cfg.state_dir)?;
     let store = NodeStore::load(&NodeStore::path_in(&cfg.state_dir))?;
     for o in cfg.node_options.iter().filter(|o| o.swap_alt_gui) {
@@ -196,6 +199,8 @@ async fn serve(args: Args) -> Result<()> {
                 version: VERSION.to_string(),
                 node_options: cfg.node_options.clone(),
                 os_profile: cfg.hidpp.os_profile,
+                receivers: cfg.receiver_names(),
+                hidpp_receiver: cfg.hidpp_receiver().map(|r| r as u8),
             },
         )
         .with_store(store, RESTORE_GRACE)
@@ -241,7 +246,8 @@ async fn serve(args: Args) -> Result<()> {
 
     match &args.replay {
         Some(path) => {
-            let rec = hidrec::load(path)?;
+            let mut rec = hidrec::load(path)?;
+            rec.assign_receivers(&cfg.receivers);
             info!(
                 "replaying {} ({} devices, {} reports)",
                 path.display(),
@@ -355,8 +361,18 @@ fn manage_layout(args: &Args) -> Result<()> {
 
 #[cfg(target_os = "linux")]
 fn start_devices(cfg: &HubConfig, router: Arc<Router>) -> Result<()> {
-    info!(mode = ?cfg.receiver.mode, "reading the receiver");
-    devices::spawn(router, cfg.receiver.clone());
+    for (i, r) in cfg.receivers.iter().enumerate() {
+        info!(
+            receiver = i,
+            name = %r.name,
+            mode = ?r.mode,
+            hidpp = cfg.hidpp_receiver() == Some(i),
+            "reading receiver {:04x}:{}",
+            r.vid,
+            if r.pids.is_empty() { "any".to_string() } else { format!("{:04x?}", r.pids) }
+        );
+    }
+    devices::spawn(router, cfg.receivers.clone(), cfg.hidpp_receiver());
     Ok(())
 }
 
@@ -373,13 +389,22 @@ fn list(args: &Args) -> Result<()> {
     if all.is_empty() {
         println!("no hidraw nodes");
     }
-    println!("match mode: {:?}", cfg.receiver.mode);
+    for (n, r) in cfg.receivers.iter().enumerate() {
+        println!(
+            "receiver {n} {:?}: {:04x} {:04x?}, match mode {:?}",
+            r.name, r.vid, r.pids, r.mode
+        );
+    }
     for i in &all {
-        let fwd = devices::is_forwarded(i, &cfg.receiver);
+        let block = devices::is_forwarded(i, &cfg.receivers);
+        let fwd = block.is_some();
         let d = DescriptorInfo::parse(&i.descriptor);
         println!(
             "{} {} bus {:04x} {:04x}:{:04x} {:?}\n    phys {}  interface {}  driver {}  serial {}\n    events {:?}  parent {:?}\n    descriptor {} bytes  report_ids {}  apps {:?}  inputs {:?}  keyboard {:?}\n    {}",
-            if fwd { "[forward]" } else { "[ignore] " },
+            match block {
+                Some(n) => format!("[forward r{n}]"),
+                None => "[ignore]".to_string(),
+            },
             i.hidraw.display(),
             i.bus,
             i.vid,
@@ -420,20 +445,21 @@ fn dump(args: &Args) -> Result<()> {
     let cfg = HubConfig::load_or_default(&args.config)?;
     let ifaces: Vec<_> = hidraw::enumerate()?
         .into_iter()
-        .filter(|i| devices::is_forwarded(i, &cfg.receiver))
+        .filter_map(|i| devices::is_forwarded(&i, &cfg.receivers).map(|r| (i, r)))
         .collect();
     anyhow::ensure!(
         !ifaces.is_empty(),
-        "no hidraw node matches mode {:?}; try --list",
-        cfg.receiver.mode
+        "no hidraw node matches a [[receiver]] block; try --list"
     );
-    // Same ids as the service would assign (interface number in mode A).
+    // Same ids as the service would assign (16 * receiver + interface
+    // number in mode A).
     let mut ids = std::collections::HashMap::new();
     let devs: Vec<_> = ifaces
         .iter()
-        .map(|i| {
-            let id = devices::assign_id(&mut ids, i, cfg.receiver.mode).unwrap_or(u8::MAX);
-            devices::to_hid_device(i, id)
+        .map(|(i, r)| {
+            let mode = cfg.receivers[*r].mode;
+            let id = devices::assign_id(&mut ids, i, mode, *r).unwrap_or(u8::MAX);
+            devices::to_hid_device(i, id, *r)
         })
         .collect();
     let writer = match &args.record {
@@ -443,10 +469,10 @@ fn dump(args: &Args) -> Result<()> {
     eprintln!("dumping {} nodes; Ctrl+C to stop", ifaces.len());
     let t0 = Instant::now();
     let mut threads = Vec::new();
-    for (iface, dev) in ifaces.into_iter().zip(&devs) {
+    for ((iface, r), dev) in ifaces.into_iter().zip(&devs) {
         let id = dev.id;
         let file = hidraw::open(&iface.hidraw)?;
-        let grabs: Vec<_> = if cfg.receiver.grab_evdev {
+        let grabs: Vec<_> = if cfg.receivers[r].grab_evdev {
             iface
                 .event_nodes
                 .iter()
@@ -491,9 +517,12 @@ fn open_hidpp(args: &Args) -> Result<Arc<rawkvm_hub::hidpp::Hidpp>> {
     use rawkvm_hub::hidpp::Hidpp;
     use rawkvm_hub::receiver;
     let cfg = HubConfig::load_or_default(&args.config)?;
+    let logitech = cfg.hidpp_receiver().ok_or_else(|| {
+        anyhow::anyhow!("no Logitech [[receiver]] in the config: HID++ is Logitech only")
+    })?;
     let iface = hidraw::enumerate()?
         .into_iter()
-        .filter(|i| devices::is_forwarded(i, &cfg.receiver))
+        .filter(|i| devices::is_forwarded(i, &cfg.receivers) == Some(logitech))
         .find(|i| receiver::is_dj_interface(&DescriptorInfo::parse(&i.descriptor)))
         .ok_or_else(|| anyhow::anyhow!("no HID++ interface of the receiver found; try --list"))?;
     eprintln!(

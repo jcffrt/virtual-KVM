@@ -38,7 +38,10 @@ use uuid::Uuid;
 /// * 6: [`HubSettings::hotkey`] is a [`Hotkey`] (modifier, previous,
 ///   release keys) instead of a bool.
 /// * 7: `Shutdown` (widget -> hub) and `ShuttingDown` (hub -> nodes).
-pub const PROTO_VERSION: u16 = 7;
+/// * 8: several receivers: [`HidDevice::receiver`], per-receiver
+///   [`Exposure`] in [`HubSettings::exposures`], `SetExposure` (widget ->
+///   hub), [`HubStatus::held`].
+pub const PROTO_VERSION: u16 = 8;
 
 /// DNS-SD service type the hub advertises on the LAN.
 pub const SERVICE_TYPE: &str = "_rawkvm._udp.local.";
@@ -99,6 +102,9 @@ pub struct HidDevice {
     /// True if the descriptor declares report IDs; reports then carry the ID
     /// as their first byte.
     pub uses_report_ids: bool,
+    /// Receiver this interface belongs to: the index of its `[[receiver]]`
+    /// block in the hub config (0 for the first).
+    pub receiver: u8,
 }
 
 /// Screen edge, in the coordinate system of the node that owns the screen.
@@ -157,6 +163,7 @@ impl Default for HubSettings {
         Self {
             hysteresis_ms: 150,
             hotkey: Hotkey::default(),
+            exposures: Vec::new(),
         }
     }
 }
@@ -164,12 +171,39 @@ impl Default for HubSettings {
 /// Switching settings a widget can change at run time; the hub keeps them
 /// in `<state_dir>/settings.toml`, which overrides `[switching]` of
 /// `hub.toml`.
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct HubSettings {
     /// Minimum time between two edge switches.
     pub hysteresis_ms: u32,
     /// Emergency hotkey: modifier, modifier, then a key.
     pub hotkey: Hotkey,
+    /// Every receiver of the hub config and where its input goes. Filled
+    /// in by the hub; ignored in a widget's `Settings` (use `SetExposure`).
+    #[serde(default)]
+    pub exposures: Vec<ReceiverExposure>,
+}
+
+/// Where the input of one receiver goes.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Exposure {
+    /// To the active agent, switched by edges, hotkey and widget.
+    #[default]
+    Network,
+    /// Always to this agent, whichever is active; dropped while it is not
+    /// connected. Edges and the hotkey do not act on this receiver's
+    /// reports, except modifier, modifier, Esc, which returns it to
+    /// `Network`.
+    Exclusive { agent: Uuid },
+}
+
+/// One receiver of the hub config and its exposure.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct ReceiverExposure {
+    /// Index of the `[[receiver]]` block, as in [`HidDevice::receiver`].
+    pub receiver: u8,
+    /// Its `name` in the hub config.
+    pub name: String,
+    pub mode: Exposure,
 }
 
 /// The emergency hotkey: tap `modifier` twice, then press 1..4 (that
@@ -347,6 +381,9 @@ pub struct HubStatus {
     pub uptime_s: u64,
     /// Hub build, e.g. "0.1.0 (d69e767)".
     pub version: String,
+    /// Receivers exposed exclusively to an agent that is not connected:
+    /// their input is dropped until it comes back.
+    pub held: Vec<u8>,
 }
 
 /// Why the hub rejected a node.
@@ -458,6 +495,13 @@ pub enum Control {
     ShuttingDown {
         reason: String,
     },
+    /// widget -> hub. Change where the input of `receiver` goes. The hub
+    /// answers with `Settings` to every widget (or only to the sender, with
+    /// the unchanged list, when it refuses).
+    SetExposure {
+        receiver: u8,
+        mode: Exposure,
+    },
 }
 
 impl Control {
@@ -486,6 +530,7 @@ impl Control {
             Control::SetFnSwap { .. } => "SetFnSwap",
             Control::Shutdown => "Shutdown",
             Control::ShuttingDown { .. } => "ShuttingDown",
+            Control::SetExposure { .. } => "SetExposure",
         }
     }
 }
@@ -580,6 +625,7 @@ mod tests {
                     interface: 0,
                     report_descriptor: descriptor::tests::BOOT_KEYBOARD.to_vec(),
                     uses_report_ids: false,
+                    receiver: 1,
                 }],
             },
             Control::Activate {
@@ -598,7 +644,31 @@ mod tests {
                     previous: false,
                     release_keys: true,
                 },
+                exposures: vec![
+                    ReceiverExposure {
+                        receiver: 0,
+                        name: "logitech".into(),
+                        mode: Exposure::Network,
+                    },
+                    ReceiverExposure {
+                        receiver: 1,
+                        name: "other".into(),
+                        mode: Exposure::Exclusive {
+                            agent: Uuid::new_v4(),
+                        },
+                    },
+                ],
             }),
+            Control::SetExposure {
+                receiver: 1,
+                mode: Exposure::Exclusive {
+                    agent: Uuid::new_v4(),
+                },
+            },
+            Control::SetExposure {
+                receiver: 0,
+                mode: Exposure::Network,
+            },
             Control::Hello {
                 proto_ver: PROTO_VERSION,
                 node_id: Uuid::new_v4(),
@@ -669,6 +739,7 @@ mod tests {
                 device_count: 3,
                 uptime_s: 10,
                 version: "0.1.0 (test)".into(),
+                held: vec![1],
             }),
         ];
         for m in msgs {

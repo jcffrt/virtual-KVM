@@ -89,7 +89,7 @@ impl WidgetState {
                 self.options = *options;
                 self.canvas = canvas.clone();
             }
-            Control::Settings(s) => self.settings = Some(*s),
+            Control::Settings(s) => self.settings = Some(s.clone()),
             Control::DeviceList { devices } => self.devices = devices.clone(),
             Control::ReceiverDevices { devices } => self.paired_devices = Some(devices.clone()),
             Control::PairingEvent(e) => {

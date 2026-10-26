@@ -1,7 +1,8 @@
-//! Keeps the receiver's hidraw interfaces open and feeds the router.
+//! Keeps the receivers' hidraw interfaces open and feeds the router.
 //!
-//! A scan thread looks for matching interfaces every few seconds, so the
-//! receiver can be plugged in after the hub started or re-plugged. Each open
+//! A scan thread looks for interfaces matching any `[[receiver]]` block
+//! every few seconds, so a receiver can be plugged in after the hub started
+//! or re-plugged. Each open
 //! interface gets a blocking reader thread. Device ids are keyed by the
 //! physical path and stay stable while the hub runs.
 
@@ -24,13 +25,20 @@ use crate::router::{ReportWriter, Router};
 
 const SCAN_INTERVAL: Duration = Duration::from_secs(2);
 
-/// Should this hidraw node be forwarded?
+/// Which receiver block forwards this hidraw node, if any: the index of the
+/// first one that matches (the config rejects overlapping blocks).
+pub fn is_forwarded(iface: &RawInterface, receivers: &[ReceiverMatch]) -> Option<usize> {
+    receivers.iter().position(|m| matches_block(iface, m))
+}
+
+/// Does this hidraw node belong to receiver block `m`?
 ///
-/// * `receiver` (mode A): the receiver's own USB interfaces. Requires
-///   `hid-logitech-dj` to be blacklisted so `hid-generic` binds them.
+/// * `receiver` (mode A): the receiver's own USB interfaces. For Logitech
+///   it requires `hid-logitech-dj` to be blacklisted so `hid-generic` binds
+///   them.
 /// * `dj-children` (mode B): the per-device HID nodes `hid-logitech-dj`
 ///   synthesizes under the receiver.
-pub fn is_forwarded(iface: &RawInterface, m: &ReceiverMatch) -> bool {
+pub fn matches_block(iface: &RawInterface, m: &ReceiverMatch) -> bool {
     if iface.bus != BUS_USB {
         return false;
     }
@@ -42,8 +50,9 @@ pub fn is_forwarded(iface: &RawInterface, m: &ReceiverMatch) -> bool {
     }
 }
 
-pub fn to_hid_device(iface: &RawInterface, id: u8) -> HidDevice {
+pub fn to_hid_device(iface: &RawInterface, id: u8, receiver: usize) -> HidDevice {
     HidDevice {
+        receiver: receiver as u8,
         id,
         name: iface.name.clone(),
         vid: iface.vid,
@@ -73,12 +82,14 @@ pub fn refusal(iface: &RawInterface, m: &ReceiverMatch) -> Option<String> {
 }
 
 /// Device id for `iface`, stable while the hub runs. In `receiver` mode it
-/// is the USB interface number (0 keyboard, 1 mouse, 2 HID++), so agents see
-/// the same ids across hub restarts.
+/// is `16 * receiver + USB interface number` (for the first receiver 0
+/// keyboard, 1 mouse, 2 HID++, as before phase 6), so agents see the same
+/// ids across hub restarts whatever order the receivers are found in.
 pub fn assign_id(
     ids: &mut HashMap<String, u8>,
     iface: &RawInterface,
     mode: MatchMode,
+    receiver: usize,
 ) -> Option<u8> {
     if let Some(&id) = ids.get(&iface.phys) {
         return Some(id);
@@ -86,6 +97,8 @@ pub fn assign_id(
     let preferred = (mode == MatchMode::Receiver)
         .then_some(iface.usb_interface)
         .flatten()
+        .filter(|&i| i < 16)
+        .and_then(|i| u8::try_from(receiver * 16 + i as usize).ok())
         .filter(|i| !ids.values().any(|v| v == i));
     let id = preferred.or_else(|| (0..=u8::MAX).find(|i| !ids.values().any(|v| v == i)))?;
     ids.insert(iface.phys.clone(), id);
@@ -183,14 +196,16 @@ fn grab_new(iface: &RawInterface, grabs: &mut HashMap<PathBuf, File>) {
     }
 }
 
-pub fn spawn(router: Arc<Router>, m: ReceiverMatch) {
+/// Read the interfaces of `receivers`. HID++ (paired devices, pairing,
+/// keyboard layout) runs only on receiver `hidpp_receiver` (ADR 0030).
+pub fn spawn(router: Arc<Router>, receivers: Vec<ReceiverMatch>, hidpp_receiver: Option<usize>) {
     thread::Builder::new()
         .name("hid-scan".into())
-        .spawn(move || scan_loop(router, m))
+        .spawn(move || scan_loop(router, receivers, hidpp_receiver))
         .expect("spawning the scan thread");
 }
 
-fn scan_loop(router: Arc<Router>, m: ReceiverMatch) {
+fn scan_loop(router: Arc<Router>, receivers: Vec<ReceiverMatch>, hidpp_receiver: Option<usize>) {
     let open: Arc<Mutex<HashMap<String, OpenIface>>> = Arc::default();
     let mut ids: HashMap<String, u8> = HashMap::new();
     let mut warned_empty = false;
@@ -204,17 +219,20 @@ fn scan_loop(router: Arc<Router>, m: ReceiverMatch) {
                 Vec::new()
             }
         };
-        let matching: Vec<_> = found.into_iter().filter(|i| is_forwarded(i, &m)).collect();
+        let matching: Vec<_> = found
+            .into_iter()
+            .filter_map(|i| is_forwarded(&i, &receivers).map(|r| (i, r)))
+            .collect();
         if matching.is_empty() && !warned_empty {
             warn!(
-                mode = ?m.mode,
-                "no matching hidraw node; waiting for the receiver (run --list to see what is there)"
+                "no matching hidraw node; waiting for the receivers (run --list to see what is there)"
             );
         }
         warned_empty = matching.is_empty();
 
-        for iface in matching {
-            if let Some(why) = refusal(&iface, &m) {
+        for (iface, r) in matching {
+            let m = &receivers[r];
+            if let Some(why) = refusal(&iface, m) {
                 if refused.get(&iface.phys) != Some(&iface.driver) {
                     error!("{why}");
                     refused.insert(iface.phys.clone(), iface.driver.clone());
@@ -229,7 +247,7 @@ fn scan_loop(router: Arc<Router>, m: ReceiverMatch) {
                 }
                 continue;
             }
-            let Some(id) = assign_id(&mut ids, &iface, m.mode) else {
+            let Some(id) = assign_id(&mut ids, &iface, m.mode, r) else {
                 error!("out of device ids");
                 continue;
             };
@@ -240,10 +258,13 @@ fn scan_loop(router: Arc<Router>, m: ReceiverMatch) {
                     continue;
                 }
             };
-            if m.mode == MatchMode::Receiver && m.force_normal_mode {
+            if m.switches_dj_off() {
                 force_normal_mode(&iface, &file);
             }
-            if m.mode == MatchMode::Receiver && iface.driver.as_deref() != Some("hid-generic") {
+            if m.mode == MatchMode::Receiver
+                && m.is_logitech()
+                && iface.driver.as_deref() != Some("hid-generic")
+            {
                 warn!(
                     "{} is bound to {:?}, not hid-generic; reports may not be raw (see docs/adr/0003)",
                     iface.hidraw.display(),
@@ -260,12 +281,13 @@ fn scan_loop(router: Arc<Router>, m: ReceiverMatch) {
             drop(open_g);
 
             info!(
+                receiver = %m.name,
                 "opened {} ({}, interface {})",
                 iface.hidraw.display(),
                 iface.phys,
                 iface.interface()
             );
-            let dev = to_hid_device(&iface, id);
+            let dev = to_hid_device(&iface, id, r);
             let writer = file
                 .try_clone()
                 .and_then(|f| HidrawWriter::spawn(f, iface.hidraw.clone(), dev.uses_report_ids))
@@ -273,10 +295,11 @@ fn scan_loop(router: Arc<Router>, m: ReceiverMatch) {
                 .map_err(|e| warn!("{}: no output reports: {e}", iface.hidraw.display()))
                 .ok();
             // The HID++ interface: our requests' replies stay in the hub.
-            let hidpp = (receiver::is_dj_interface(&DescriptorInfo::parse(&iface.descriptor)))
-                .then(|| writer.clone())
-                .flatten()
-                .map(|w| Arc::new(Hidpp::new(w)));
+            let hidpp = (hidpp_receiver == Some(r)
+                && receiver::is_dj_interface(&DescriptorInfo::parse(&iface.descriptor)))
+            .then(|| writer.clone())
+            .flatten()
+            .map(|w| Arc::new(Hidpp::new(w)));
             if let Some(h) = &hidpp {
                 router.attach_receiver(h.clone());
             }
@@ -347,7 +370,7 @@ mod tests {
     #[test]
     fn receiver_mode_refuses_the_dj_driver() {
         let m = ReceiverMatch::default();
-        assert!(is_forwarded(&iface(Some("logitech-djreceiver")), &m));
+        assert!(matches_block(&iface(Some("logitech-djreceiver")), &m));
         let why = refusal(&iface(Some("logitech-djreceiver")), &m).unwrap();
         assert!(why.contains("logitech-djreceiver") && why.contains("update-initramfs"));
         assert!(refusal(&iface(None), &m).is_some());
@@ -363,5 +386,56 @@ mod tests {
             ..m
         };
         assert!(refusal(&iface(Some("logitech-hidpp-device")), &dj).is_none());
+    }
+
+    #[test]
+    fn two_receivers() {
+        let cfg = crate::config::HubConfig::parse(
+            "[[receiver]]\n[[receiver]]\nname = \"other\"\nvid = 0x248a\n",
+        )
+        .unwrap();
+        let logi = iface(Some("hid-generic"));
+        let other = |n: u8| RawInterface {
+            phys: format!("usb-5200000.usb-2/input{n}"),
+            vid: 0x248a,
+            pid: 0x8367,
+            usb_interface: Some(n),
+            ..iface(Some("hid-generic"))
+        };
+        let unknown = RawInterface {
+            vid: 0x1234,
+            ..other(0)
+        };
+        assert_eq!(is_forwarded(&logi, &cfg.receivers), Some(0));
+        assert_eq!(is_forwarded(&other(1), &cfg.receivers), Some(1));
+        assert_eq!(is_forwarded(&unknown, &cfg.receivers), None);
+        // Another vendor needs neither hid-generic nor the DJ switch.
+        assert!(refusal(&other(0), &cfg.receivers[1]).is_none());
+        assert!(refusal(
+            &RawInterface {
+                driver: Some("hid-multitouch".into()),
+                ..other(0)
+            },
+            &cfg.receivers[1]
+        )
+        .is_none());
+        assert!(!cfg.receivers[1].switches_dj_off());
+
+        // Ids: 16 * receiver + interface, whichever receiver is found first.
+        let mut ids = HashMap::new();
+        assert_eq!(
+            assign_id(&mut ids, &other(1), MatchMode::Receiver, 1),
+            Some(17)
+        );
+        assert_eq!(
+            assign_id(&mut ids, &other(0), MatchMode::Receiver, 1),
+            Some(16)
+        );
+        assert_eq!(assign_id(&mut ids, &logi, MatchMode::Receiver, 0), Some(2));
+        assert_eq!(
+            assign_id(&mut ids, &other(1), MatchMode::Receiver, 1),
+            Some(17)
+        );
+        assert_eq!(to_hid_device(&other(1), 17, 1).receiver, 1);
     }
 }

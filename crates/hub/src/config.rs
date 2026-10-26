@@ -30,7 +30,11 @@ pub struct HubConfig {
     pub state_dir: PathBuf,
     /// Advertise the hub with mDNS / DNS-SD.
     pub mdns: bool,
-    pub receiver: ReceiverMatch,
+    /// The receivers whose interfaces are forwarded (`[[receiver]]`, or a
+    /// single `[receiver]` table as written before phase 6). The position
+    /// is the receiver index of the protocol (`HidDevice::receiver`).
+    #[serde(rename = "receiver", deserialize_with = "one_or_many")]
+    pub receivers: Vec<ReceiverMatch>,
     pub switching: Switching,
     /// Edge switching tuning (`push_ms`, `corner`, `dead_zone_px`).
     pub edge: proto::EdgeOptions,
@@ -96,10 +100,29 @@ pub enum MatchMode {
     DjChildren,
 }
 
-/// Which hidraw interfaces belong to the receiver.
+/// Logitech's USB vendor id. HID++ and the DJ mode switch only apply to
+/// receivers of this vendor (ADR 0030).
+pub const LOGITECH_VID: u16 = 0x046d;
+
+/// Logitech receivers: Unifying (C52B, C532), Nano (C534), Lightspeed
+/// (C539, C53F, C547), Bolt (C548).
+const LOGITECH_PIDS: [u16; 7] = [0xc52b, 0xc532, 0xc534, 0xc539, 0xc53f, 0xc547, 0xc548];
+
+/// Most receiver blocks a hub takes: device ids are `16 * receiver +
+/// interface` (see `devices::assign_id`).
+pub const MAX_RECEIVERS: usize = 16;
+
+/// Which hidraw interfaces belong to one receiver (`[[receiver]]`).
+///
+/// A missing key takes a default that depends on `vid`: for Logitech the
+/// known receiver products, `force_normal_mode` and `require_hid_generic`;
+/// for any other vendor every product and neither of the two.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-#[serde(default, deny_unknown_fields)]
+#[serde(from = "ReceiverSpec")]
 pub struct ReceiverMatch {
+    /// Shown by the widget and used in `settings.toml`. Defaults to
+    /// `receiver-N`, N being the block's index (0 for the first).
+    pub name: String,
     #[serde(rename = "match")]
     pub mode: MatchMode,
     /// Vendor of the receiver.
@@ -118,6 +141,58 @@ pub struct ReceiverMatch {
     /// `hid-generic`: with `hid-logitech-dj` bound the reports are not the
     /// receiver's raw ones and the DJ-off command does not help.
     pub require_hid_generic: bool,
+}
+
+/// A `[[receiver]]` block as written, before the vendor defaults.
+#[derive(Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+struct ReceiverSpec {
+    name: Option<String>,
+    #[serde(rename = "match")]
+    mode: Option<MatchMode>,
+    vid: Option<u16>,
+    pids: Option<Vec<u16>>,
+    grab_evdev: Option<bool>,
+    force_normal_mode: Option<bool>,
+    require_hid_generic: Option<bool>,
+}
+
+impl From<ReceiverSpec> for ReceiverMatch {
+    fn from(s: ReceiverSpec) -> Self {
+        let vid = s.vid.unwrap_or(LOGITECH_VID);
+        let logitech = vid == LOGITECH_VID;
+        Self {
+            // Filled in with the block's index by `HubConfig::parse`.
+            name: s.name.unwrap_or_default(),
+            mode: s.mode.unwrap_or(MatchMode::Receiver),
+            vid,
+            pids: s.pids.unwrap_or_else(|| {
+                if logitech {
+                    LOGITECH_PIDS.to_vec()
+                } else {
+                    Vec::new()
+                }
+            }),
+            grab_evdev: s.grab_evdev.unwrap_or(true),
+            force_normal_mode: s.force_normal_mode.unwrap_or(logitech),
+            require_hid_generic: s.require_hid_generic.unwrap_or(logitech),
+        }
+    }
+}
+
+/// `[receiver]` (one table, the form before phase 6) or `[[receiver]]`.
+/// Through a `toml::Value` so a typo in a block gives serde's own message.
+fn one_or_many<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<ReceiverMatch>, D::Error> {
+    use serde::de::Error;
+    match toml::Value::deserialize(d)? {
+        toml::Value::Array(list) => list
+            .into_iter()
+            .map(|v| ReceiverMatch::deserialize(v).map_err(D::Error::custom))
+            .collect(),
+        one => Ok(vec![
+            ReceiverMatch::deserialize(one).map_err(D::Error::custom)?
+        ]),
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -159,7 +234,10 @@ impl Default for HubConfig {
             listen: SocketAddr::from(([0, 0, 0, 0], proto::DEFAULT_PORT)),
             state_dir: PathBuf::from(DEFAULT_STATE_DIR),
             mdns: true,
-            receiver: ReceiverMatch::default(),
+            receivers: vec![ReceiverMatch {
+                name: "receiver-0".into(),
+                ..ReceiverMatch::default()
+            }],
             switching: Switching::default(),
             edge: proto::EdgeOptions::default(),
             layout: Vec::new(),
@@ -169,18 +247,10 @@ impl Default for HubConfig {
     }
 }
 
+/// A Logitech receiver with the defaults (and no name).
 impl Default for ReceiverMatch {
     fn default() -> Self {
-        Self {
-            mode: MatchMode::Receiver,
-            vid: 0x046d,
-            // Unifying (C52B, C532), Nano (C534), Lightspeed (C539, C53F,
-            // C547), Bolt (C548).
-            pids: vec![0xc52b, 0xc532, 0xc534, 0xc539, 0xc53f, 0xc547, 0xc548],
-            grab_evdev: true,
-            force_normal_mode: true,
-            require_hid_generic: true,
-        }
+        ReceiverSpec::default().into()
     }
 }
 
@@ -211,11 +281,93 @@ impl ReceiverMatch {
     pub fn matches(&self, vid: u16, pid: u16) -> bool {
         vid == self.vid && (self.pids.is_empty() || self.pids.contains(&pid))
     }
+
+    pub fn is_logitech(&self) -> bool {
+        self.vid == LOGITECH_VID
+    }
+
+    /// `force_normal_mode`, which only means something for Logitech.
+    pub fn switches_dj_off(&self) -> bool {
+        self.force_normal_mode && self.is_logitech() && self.mode == MatchMode::Receiver
+    }
+
+    /// Could an interface match both blocks?
+    fn overlaps(&self, other: &ReceiverMatch) -> bool {
+        self.vid == other.vid
+            && (self.pids.is_empty()
+                || other.pids.is_empty()
+                || self.pids.iter().any(|p| other.pids.contains(p)))
+    }
 }
 
 impl HubConfig {
     pub fn parse(text: &str) -> Result<Self> {
-        Ok(toml::from_str(text)?)
+        let mut cfg: Self = toml::from_str(text)?;
+        for (i, r) in cfg.receivers.iter_mut().enumerate() {
+            if r.name.is_empty() {
+                r.name = format!("receiver-{i}");
+            }
+        }
+        cfg.validate()?;
+        Ok(cfg)
+    }
+
+    fn validate(&self) -> Result<()> {
+        if self.receivers.is_empty() {
+            bail!("the hub config needs at least one [[receiver]] block");
+        }
+        if self.receivers.len() > MAX_RECEIVERS {
+            bail!(
+                "the hub config has {} [[receiver]] blocks; at most {MAX_RECEIVERS}",
+                self.receivers.len()
+            );
+        }
+        for (i, a) in self.receivers.iter().enumerate() {
+            for (j, b) in self.receivers.iter().enumerate().skip(i + 1) {
+                if a.name == b.name {
+                    bail!(
+                        "[[receiver]] blocks {i} and {j} are both named {:?}",
+                        a.name
+                    );
+                }
+                if a.overlaps(b) {
+                    bail!(
+                        "[[receiver]] {:?} and {:?} overlap (vid {:04x} and the same or no pids): \
+                         an interface would belong to both",
+                        a.name,
+                        b.name,
+                        a.vid
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Things in the config the hub ignores, to log once at start.
+    pub fn warnings(&self) -> Vec<String> {
+        self.receivers
+            .iter()
+            .filter(|r| r.force_normal_mode && !r.is_logitech())
+            .map(|r| {
+                format!(
+                    "[[receiver]] {:?}: force_normal_mode only applies to Logitech (vid 046d); ignored",
+                    r.name
+                )
+            })
+            .collect()
+    }
+
+    /// The receiver the HID++ features (paired devices, pairing, battery,
+    /// keyboard layout) work with: the first Logitech one. HID++ for
+    /// several receivers is not supported (ADR 0030).
+    pub fn hidpp_receiver(&self) -> Option<usize> {
+        self.receivers.iter().position(ReceiverMatch::is_logitech)
+    }
+
+    /// Receiver names by index, for the router.
+    pub fn receiver_names(&self) -> Vec<String> {
+        self.receivers.iter().map(|r| r.name.clone()).collect()
     }
 
     pub fn token_bytes(&self) -> Result<[u8; TOKEN_LEN]> {
@@ -352,9 +504,12 @@ mod tests {
         assert_eq!(cfg.switching.hysteresis_ms, 300);
         assert_eq!(cfg.switching.resend_ms, 15);
         assert_eq!(cfg.listen.port(), proto::DEFAULT_PORT);
-        assert!(cfg.receiver.matches(0x046d, 0xc52b));
-        assert!(!cfg.receiver.matches(0x046d, 0x1234));
-        assert!(!cfg.receiver.matches(0x1234, 0xc52b));
+        assert_eq!(cfg.receivers.len(), 1);
+        let r = &cfg.receivers[0];
+        assert_eq!(r.name, "receiver-0");
+        assert!(r.matches(0x046d, 0xc52b));
+        assert!(!r.matches(0x046d, 0x1234));
+        assert!(!r.matches(0x1234, 0xc52b));
     }
 
     #[test]
@@ -387,10 +542,92 @@ mod tests {
 
     #[test]
     fn match_mode() {
-        assert_eq!(HubConfig::default().receiver.mode, MatchMode::Receiver);
+        assert_eq!(HubConfig::default().receivers[0].mode, MatchMode::Receiver);
         let cfg = HubConfig::parse("[receiver]\nmatch = \"dj-children\"\n").unwrap();
-        assert_eq!(cfg.receiver.mode, MatchMode::DjChildren);
+        assert_eq!(cfg.receivers[0].mode, MatchMode::DjChildren);
         assert!(HubConfig::parse("[receiver]\nmatch = \"other\"\n").is_err());
+        assert!(HubConfig::parse("[receiver]\nvdi = 1\n").is_err());
+    }
+
+    /// The `[receiver]` table a hub before phase 6 generated still loads,
+    /// as a one-element list with the same values.
+    #[test]
+    fn single_receiver_table_still_loads() {
+        let old = "name = \"rawkvm-hub\"\n\
+                   [receiver]\n\
+                   match = \"receiver\"\n\
+                   vid = 1133\n\
+                   pids = [50475, 50482, 50484, 50489, 50495, 50503, 50504]\n\
+                   grab_evdev = true\n\
+                   force_normal_mode = true\n\
+                   require_hid_generic = true\n\
+                   [switching]\nhysteresis_ms = 150\n";
+        let cfg = HubConfig::parse(old).unwrap();
+        assert_eq!(cfg.receivers, HubConfig::default().receivers);
+        assert_eq!(cfg.hidpp_receiver(), Some(0));
+        assert!(cfg.warnings().is_empty());
+        // And saving writes the list form, which loads back the same.
+        let text = toml::to_string_pretty(&cfg).unwrap();
+        assert!(text.contains("[[receiver]]"), "{text}");
+        assert_eq!(HubConfig::parse(&text).unwrap(), cfg);
+    }
+
+    #[test]
+    fn several_receivers_with_vendor_defaults() {
+        let cfg = HubConfig::parse(
+            "[[receiver]]\nname = \"logi\"\n\
+             [[receiver]]\nvid = 0x248a\n\
+             [[receiver]]\nvid = 0x045e\npids = [0x07a5]\nforce_normal_mode = true\n",
+        )
+        .unwrap();
+        let [logi, other, ms] = &cfg.receivers[..] else {
+            panic!("{:?}", cfg.receivers);
+        };
+        assert_eq!(logi.name, "logi");
+        assert!(logi.switches_dj_off() && logi.require_hid_generic);
+        assert_eq!(logi.pids, LOGITECH_PIDS);
+        assert_eq!(other.name, "receiver-1");
+        assert!(other.pids.is_empty() && other.matches(0x248a, 0x8367));
+        assert!(!other.force_normal_mode && !other.require_hid_generic && other.grab_evdev);
+        assert_eq!(ms.name, "receiver-2");
+        // Set by hand on another vendor: kept, warned about, never used.
+        assert!(ms.force_normal_mode && !ms.switches_dj_off());
+        assert_eq!(cfg.warnings().len(), 1);
+        assert!(cfg.warnings()[0].contains("receiver-2"));
+        assert_eq!(cfg.hidpp_receiver(), Some(0));
+        assert_eq!(cfg.receiver_names(), ["logi", "receiver-1", "receiver-2"]);
+
+        let no_logitech = HubConfig::parse("[[receiver]]\nvid = 0x248a\n").unwrap();
+        assert_eq!(no_logitech.hidpp_receiver(), None);
+    }
+
+    #[test]
+    fn overlapping_receivers_are_rejected() {
+        let err = |text: &str| HubConfig::parse(text).unwrap_err().to_string();
+        // Two Logitech blocks with the default pids.
+        assert!(err("[[receiver]]\n[[receiver]]\nname = \"b\"\n").contains("overlap"));
+        // Any product of a vendor against one of its products.
+        assert!(
+            err("[[receiver]]\nvid = 1\n[[receiver]]\nvid = 1\npids = [2]\n").contains("overlap")
+        );
+        assert!(
+            err("[[receiver]]\nvid = 1\npids = [2, 3]\n[[receiver]]\nvid = 1\npids = [3]\n")
+                .contains("overlap")
+        );
+        // Disjoint products of one vendor are fine.
+        assert!(HubConfig::parse(
+            "[[receiver]]\nvid = 1\npids = [2]\n[[receiver]]\nvid = 1\npids = [3]\n"
+        )
+        .is_ok());
+        assert!(
+            err("[[receiver]]\nname = \"x\"\n[[receiver]]\nname = \"x\"\nvid = 2\n")
+                .contains("both named")
+        );
+        assert!(err("receiver = []\n").contains("at least one"));
+        let many: String = (0..17)
+            .map(|i| format!("[[receiver]]\nvid = {}\n", i + 1))
+            .collect();
+        assert!(err(&many).contains("at most"));
     }
 
     #[test]

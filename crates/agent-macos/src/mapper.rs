@@ -356,6 +356,7 @@ mod tests {
             serial: None,
             interface: id,
             uses_report_ids: DescriptorInfo::parse(&desc).uses_report_ids,
+            receiver: 0,
             report_descriptor: desc,
         }
     }

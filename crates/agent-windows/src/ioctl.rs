@@ -95,6 +95,7 @@ mod tests {
             interface: id,
             report_descriptor: desc.to_vec(),
             uses_report_ids: DescriptorInfo::parse(desc).uses_report_ids,
+            receiver: 0,
         }
     }
 

@@ -14,8 +14,8 @@ use bytes::Bytes;
 use proto::datagram::{Datagram, SeqTracker, FLAG_RELEASE_ALL};
 use proto::descriptor::{DescriptorInfo, USAGE_MOUSE, USAGE_PAGE_GENERIC_DESKTOP};
 use proto::{
-    Control, EdgeOptions, HidDevice, HubSettings, HubStatus, NodeInfo, NodeKind, Os, RejectReason,
-    Screen,
+    Control, EdgeOptions, Exposure, HidDevice, HubSettings, HubStatus, NodeInfo, NodeKind, Os,
+    ReceiverExposure, RejectReason, Screen,
 };
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, info, warn};
@@ -68,6 +68,11 @@ pub struct Options {
     pub node_options: Vec<NodeOptions>,
     /// Set the keyboards' OS layout on every switch (`[hidpp] os_profile`).
     pub os_profile: bool,
+    /// Receiver names by index (the `[[receiver]]` blocks of the config).
+    pub receivers: Vec<String>,
+    /// The receiver whose HID++ interface the receiver thread uses
+    /// (`HubConfig::hidpp_receiver`).
+    pub hidpp_receiver: Option<u8>,
 }
 
 impl Default for Options {
@@ -81,6 +86,8 @@ impl Default for Options {
             version: String::new(),
             node_options: Vec::new(),
             os_profile: true,
+            receivers: vec!["receiver-0".into()],
+            hidpp_receiver: Some(0),
         }
     }
 }
@@ -251,7 +258,17 @@ struct State {
     /// follow the active PC). Kept across reconnections.
     outputs: HashMap<Uuid, OutputState>,
     /// Hysteresis and hotkey switch, from the config or `settings.toml`.
+    /// Its `exposures` stay empty: they live in `exposures`.
     settings: HubSettings,
+    /// Receivers exposed exclusively to an agent (ADR 0030); the others are
+    /// `Network`.
+    exposures: BTreeMap<u8, Exposure>,
+    /// Escape hotkey (modifier, modifier, Esc) of each exclusive receiver,
+    /// apart from the network one.
+    escape: HashMap<u8, Detector>,
+    /// Whether the last mouse report sent to each agent came from an
+    /// exclusive receiver: its edge switches are then ignored.
+    exclusive_pointer: HashMap<Uuid, bool>,
     settings_path: Option<std::path::PathBuf>,
     next_generation: u64,
     /// Why the hub is powering off, once a widget asked.
@@ -282,6 +299,7 @@ impl Router {
         let settings = HubSettings {
             hysteresis_ms: opts.hysteresis.as_millis().min(u32::MAX as u128) as u32,
             hotkey: opts.hotkey,
+            exposures: Vec::new(),
         };
         Self {
             hub_id,
@@ -395,7 +413,7 @@ impl Router {
     pub fn attach_ctl(&self, tx: std::sync::mpsc::Sender<Cmd>) {
         let profile = {
             let st = self.lock();
-            st.active
+            self.hidpp_destination(&st)
                 .and_then(|a| st.nodes.get(&a))
                 .map(|n| self.profile_for(n))
         };
@@ -493,9 +511,10 @@ impl Router {
             dev.report_descriptor.len()
         );
         let id = dev.id;
+        let dest = Self::destination(&st, dev.receiver);
         st.devices.insert(id, Device::new(dev, writer));
-        if let Some(active) = st.active {
-            Self::apply_outputs(&mut st, active, Some(id));
+        if let Some(dest) = dest {
+            Self::apply_outputs(&mut st, dest, |d| d.dev.id == id);
         }
         self.broadcast_devices(&st);
         self.broadcast_status(&st);
@@ -565,7 +584,7 @@ impl Router {
             node.send(layout.clone());
         }
         if node.hello.kind == NodeKind::Widget {
-            node.send(Control::Settings(st.settings));
+            node.send(Control::Settings(self.settings_msg(&st)));
             if let Some(devices) = &st.receiver_devices {
                 node.send(Control::ReceiverDevices {
                     devices: devices.clone(),
@@ -687,6 +706,12 @@ impl Router {
                     debug!(node = %from, "SwitchTo from an inactive node ignored");
                     return;
                 }
+                if kind != NodeKind::Widget && st.exclusive_pointer.get(&machine) == Some(&true) {
+                    // The pointer was moved by an exclusive receiver's
+                    // mouse: edges do not act on it (ADR 0030).
+                    debug!(node = %from, "edge switch by an exclusive receiver's pointer ignored");
+                    return;
+                }
                 if kind == NodeKind::Widget && st.active == Some(target) {
                     // "Release keys": a switch to the node that is already
                     // active (it would do nothing otherwise).
@@ -756,20 +781,33 @@ impl Router {
                 self.update_layout(&mut st);
             }
             Control::Settings(new) if kind == NodeKind::Widget => {
-                info!(node = %from, ?new, "settings set by a widget");
-                if let Some(path) = &st.settings_path {
-                    if let Err(e) = crate::settings::save(path, &new) {
-                        warn!("{e:#}");
+                info!(node = %from, hysteresis_ms = new.hysteresis_ms, hotkey = ?new.hotkey, "settings set by a widget");
+                // Exposures only change with SetExposure.
+                st.settings = HubSettings {
+                    exposures: Vec::new(),
+                    ..new
+                };
+                self.settings_changed(&st);
+            }
+            Control::SetExposure { receiver, mode } if kind == NodeKind::Widget => {
+                let refusal = if self.opts.receivers.get(receiver as usize).is_none() {
+                    Some(format!("the hub has no receiver {receiver}"))
+                } else {
+                    match mode {
+                        Exposure::Exclusive { agent } if !Self::is_known_agent(&st, agent) => {
+                            Some(format!("{agent} is not an agent of this hub"))
+                        }
+                        _ => None,
                     }
+                };
+                if let Some(why) = refusal {
+                    warn!(node = %from, receiver, ?mode, "exposure refused: {why}");
+                    // The widget goes back to the list as it is.
+                    sender.send(Control::Settings(self.settings_msg(&st)));
+                    return;
                 }
-                st.settings = new;
-                for w in st
-                    .nodes
-                    .values()
-                    .filter(|n| n.hello.kind == NodeKind::Widget)
-                {
-                    w.send(Control::Settings(new));
-                }
+                info!(node = %from, receiver, ?mode, "exposure set by a widget");
+                self.set_exposure(&mut st, receiver, mode);
             }
             Control::PairingStart { timeout_s, .. } if kind == NodeKind::Widget => {
                 info!(node = %from, timeout_s, "pairing requested by a widget");
@@ -850,9 +888,29 @@ impl Router {
     pub fn with_settings_file(self, path: std::path::PathBuf) -> Result<Self, anyhow::Error> {
         {
             let mut st = self.lock();
-            if let Some(s) = crate::settings::load(&path)? {
-                info!(?s, "using the settings in {}", path.display());
-                st.settings = s;
+            if let Some(saved) = crate::settings::load(&path)? {
+                info!(settings = ?saved.settings, "using the settings in {}", path.display());
+                st.settings = saved.settings;
+                for (name, mode) in saved.exposures {
+                    let Some(i) = self.opts.receivers.iter().position(|r| *r == name) else {
+                        warn!(
+                            "{} exposes receiver {name:?}, which hub.toml does not have; ignored",
+                            path.display()
+                        );
+                        continue;
+                    };
+                    if let Exposure::Exclusive { agent } = mode {
+                        if st.store.index_of(&agent).is_none() {
+                            warn!(
+                                "receiver {name:?} is exclusive to {agent}, which is not in \
+                                 nodes.toml: its input is dropped until that agent connects \
+                                 (modifier, modifier, Esc on its keyboard frees it)"
+                            );
+                        }
+                        info!(receiver = %name, %agent, "receiver exposed exclusively");
+                        st.exposures.insert(i as u8, mode);
+                    }
+                }
             }
             st.settings_path = Some(path);
         }
@@ -860,7 +918,133 @@ impl Router {
     }
 
     pub fn settings(&self) -> HubSettings {
-        self.lock().settings
+        self.settings_msg(&self.lock())
+    }
+
+    /// The settings as widgets get them, with every receiver's exposure.
+    fn settings_msg(&self, st: &State) -> HubSettings {
+        let exposures = self
+            .opts
+            .receivers
+            .iter()
+            .enumerate()
+            .map(|(i, name)| ReceiverExposure {
+                receiver: i as u8,
+                name: name.clone(),
+                mode: st.exposures.get(&(i as u8)).copied().unwrap_or_default(),
+            })
+            .collect();
+        HubSettings {
+            exposures,
+            ..st.settings.clone()
+        }
+    }
+
+    /// Persist the settings and send them to every widget.
+    fn settings_changed(&self, st: &State) {
+        let msg = self.settings_msg(st);
+        if let Some(path) = &st.settings_path {
+            if let Err(e) = crate::settings::save(path, &msg) {
+                warn!("{e:#}");
+            }
+        }
+        for w in st
+            .nodes
+            .values()
+            .filter(|n| n.hello.kind == NodeKind::Widget)
+        {
+            w.send(Control::Settings(msg.clone()));
+        }
+    }
+
+    // ---- exposures (ADR 0030) -----------------------------------------
+
+    /// The agent `receiver` is exposed exclusively to, if it is.
+    fn exclusive_of(st: &State, receiver: u8) -> Option<Uuid> {
+        match st.exposures.get(&receiver) {
+            Some(Exposure::Exclusive { agent }) => Some(*agent),
+            _ => None,
+        }
+    }
+
+    /// The agent the devices of `receiver` belong to now: its exclusive
+    /// agent, else the active one.
+    fn destination(st: &State, receiver: u8) -> Option<Uuid> {
+        Self::exclusive_of(st, receiver).or(st.active)
+    }
+
+    /// Where the keyboard layout (HID++) should follow.
+    fn hidpp_destination(&self, st: &State) -> Option<Uuid> {
+        match self.opts.hidpp_receiver {
+            Some(r) => Self::destination(st, r),
+            None => st.active,
+        }
+    }
+
+    /// Connected as an agent, or remembered in nodes.toml (agents only).
+    fn is_known_agent(st: &State, id: Uuid) -> bool {
+        match st.nodes.get(&id) {
+            Some(n) => n.is_agent(),
+            None => st.store.index_of(&id).is_some(),
+        }
+    }
+
+    /// Exclusive receivers whose agent is not connected.
+    fn held(st: &State) -> Vec<u8> {
+        st.exposures
+            .iter()
+            .filter_map(|(&r, e)| match e {
+                Exposure::Exclusive { agent }
+                    if !st.nodes.get(agent).is_some_and(Node::is_agent) =>
+                {
+                    Some(r)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Change where `receiver`'s input goes. Its keys are released on the
+    /// agent that had it, and its LEDs (and keyboard layout, for the HID++
+    /// receiver) follow the new one.
+    fn set_exposure(&self, st: &mut State, receiver: u8, mode: Exposure) {
+        let before = Self::destination(st, receiver);
+        match mode {
+            Exposure::Network => st.exposures.remove(&receiver),
+            Exposure::Exclusive { .. } => st.exposures.insert(receiver, mode),
+        };
+        st.escape.remove(&receiver);
+        let after = Self::destination(st, receiver);
+        if before != after {
+            if let Some(old) = before {
+                self.release_receiver(st, old, receiver);
+            }
+            if let Some(new) = after {
+                Self::apply_outputs(st, new, |d| d.dev.receiver == receiver);
+                if self.opts.hidpp_receiver == Some(receiver) {
+                    if let Some(n) = st.nodes.get(&new) {
+                        self.send_ctl(Cmd::Profile(self.profile_for(n)));
+                    }
+                }
+            }
+        }
+        self.settings_changed(st);
+        self.broadcast_status(st);
+    }
+
+    /// "Nothing pressed" for every device of `receiver`, to `node`.
+    fn release_receiver(&self, st: &mut State, node: Uuid, receiver: u8) {
+        let State { devices, nodes, .. } = st;
+        let Some(n) = nodes.get_mut(&node) else {
+            return;
+        };
+        for d in devices.values().filter(|d| d.dev.receiver == receiver) {
+            for r in &d.release {
+                if let Some(b) = n.datagram(d.dev.id, FLAG_RELEASE_ALL, r) {
+                    n.link.send_datagram(b);
+                }
+            }
+        }
     }
 
     /// Re-read `layout.toml` (after `--load-layout`, on SIGHUP) and send the
@@ -1018,9 +1202,18 @@ impl Router {
         }
 
         if let Some(old) = st.active.take() {
-            let State { devices, nodes, .. } = &mut *st;
+            let State {
+                devices,
+                nodes,
+                exposures,
+                ..
+            } = &mut *st;
             if let Some(n) = nodes.get_mut(&old) {
-                for d in devices.values() {
+                // An exclusive receiver's keys stay where they are.
+                for d in devices
+                    .values()
+                    .filter(|d| !exposures.contains_key(&d.dev.receiver))
+                {
                     for r in &d.release {
                         if let Some(b) = n.datagram(d.dev.id, FLAG_RELEASE_ALL, r) {
                             n.link.send_datagram(b);
@@ -1034,7 +1227,8 @@ impl Router {
             }
         }
         st.active = Some(target);
-        Self::apply_outputs(st, target, None);
+        let exposures = st.exposures.clone();
+        Self::apply_outputs(st, target, |d| !exposures.contains_key(&d.dev.receiver));
         st.restore = None;
         st.store.set_last_active(target);
         st.history.retain(|n| *n != target);
@@ -1042,7 +1236,13 @@ impl Router {
         st.last_switch = Some(now);
         let n = &st.nodes[&target];
         info!(node = %target, name = %n.hello.node_name, index = n.index, ?entry, "switched");
-        self.send_ctl(Cmd::Profile(self.profile_for(n)));
+        if !self
+            .opts
+            .hidpp_receiver
+            .is_some_and(|r| st.exposures.contains_key(&r))
+        {
+            self.send_ctl(Cmd::Profile(self.profile_for(n)));
+        }
         let activate = Control::Activate { entry };
         for n in st
             .nodes
@@ -1057,13 +1257,17 @@ impl Router {
 
     // ---- reports -------------------------------------------------------
 
-    /// Forward one raw report read from device `dev_id` to the active agent.
+    /// Forward one raw report read from device `dev_id`: to its receiver's
+    /// exclusive agent, else to the active agent.
     pub fn on_report(&self, dev_id: u8, report: &[u8]) {
         let mut guard = self.lock();
         let st = &mut *guard;
         let Some(dev) = st.devices.get(&dev_id) else {
             return;
         };
+        if let Some(agent) = Self::exclusive_of(st, dev.dev.receiver) {
+            return self.exclusive_report(st, dev_id, agent, report);
+        }
 
         if st.settings.hotkey.enabled {
             if let Some(kb) = &dev.info.keyboard {
@@ -1080,10 +1284,66 @@ impl Router {
             }
         }
 
-        let resend = !dev.is_mouse_report(report);
-        let Some(node) = st.active.and_then(|id| st.nodes.get_mut(&id)) else {
+        if let Some(active) = st.active {
+            self.deliver(st, dev_id, active, report, false);
+        }
+    }
+
+    /// A report of a receiver exposed exclusively to `agent` (ADR 0030).
+    /// Neither the hotkey nor edges act on it, except the way out:
+    /// modifier, modifier, Esc returns the receiver to `Network`, even with
+    /// the hotkey or its Esc action switched off. Dropped while `agent` is
+    /// not connected.
+    fn exclusive_report(&self, st: &mut State, dev_id: u8, agent: Uuid, report: &[u8]) {
+        let dev = &st.devices[&dev_id];
+        let receiver = dev.dev.receiver;
+        if let Some(ks) = dev
+            .info
+            .keyboard
+            .as_ref()
+            .and_then(|kb| kb.decode(dev.info.uses_report_ids, report))
+        {
+            let cfg = proto::Hotkey {
+                enabled: true,
+                release_keys: true,
+                ..st.settings.hotkey
+            };
+            let action = st.escape.entry(receiver).or_default().feed(
+                Instant::now(),
+                &cfg,
+                ks.modifiers,
+                ks.keys,
+            );
+            if action == Some(Action::ReleaseKeys) {
+                info!(
+                    receiver,
+                    "escape hotkey on an exclusive receiver: back to the network"
+                );
+                self.set_exposure(st, receiver, Exposure::Network);
+                return;
+            }
+        }
+        if st.nodes.get(&agent).is_some_and(Node::is_agent) {
+            self.deliver(st, dev_id, agent, report, true);
+        }
+    }
+
+    /// Send one report of `dev_id` to agent `target`, and its redundant
+    /// copy if it is not mouse motion.
+    fn deliver(&self, st: &mut State, dev_id: u8, target: Uuid, report: &[u8], exclusive: bool) {
+        let State {
+            devices,
+            nodes,
+            exclusive_pointer,
+            ..
+        } = st;
+        let (Some(dev), Some(node)) = (devices.get(&dev_id), nodes.get_mut(&target)) else {
             return;
         };
+        let resend = !dev.is_mouse_report(report);
+        if !resend {
+            exclusive_pointer.insert(target, exclusive);
+        }
         // ADR 0011: opt-in Alt <-> GUI swap for this target, on keyboard
         // reports only, after the hotkey saw the original.
         let swapped = self
@@ -1127,6 +1387,10 @@ impl Router {
         if node.out_seq.observe(dev_id, seq).is_none() {
             return; // redundant copy or late
         }
+        let Some(receiver) = st.devices.get(&dev_id).map(|d| d.dev.receiver) else {
+            return;
+        };
+        let owner = Self::destination(st, receiver);
         let Some(dev) = st.devices.get_mut(&dev_id) else {
             return;
         };
@@ -1149,7 +1413,7 @@ impl Router {
             return;
         }
         stored.insert(key, report.to_vec());
-        if st.active == Some(from) {
+        if owner == Some(from) {
             debug!(dev_id, ?report, "output report written");
             if !dev.write_output(report, Instant::now()) {
                 debug!(
@@ -1160,17 +1424,17 @@ impl Router {
         }
     }
 
-    /// Write `node`'s last output reports to the receiver (all devices, or
-    /// only `only`); a report it never sent is written as all zeros (LEDs
-    /// off), so the LEDs show the state of the PC that is now active.
-    fn apply_outputs(st: &mut State, node: Uuid, only: Option<u8>) {
+    /// Write `node`'s last output reports to the devices `which` selects;
+    /// a report it never sent is written as all zeros (LEDs off), so the
+    /// LEDs show the state of the PC that now gets the input.
+    fn apply_outputs(st: &mut State, node: Uuid, which: impl Fn(&Device) -> bool) {
         let State {
             devices, outputs, ..
         } = st;
         let stored = outputs.get(&node);
         let now = Instant::now();
         for dev in devices.values_mut() {
-            if dev.writer.is_none() || only.is_some_and(|o| o != dev.dev.id) {
+            if dev.writer.is_none() || !which(dev) {
                 continue;
             }
             let reports: Vec<Vec<u8>> = dev
@@ -1221,6 +1485,7 @@ impl Router {
             device_count: st.devices.len().min(u8::MAX as usize) as u8,
             uptime_s: self.started.elapsed().as_secs(),
             version: self.opts.version.clone(),
+            held: Self::held(st),
         }
     }
 
@@ -1336,6 +1601,7 @@ mod tests {
             interface: id,
             report_descriptor: desc.to_vec(),
             uses_report_ids: DescriptorInfo::parse(desc).uses_report_ids,
+            receiver: 0,
         }
     }
 
@@ -1570,6 +1836,7 @@ mod tests {
                     previous: false,
                     ..Default::default()
                 },
+                exposures: Vec::new(),
             }),
         );
         hotkey(0x1E); // Ctrl, Ctrl, '1': nothing
@@ -2028,17 +2295,37 @@ mod tests {
                 enabled: false,
                 ..Default::default()
             },
+            exposures: Vec::new(),
         };
-        r.on_control(w.id, Control::Settings(new));
-        assert_eq!(r.settings(), new);
+        // Exposures in a widget's Settings are ignored; the hub fills them.
+        let sent = HubSettings {
+            exposures: vec![ReceiverExposure {
+                receiver: 0,
+                name: "bogus".into(),
+                mode: Exposure::Exclusive { agent: a.id },
+            }],
+            ..new.clone()
+        };
+        let echoed = HubSettings {
+            exposures: vec![ReceiverExposure {
+                receiver: 0,
+                name: "receiver-0".into(),
+                mode: Exposure::Network,
+            }],
+            ..new.clone()
+        };
+        r.on_control(w.id, Control::Settings(sent));
+        assert_eq!(r.settings(), echoed);
         assert_eq!(
-            crate::settings::load(&crate::settings::path_in(&dir)).unwrap(),
-            Some(new)
+            crate::settings::load(&crate::settings::path_in(&dir))
+                .unwrap()
+                .map(|s| s.settings),
+            Some(new.clone())
         );
-        assert!(w.msgs().contains(&Control::Settings(new)));
+        assert!(w.msgs().contains(&Control::Settings(echoed.clone())));
         // An agent cannot change them.
         r.on_control(a.id, Control::Settings(HubSettings::default()));
-        assert_eq!(r.settings(), new);
+        assert_eq!(r.settings(), echoed);
 
         // Menu switch from the widget: no entry, no hysteresis (5 s now).
         r.on_control(
@@ -2647,5 +2934,428 @@ mod tests {
             .unwrap();
         assert!(!d.is_mouse_report(&[other, 0]));
         assert!(!Device::new(device(0, BOOT_KEYBOARD), None).is_mouse_report(&[0; 8]));
+    }
+
+    // ---- exposures (ADR 0030) -----------------------------------------
+
+    /// Two receivers ("logi" 0, "other" 1), each with a keyboard and a
+    /// mouse: ids 0, 1 and 16, 17.
+    fn two_receivers(dir: Option<&std::path::Path>) -> Router {
+        let mut r = Router::new(
+            Uuid::new_v4(),
+            "hub".into(),
+            Options {
+                receivers: vec!["logi".into(), "other".into()],
+                ..Default::default()
+            },
+        );
+        if let Some(dir) = dir {
+            let store = NodeStore::load(&NodeStore::path_in(dir)).unwrap();
+            r = r
+                .with_store(store, Duration::ZERO)
+                .with_settings_file(crate::settings::path_in(dir))
+                .unwrap();
+        }
+        for (id, receiver, desc) in [
+            (0, 0, BOOT_KEYBOARD),
+            (1, 0, UNIFYING_IFACE1),
+            (16, 1, BOOT_KEYBOARD),
+            (17, 1, UNIFYING_IFACE1),
+        ] {
+            r.add_device(HidDevice {
+                receiver,
+                ..device(id, desc)
+            });
+        }
+        r
+    }
+
+    const MOUSE_MOVE: [u8; 8] = [0x02, 0, 0, 0x0a, 0, 0, 0, 0];
+
+    fn exclusive(agent: Uuid) -> Exposure {
+        Exposure::Exclusive { agent }
+    }
+
+    fn tap_twice(r: &Router, dev: u8) {
+        for _ in 0..2 {
+            r.on_report(dev, &key_report(0x01, 0));
+            r.on_report(dev, &key_report(0, 0));
+        }
+    }
+
+    fn exposures(w: &mut TestNode) -> Option<Vec<ReceiverExposure>> {
+        w.msgs().into_iter().rev().find_map(|m| match m {
+            Control::Settings(s) => Some(s.exposures),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn exclusive_receiver_goes_only_to_its_agent() {
+        let r = two_receivers(None);
+        let a = join(&r, NodeKind::Agent).unwrap();
+        let b = join(&r, NodeKind::Agent).unwrap();
+        let mut w = join(&r, NodeKind::Widget).unwrap();
+        assert_eq!(r.active(), Some(a.id));
+        let names: Vec<_> = exposures(&mut w)
+            .unwrap()
+            .into_iter()
+            .map(|e| (e.receiver, e.name, e.mode))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                (0, "logi".to_string(), Exposure::Network),
+                (1, "other".to_string(), Exposure::Network)
+            ]
+        );
+
+        r.on_control(
+            w.id,
+            Control::SetExposure {
+                receiver: 1,
+                mode: exclusive(b.id),
+            },
+        );
+        assert_eq!(exposures(&mut w).unwrap()[1].mode, exclusive(b.id));
+        a.link.take();
+        b.link.take();
+
+        // a is active: the first receiver goes to a, the second to b.
+        r.on_report(0, &key_report(0, 0x04));
+        r.on_report(16, &key_report(0, 0x05));
+        r.on_report(17, &MOUSE_MOVE);
+        let ids = |n: &TestNode| n.link.take().iter().map(|d| d.0).collect::<Vec<_>>();
+        assert!(ids(&a).iter().all(|&id| id == 0));
+        assert_eq!(ids(&b), [16, 17]);
+
+        // Switching to b and back does not touch the exclusive receiver:
+        // no release-all for its devices on b.
+        force_switch(&r, b.id);
+        force_switch(&r, a.id);
+        a.link.take();
+        let to_b = b.link.take();
+        assert!(to_b
+            .iter()
+            .filter(|d| d.1 == FLAG_RELEASE_ALL)
+            .all(|d| d.0 < 16));
+        r.on_report(16, &key_report(0, 0));
+        assert_eq!(ids(&b), [16]);
+        assert!(a.link.take().is_empty());
+
+        // The hotkey on the exclusive keyboard does not switch: the digit
+        // reaches b like any key.
+        tap_twice(&r, 16);
+        r.on_report(16, &key_report(0, 0x1F)); // '2'
+        assert_eq!(r.active(), Some(a.id));
+        assert!(b.link.take().iter().any(|d| d.0 == 16 && d.3[2] == 0x1F));
+        // On the network keyboard it does.
+        r.on_report(16, &key_report(0, 0));
+        tap_twice(&r, 0);
+        r.on_report(0, &key_report(0, 0x1F));
+        assert_eq!(r.active(), Some(b.id));
+    }
+
+    #[test]
+    fn exclusive_without_its_agent_drops_and_says_so() {
+        let dir = store_dir();
+        let r = two_receivers(Some(&dir));
+        let a = join(&r, NodeKind::Agent).unwrap();
+        let b = join(&r, NodeKind::Agent).unwrap();
+        let w = join(&r, NodeKind::Widget).unwrap();
+        r.on_control(
+            w.id,
+            Control::SetExposure {
+                receiver: 1,
+                mode: exclusive(b.id),
+            },
+        );
+        assert!(r.status().held.is_empty());
+        r.unregister(b.id, b.reg);
+        // Not handed to the active agent, and the mode stays.
+        assert_eq!(r.status().held, [1]);
+        a.link.take();
+        r.on_report(16, &key_report(0, 0x05));
+        r.on_report(17, &MOUSE_MOVE);
+        assert!(a.link.take().is_empty());
+        assert_eq!(r.settings().exposures[1].mode, exclusive(b.id));
+
+        // b comes back and gets the input again.
+        let b = join_as(&r, b.id, NodeKind::Agent).unwrap();
+        assert!(r.status().held.is_empty());
+        b.link.take();
+        r.on_report(16, &key_report(0, 0x05));
+        assert_eq!(b.link.take().len(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn escape_hotkey_returns_the_receiver_to_the_network() {
+        let r = two_receivers(None);
+        let a = join(&r, NodeKind::Agent).unwrap();
+        let b = join(&r, NodeKind::Agent).unwrap();
+        let mut w = join(&r, NodeKind::Widget).unwrap();
+        // Even with the hotkey switched off.
+        r.on_control(
+            w.id,
+            Control::Settings(HubSettings {
+                hotkey: proto::Hotkey {
+                    enabled: false,
+                    release_keys: false,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+        );
+        r.on_control(
+            w.id,
+            Control::SetExposure {
+                receiver: 1,
+                mode: exclusive(b.id),
+            },
+        );
+        w.msgs();
+        a.link.take();
+        b.link.take();
+
+        tap_twice(&r, 16);
+        r.on_report(16, &key_report(0, 0x29)); // Esc
+        assert_eq!(exposures(&mut w).unwrap()[1].mode, Exposure::Network);
+        // b gets the four Ctrl reports and a release-all for the
+        // receiver's devices; the Esc reaches nobody.
+        let to_b = b.link.take();
+        assert!(to_b.iter().all(|d| d.3.get(2) != Some(&0x29)));
+        let released: Vec<_> = to_b
+            .iter()
+            .filter(|d| d.1 == FLAG_RELEASE_ALL)
+            .map(|d| d.0)
+            .collect();
+        assert!(released.contains(&16) && released.contains(&17));
+        assert!(released.iter().all(|&id| id >= 16));
+        // From now on the receiver follows the active agent, a.
+        a.link.take();
+        r.on_report(16, &key_report(0, 0));
+        assert_eq!(a.link.take().len(), 1);
+        assert!(b.link.take().is_empty());
+        // And with the hotkey off, Ctrl Ctrl Esc on a network keyboard is
+        // just typing.
+        tap_twice(&r, 0);
+        r.on_report(0, &key_report(0, 0x29));
+        assert!(a.link.take().iter().any(|d| d.3[2] == 0x29));
+    }
+
+    #[test]
+    fn set_exposure_refusals() {
+        let r = two_receivers(None);
+        let a = join(&r, NodeKind::Agent).unwrap();
+        let edge = helper(&r, a.id);
+        let mut w = join(&r, NodeKind::Widget).unwrap();
+        w.msgs();
+        let unchanged = r.settings();
+        for (receiver, mode) in [
+            (2, Exposure::Network),         // no such receiver
+            (1, exclusive(Uuid::new_v4())), // unknown node
+            (1, exclusive(edge.id)),        // not an agent
+            (1, exclusive(w.id)),           // not an agent
+        ] {
+            r.on_control(w.id, Control::SetExposure { receiver, mode });
+            assert_eq!(r.settings(), unchanged);
+            // The widget gets the list as it is.
+            assert_eq!(w.msgs(), [Control::Settings(unchanged.clone())]);
+        }
+        // Only widgets may ask.
+        r.on_control(
+            a.id,
+            Control::SetExposure {
+                receiver: 1,
+                mode: exclusive(a.id),
+            },
+        );
+        assert_eq!(r.settings(), unchanged);
+    }
+
+    #[test]
+    fn exposure_persists_by_name_and_survives_a_disconnected_agent() {
+        let dir = store_dir();
+        let b_id = {
+            let r = two_receivers(Some(&dir));
+            let _a = join(&r, NodeKind::Agent).unwrap();
+            let b = join(&r, NodeKind::Agent).unwrap();
+            let w = join(&r, NodeKind::Widget).unwrap();
+            r.on_control(
+                w.id,
+                Control::SetExposure {
+                    receiver: 1,
+                    mode: exclusive(b.id),
+                },
+            );
+            // An agent that is known but disconnected is accepted too.
+            r.unregister(b.id, b.reg);
+            r.on_control(
+                w.id,
+                Control::SetExposure {
+                    receiver: 0,
+                    mode: exclusive(b.id),
+                },
+            );
+            assert_eq!(r.status().held, [0, 1]);
+            r.on_control(
+                w.id,
+                Control::SetExposure {
+                    receiver: 0,
+                    mode: Exposure::Network,
+                },
+            );
+            b.id
+        };
+        let text = std::fs::read_to_string(crate::settings::path_in(&dir)).unwrap();
+        assert!(
+            text.contains("receiver = \"other\"") && !text.contains("\"logi\""),
+            "{text}"
+        );
+
+        // After a restart.
+        let r = two_receivers(Some(&dir));
+        assert_eq!(r.settings().exposures[1].mode, exclusive(b_id));
+        assert_eq!(r.settings().exposures[0].mode, Exposure::Network);
+        assert_eq!(r.status().held, [1]);
+
+        // Blocks reordered in hub.toml: it still follows the name.
+        let r = Router::new(
+            Uuid::new_v4(),
+            "hub".into(),
+            Options {
+                receivers: vec!["other".into(), "logi".into()],
+                ..Default::default()
+            },
+        )
+        .with_settings_file(crate::settings::path_in(&dir))
+        .unwrap();
+        assert_eq!(r.settings().exposures[0].mode, exclusive(b_id));
+        assert_eq!(r.settings().exposures[1].mode, Exposure::Network);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn edges_ignore_an_exclusive_pointer() {
+        let r = two_receivers(None);
+        let a = join(&r, NodeKind::Agent).unwrap();
+        let b = join(&r, NodeKind::Agent).unwrap();
+        let a_edge = helper(&r, a.id);
+        let w = join(&r, NodeKind::Widget).unwrap();
+        r.on_control(
+            w.id,
+            Control::SetExposure {
+                receiver: 1,
+                mode: exclusive(a.id),
+            },
+        );
+        let edge = || {
+            r.lock().last_switch = None;
+            r.on_control(
+                a_edge.id,
+                Control::SwitchTo {
+                    target: b.id,
+                    entry: Some(Entry {
+                        screen: 0,
+                        edge: Edge::Right,
+                        pos_ratio: 0.5,
+                    }),
+                },
+            );
+        };
+        // a is active and its pointer was last moved by the exclusive mouse.
+        r.on_report(17, &MOUSE_MOVE);
+        edge();
+        assert_eq!(r.active(), Some(a.id));
+        // Moved by the network mouse: the edge switches.
+        r.on_report(1, &MOUSE_MOVE);
+        edge();
+        assert_eq!(r.active(), Some(b.id));
+    }
+
+    #[test]
+    fn leds_follow_the_exclusive_agent() {
+        let r = two_receivers(None);
+        type Writes = Arc<Mutex<Vec<(u8, Vec<u8>)>>>;
+        let writes: Writes = Arc::default();
+        struct W(u8, Writes);
+        impl ReportWriter for W {
+            fn write(&self, report: &[u8]) -> bool {
+                self.1.lock().unwrap().push((self.0, report.to_vec()));
+                true
+            }
+        }
+        for (id, receiver) in [(0, 0), (16, 1)] {
+            r.add_device_with_writer(
+                HidDevice {
+                    receiver,
+                    ..device(id, BOOT_KEYBOARD)
+                },
+                Some(Arc::new(W(id, writes.clone()))),
+            );
+        }
+        let a = join(&r, NodeKind::Agent).unwrap();
+        let b = join(&r, NodeKind::Agent).unwrap();
+        let w = join(&r, NodeKind::Widget).unwrap();
+        r.on_control(
+            w.id,
+            Control::SetExposure {
+                receiver: 1,
+                mode: exclusive(b.id),
+            },
+        );
+        writes.lock().unwrap().clear();
+        // Caps Lock from b reaches the exclusive keyboard only; from a, the
+        // network one only.
+        r.on_output(b.id, 16, 0, &[0x02]);
+        r.on_output(b.id, 0, 1, &[0x02]);
+        r.on_output(a.id, 16, 0, &[0x01]);
+        r.on_output(a.id, 0, 1, &[0x01]);
+        assert_eq!(*writes.lock().unwrap(), [(16, vec![0x02]), (0, vec![0x01])]);
+    }
+
+    /// `fixtures/two-receivers.hidrec`, as the simulated hub replays it,
+    /// with the second receiver exclusive to b.
+    #[test]
+    fn replayed_two_receivers() {
+        let cfg = crate::config::HubConfig::parse(
+            "[[receiver]]\nname = \"logitech\"\n[[receiver]]\nname = \"other\"\nvid = 0x248a\n",
+        )
+        .unwrap();
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/two-receivers.hidrec");
+        let mut rec = crate::hidrec::load(&path).unwrap();
+        rec.assign_receivers(&cfg.receivers);
+        let r = Router::new(
+            Uuid::new_v4(),
+            "hub".into(),
+            Options {
+                receivers: cfg.receiver_names(),
+                hidpp_receiver: cfg.hidpp_receiver().map(|i| i as u8),
+                ..Default::default()
+            },
+        );
+        for d in &rec.devices {
+            r.add_device(d.clone());
+        }
+        let a = join(&r, NodeKind::Agent).unwrap();
+        let b = join(&r, NodeKind::Agent).unwrap();
+        let w = join(&r, NodeKind::Widget).unwrap();
+        r.on_control(
+            w.id,
+            Control::SetExposure {
+                receiver: 1,
+                mode: exclusive(b.id),
+            },
+        );
+        a.link.take();
+        b.link.take();
+        for (_, id, data) in &rec.reports {
+            r.on_report(*id, data);
+        }
+        let ids = |n: &TestNode| n.link.take().iter().map(|d| d.0).collect::<Vec<_>>();
+        assert_eq!(ids(&a), [0, 0, 1]);
+        assert_eq!(ids(&b), [16, 16, 17]);
     }
 }

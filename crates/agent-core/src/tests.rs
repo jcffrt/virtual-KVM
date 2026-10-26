@@ -114,6 +114,7 @@ async fn start_hub_with(layout: Vec<rawkvm_hub::layout::LinkSpec>) -> TestHub {
         interface: 0,
         report_descriptor: BOOT_KEYBOARD.to_vec(),
         uses_report_ids: false,
+        receiver: 0,
     });
     let fingerprint = id.fingerprint.clone();
     let (c, r) = (cfg.clone(), router.clone());
@@ -376,6 +377,7 @@ fn hid(id: u8) -> HidDevice {
         interface: id,
         report_descriptor: BOOT_KEYBOARD.to_vec(),
         uses_report_ids: false,
+        receiver: 0,
     }
 }
 
@@ -611,7 +613,12 @@ async fn widget_body() {
                 && st.status.as_ref().is_some_and(|s| s.active == Some(a_id))
                 && st.devices.len() == 1
                 && st.rtt_ms.is_some()
-                && st.settings == Some(proto::HubSettings::default())
+                // The hub's settings, with its one receiver's exposure.
+                && st.settings.as_ref().is_some_and(|s| {
+                    s.hotkey == proto::Hotkey::default()
+                        && s.exposures.len() == 1
+                        && s.exposures[0].mode == proto::Exposure::Network
+                })
                 && st
                     .status
                     .as_ref()
@@ -697,6 +704,7 @@ async fn output_reports_reach_the_receiver() {
             interface: 0,
             report_descriptor: BOOT_KEYBOARD.to_vec(),
             uses_report_ids: false,
+            receiver: 0,
         },
         Some(writer.clone()),
     );

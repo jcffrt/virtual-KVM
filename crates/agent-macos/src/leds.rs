@@ -370,6 +370,7 @@ mod tests {
             interface: id,
             report_descriptor: desc.to_vec(),
             uses_report_ids: false,
+            receiver: 0,
         }
     }
 

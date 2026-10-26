@@ -489,6 +489,7 @@ mod tests {
             device_count: 0,
             uptime_s: 0,
             version: String::new(),
+            held: Vec::new(),
         }
     }
 

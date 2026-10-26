@@ -8,6 +8,10 @@
 //! ```
 //!
 //! `t_us` is the time since the start of the recording in microseconds.
+//!
+//! A `D` line does not say which receiver the device belongs to: a replay
+//! takes it from the `[[receiver]]` blocks of the hub config, the first
+//! block matching the device's `vid` and `pid` ([`Recording::assign_receivers`]).
 
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -21,6 +25,7 @@ use proto::descriptor::DescriptorInfo;
 use proto::HidDevice;
 use tracing::info;
 
+use crate::config::ReceiverMatch;
 use crate::router::Router;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -59,6 +64,7 @@ pub fn parse(text: &str) -> Result<Recording> {
                     interface,
                     uses_report_ids: DescriptorInfo::parse(&desc).uses_report_ids,
                     report_descriptor: desc,
+                    receiver: 0,
                 });
             }
             Some("R") => {
@@ -76,6 +82,24 @@ pub fn parse(text: &str) -> Result<Recording> {
         }
     }
     Ok(rec)
+}
+
+impl Recording {
+    /// Set each device's receiver to the first block matching its `vid`
+    /// and `pid`; a device no block matches stays with receiver 0.
+    pub fn assign_receivers(&mut self, receivers: &[ReceiverMatch]) {
+        for d in &mut self.devices {
+            match receivers.iter().position(|r| r.matches(d.vid, d.pid)) {
+                Some(i) => d.receiver = i as u8,
+                None => tracing::warn!(
+                    id = d.id,
+                    "recorded device {:04x}:{:04x} matches no [[receiver]]; replayed as receiver 0",
+                    d.vid,
+                    d.pid
+                ),
+            }
+        }
+    }
 }
 
 pub fn load(path: &Path) -> Result<Recording> {
@@ -177,6 +201,20 @@ mod tests {
     fn rejects_undeclared_devices() {
         assert!(parse("R 0 3 00\n").is_err());
         assert!(parse("X\n").is_err());
+    }
+
+    #[test]
+    fn receivers_come_from_the_config() {
+        let cfg = crate::config::HubConfig::parse(
+            "[[receiver]]\nname = \"logi\"\n[[receiver]]\nname = \"other\"\nvid = 0x248a\n",
+        )
+        .unwrap();
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/two-receivers.hidrec");
+        let mut rec = load(&path).unwrap();
+        rec.assign_receivers(&cfg.receivers);
+        let by_id: Vec<_> = rec.devices.iter().map(|d| (d.id, d.receiver)).collect();
+        assert_eq!(by_id, [(0, 0), (1, 0), (16, 1), (17, 1)]);
     }
 
     #[test]
