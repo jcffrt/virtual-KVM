@@ -64,6 +64,15 @@
     }
   }
 
+  // The select goes back to what the hub says at once: if the hub refuses,
+  // it answers with the same settings and Svelte would not reset a value
+  // that did not change; if it accepts, the new value arrives with them.
+  function changeExposure(select, e) {
+    const wanted = select.value;
+    select.value = e.agent ?? 'network';
+    setExposure(e.receiver, wanted);
+  }
+
   // Connected agents, plus the exclusive one of `e` if it is not connected.
   function exposureTargets(e) {
     const agents = view.nodes.filter((n) => n.role === 'agent').map((n) => ({ id: n.id, name: n.name }));
@@ -168,7 +177,7 @@
               <select
                 value={e.agent ?? 'network'}
                 disabled={!view.connected}
-                onchange={(ev) => setExposure(e.receiver, ev.currentTarget.value)}
+                onchange={(ev) => changeExposure(ev.currentTarget, e)}
               >
                 <option value="network">Red local (todos los equipos)</option>
                 {#each exposureTargets(e) as a (a.id)}
