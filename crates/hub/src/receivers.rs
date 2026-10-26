@@ -63,6 +63,7 @@ pub fn group_unclaimed(candidates: &[Candidate]) -> Vec<UnclaimedReceiver> {
             pid: c.pid,
             name: c.name.clone(),
             serial: c.serial.clone(),
+            port: port.to_string(),
             interfaces: 0,
             kinds: Vec::new(),
         });
@@ -336,6 +337,9 @@ mod tests {
                 (0x25a7, "Compx 2.4G Receiver", 1, vec![DeviceKind::Other]),
             ]
         );
+        // The two identical models are told apart by their port.
+        assert_eq!(g[1].port, "usb-3f980000.usb-1.3");
+        assert_eq!(g[2].port, "usb-3f980000.usb-1.4");
         // A serial number groups across ports.
         let with_serial = |port| Candidate {
             serial: Some("A1".into()),

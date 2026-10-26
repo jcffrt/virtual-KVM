@@ -374,6 +374,7 @@ mod tests {
             pid: 0xfa09,
             name: "Compx".into(),
             serial: None,
+            port: "usb-1.3".into(),
             interfaces: 2,
             kinds: vec![proto::DeviceKind::Mouse],
         };

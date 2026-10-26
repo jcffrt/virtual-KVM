@@ -131,6 +131,9 @@ pub struct UnclaimedReceiver {
     /// Product name, as the kernel reports it.
     pub name: String,
     pub serial: Option<String>,
+    /// USB port it is plugged into (`usb-3f980000.usb-1.3`): two devices
+    /// with the same vid and pid differ by it, or by `serial`.
+    pub port: String,
     /// Its HID interfaces (hidraw nodes).
     pub interfaces: u8,
     /// What those interfaces carry, sorted, without repetitions.
@@ -747,6 +750,7 @@ mod tests {
                     pid: 0xfa09,
                     name: "Compx 2.4G Receiver".into(),
                     serial: None,
+                    port: "usb-3f980000.usb-1.3".into(),
                     interfaces: 2,
                     kinds: vec![DeviceKind::Keyboard, DeviceKind::Mouse],
                 }],

@@ -248,7 +248,7 @@
           <tr><th>Nombre</th><th>vid:pid</th><th>Interfaces</th><th>Contiene</th><th></th></tr>
         </thead>
         <tbody>
-          {#each view.unclaimed as u (u.vid_pid)}
+          {#each view.unclaimed as u (u.key)}
             <tr>
               <td>{u.name}</td>
               <td class="mono">{u.vid_pid}</td>

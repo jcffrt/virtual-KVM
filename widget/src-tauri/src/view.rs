@@ -55,6 +55,9 @@ pub struct View {
 /// One device the hub could take as a receiver.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct UnclaimedView {
+    /// Unique in the list, also for two identical dongles: vid:pid and
+    /// the serial number or USB port.
+    pub key: String,
     pub vid: u16,
     pub pid: u16,
     /// "25a7:fa09".
@@ -76,6 +79,12 @@ fn unclaimed(st: &WidgetState) -> Vec<UnclaimedView> {
     st.unclaimed
         .iter()
         .map(|u| UnclaimedView {
+            key: format!(
+                "{:04x}:{:04x}@{}",
+                u.vid,
+                u.pid,
+                u.serial.as_deref().unwrap_or(&u.port)
+            ),
             vid: u.vid,
             pid: u.pid,
             vid_pid: format!("{:04x}:{:04x}", u.vid, u.pid),
@@ -823,6 +832,7 @@ mod tests {
                 pid: 0xfa09,
                 name: String::new(),
                 serial: None,
+                port: "usb-1.3".into(),
                 interfaces: 2,
                 kinds: vec![proto::DeviceKind::Keyboard, proto::DeviceKind::Mouse],
             }],
@@ -831,6 +841,7 @@ mod tests {
         };
         let u = unclaimed(&st);
         assert_eq!(u[0].vid_pid, "25a7:fa09");
+        assert_eq!(u[0].key, "25a7:fa09@usb-1.3");
         assert_eq!(u[0].name, "(sin nombre)");
         assert_eq!(u[0].kinds, ["teclado", "ratón"]);
     }
