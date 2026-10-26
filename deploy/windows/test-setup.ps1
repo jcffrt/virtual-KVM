@@ -82,9 +82,14 @@ Assert-True ($edgeVersion -match '^rawkvm-edge\S* \d+\.\d+\.\d+ \([0-9a-f]{7}\)$
 # The widget takes the edge's pairing when it starts (if this runner can
 # run it: it needs a desktop and WebView2).
 if (Get-Process RawKVM -ErrorAction SilentlyContinue) {
-    Start-Sleep -Seconds 2
-    $w = if (Test-Path $widgetConfig) { Get-Content -Raw $widgetConfig } else { '' }
-    $took = $w -match 'hub = "127.0.0.1"' -and $w -match "hub_fingerprint = `"$('cd' * 32)`""
+    # Up to 10 s: on a busy runner the widget has once taken longer than
+    # the 6 s since setup.ps1 started it.
+    $took = $false
+    for ($i = 0; $i -lt 20 -and -not $took; $i++) {
+        $w = if (Test-Path $widgetConfig) { Get-Content -Raw $widgetConfig } else { '' }
+        $took = $w -match 'hub = "127.0.0.1"' -and $w -match "hub_fingerprint = `"$('cd' * 32)`""
+        if (-not $took) { Start-Sleep -Milliseconds 500 }
+    }
     Assert-True $took 'widget took the pairing'
     if (-not $took) {
         # What the widget got to before it stalled or failed.

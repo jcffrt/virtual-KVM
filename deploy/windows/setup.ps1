@@ -197,7 +197,16 @@ function Invoke-Check {
 
     $w = Get-PairingSummary $WidgetConfig
     if (-not $w) {
-        Write-CheckLine 'warn' 'widget' "$WidgetConfig missing (the widget writes it when it starts)"
+        # A widget started a moment ago (setup.ps1 itself) may not have
+        # written it yet.
+        $started = Get-Process RawKVM -ErrorAction SilentlyContinue |
+            Where-Object { $_.Path -eq $Widget } | Select-Object -First 1
+        $age = if ($started) { ((Get-Date) - $started.StartTime).TotalSeconds } else { $null }
+        if ($null -ne $age -and $age -lt 10) {
+            Write-CheckLine 'info' 'widget' ("$WidgetConfig not written yet (the widget started {0:N0} s ago)" -f $age)
+        } else {
+            Write-CheckLine 'warn' 'widget' "$WidgetConfig missing (the widget writes it when it starts)"
+        }
     } else {
         $level = if ($w.Paired) { 'ok' } else { 'FAIL' }
         $pin = if ($w.Pin) { "certificate $($w.Pin)..." } else { 'not paired' }
