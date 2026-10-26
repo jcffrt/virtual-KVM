@@ -96,10 +96,15 @@ pub fn receiver_of(d: &HidDevice, receivers: &[Option<ReceiverMatch>]) -> Option
 }
 
 /// The devices of a recording, kept in step with the router's blocks.
+///
+/// A device is added with the id the hub gives a real interface,
+/// `16 × receiver + interface` (ADR 0030), so a block added from the
+/// widget as receiver 2 gives 32, 33...; the recorded ids only name the
+/// devices in the `R` lines ([`Replay::live_id`]).
 pub struct Replay {
     rec: Recording,
-    /// Recorded id -> receiver it was added with.
-    present: HashMap<u8, u8>,
+    /// Recorded id -> (receiver, id in the router).
+    present: HashMap<u8, (u8, u8)>,
 }
 
 impl Replay {
@@ -110,6 +115,21 @@ impl Replay {
         }
     }
 
+    /// The router's id of recorded device `recorded`, while a block
+    /// matches it.
+    pub fn live_id(&self, recorded: u8) -> Option<u8> {
+        self.present.get(&recorded).map(|&(_, id)| id)
+    }
+
+    /// `16 × receiver + interface` if free, else the first free id.
+    fn assign(&self, receiver: usize, interface: u8) -> Option<u8> {
+        let taken = |id: u8| self.present.values().any(|&(_, t)| t == id);
+        u8::try_from(receiver * 16 + interface as usize)
+            .ok()
+            .filter(|&id| interface < 16 && !taken(id))
+            .or_else(|| (0..=u8::MAX).find(|&id| !taken(id)))
+    }
+
     /// Add the devices a block now matches, remove those whose block went
     /// away, and announce the rest as unclaimed.
     pub fn sync(&mut self, router: &Router) {
@@ -117,17 +137,24 @@ impl Replay {
         let mut unclaimed = Vec::new();
         for d in &self.rec.devices {
             match receiver_of(d, &receivers) {
-                Some(r) if self.present.get(&d.id) == Some(&(r as u8)) => {}
+                Some(r) if self.present.get(&d.id).map(|p| p.0) == Some(r as u8) => {}
                 Some(r) => {
+                    if let Some((_, old)) = self.present.remove(&d.id) {
+                        router.remove_device(old);
+                    }
+                    let Some(id) = self.assign(r, d.interface) else {
+                        continue;
+                    };
                     router.add_device(HidDevice {
+                        id,
                         receiver: r as u8,
                         ..d.clone()
                     });
-                    self.present.insert(d.id, r as u8);
+                    self.present.insert(d.id, (r as u8, id));
                 }
                 None => {
-                    if self.present.remove(&d.id).is_some() {
-                        router.remove_device(d.id);
+                    if let Some((_, old)) = self.present.remove(&d.id) {
+                        router.remove_device(old);
                     }
                     unclaimed.push(crate::receivers::Candidate {
                         vid: d.vid,
@@ -209,7 +236,9 @@ pub fn spawn_replay(router: Arc<Router>, rec: Recording) {
                     if let Some(wait) = due.checked_duration_since(Instant::now()) {
                         thread::sleep(wait);
                     }
-                    router.on_report(*id, data);
+                    if let Some(id) = replay.live_id(*id) {
+                        router.on_report(id, data);
+                    }
                 }
                 // Pause between loops so a replayed key never repeats.
                 thread::sleep(Duration::from_millis(500.max(span / 10_000)));

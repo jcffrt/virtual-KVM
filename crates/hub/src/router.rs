@@ -3905,7 +3905,8 @@ mod tests {
         assert!(res[1].1.contains("only receiver"), "{res:?}");
         assert!(res.iter().all(|(ok, _)| !ok));
 
-        // Added again: index 2, the removed slot is not reused.
+        // Added again: index 2, the removed slot is not reused; its ids
+        // are 32, 33, as a real hub gives them.
         r.on_control(
             w.id,
             Control::AddReceiver {
@@ -3917,7 +3918,9 @@ mod tests {
         replay.sync(&r);
         let mut ids = device_ids(&mut a).unwrap();
         ids.sort();
-        assert_eq!(ids, [0, 1, 16, 17]);
+        assert_eq!(ids, [0, 1, 32, 33]);
+        assert_eq!(replay.live_id(16), Some(32));
+        assert_eq!(replay.live_id(0), Some(0));
         assert_eq!(
             r.receivers()
                 .iter()
