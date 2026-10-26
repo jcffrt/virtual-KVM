@@ -273,6 +273,9 @@ struct State {
     next_generation: u64,
     /// Why the hub is powering off, once a widget asked.
     shutting_down: Option<String>,
+    /// The settings changed and `settings.toml` must be written once
+    /// `state` is unlocked.
+    settings_dirty: bool,
 }
 
 pub struct Router {
@@ -291,6 +294,9 @@ pub struct Router {
     /// Powers the board off (`main`); gets why. `None` in tests that do
     /// not ask for it.
     poweroff: Option<UnboundedSender<String>>,
+    /// Serializes writes of `settings.toml`, done outside `state` (they
+    /// fsync on an SD card) by [`Router::save_settings`].
+    save: Mutex<()>,
 }
 
 impl Router {
@@ -314,6 +320,7 @@ impl Router {
             hidpp: Mutex::new(None),
             ctl: Mutex::new(None),
             poweroff: None,
+            save: Mutex::new(()),
         }
     }
 
@@ -616,6 +623,21 @@ impl Router {
             }
         }
         if is_agent {
+            // The receivers exposed exclusively to this agent: their LEDs
+            // and (for the HID++ receiver) the keyboard layout follow it
+            // again, maybe with another OS than before.
+            let mine: Vec<u8> = st
+                .exposures
+                .iter()
+                .filter(|(_, e)| **e == Exposure::Exclusive { agent: id })
+                .map(|(&r, _)| r)
+                .collect();
+            if !mine.is_empty() {
+                Self::apply_outputs(&mut st, id, |d| mine.contains(&d.dev.receiver));
+                if self.opts.hidpp_receiver.is_some_and(|r| mine.contains(&r)) {
+                    self.send_ctl(Cmd::Profile(self.profile_for(&st.nodes[&id])));
+                }
+            }
             if st.active == Some(id) {
                 // Same machine came back while still active.
                 st.nodes[&id].send(Control::Activate { entry: None });
@@ -690,7 +712,12 @@ impl Router {
     // ---- control -------------------------------------------------------
 
     pub fn on_control(&self, from: Uuid, msg: Control) {
-        let mut st = self.lock();
+        let mut guard = self.lock();
+        self.control_locked(&mut guard, from, msg);
+        self.unlock_and_save(guard);
+    }
+
+    fn control_locked(&self, st: &mut State, from: Uuid, msg: Control) {
         let Some(sender) = st.nodes.get(&from) else {
             return;
         };
@@ -716,7 +743,7 @@ impl Router {
                     // "Release keys": a switch to the node that is already
                     // active (it would do nothing otherwise).
                     info!(node = %from, "release of every key requested by a widget");
-                    self.release_everywhere(&mut st);
+                    self.release_everywhere(st);
                     return;
                 }
                 let entry = entry.map(|e| Entry {
@@ -725,7 +752,7 @@ impl Router {
                 });
                 // A widget's menu switch is deliberate: no hysteresis.
                 let force = kind == NodeKind::Widget;
-                self.switch_locked(&mut st, target, entry, force);
+                self.switch_locked(st, target, entry, force);
             }
             Control::Screens { mut screens } if kind != NodeKind::Widget => {
                 let machine = sender.helps().unwrap_or(from);
@@ -743,8 +770,8 @@ impl Router {
                     });
                 }
                 st.screens.insert(machine, screens);
-                self.update_layout(&mut st);
-                self.broadcast_status(&st);
+                self.update_layout(st);
+                self.broadcast_status(st);
             }
             Control::Layout {
                 edges,
@@ -763,7 +790,7 @@ impl Router {
                         }
                     }
                     st.custom_layout = None;
-                    self.update_layout(&mut st);
+                    self.update_layout(st);
                     return;
                 }
                 info!(node = %from, links = edges.len(), blocks = canvas.len(), "layout set by a widget");
@@ -778,7 +805,7 @@ impl Router {
                     }
                 }
                 st.custom_layout = Some(file);
-                self.update_layout(&mut st);
+                self.update_layout(st);
             }
             Control::Settings(new) if kind == NodeKind::Widget => {
                 info!(node = %from, hysteresis_ms = new.hysteresis_ms, hotkey = ?new.hotkey, "settings set by a widget");
@@ -787,14 +814,14 @@ impl Router {
                     exposures: Vec::new(),
                     ..new
                 };
-                self.settings_changed(&st);
+                self.settings_changed(st);
             }
             Control::SetExposure { receiver, mode } if kind == NodeKind::Widget => {
                 let refusal = if self.opts.receivers.get(receiver as usize).is_none() {
                     Some(format!("the hub has no receiver {receiver}"))
                 } else {
                     match mode {
-                        Exposure::Exclusive { agent } if !Self::is_known_agent(&st, agent) => {
+                        Exposure::Exclusive { agent } if !Self::is_known_agent(st, agent) => {
                             Some(format!("{agent} is not an agent of this hub"))
                         }
                         _ => None,
@@ -803,11 +830,11 @@ impl Router {
                 if let Some(why) = refusal {
                     warn!(node = %from, receiver, ?mode, "exposure refused: {why}");
                     // The widget goes back to the list as it is.
-                    sender.send(Control::Settings(self.settings_msg(&st)));
+                    sender.send(Control::Settings(self.settings_msg(st)));
                     return;
                 }
                 info!(node = %from, receiver, ?mode, "exposure set by a widget");
-                self.set_exposure(&mut st, receiver, mode);
+                self.set_exposure(st, receiver, mode);
             }
             Control::PairingStart { timeout_s, .. } if kind == NodeKind::Widget => {
                 info!(node = %from, timeout_s, "pairing requested by a widget");
@@ -838,7 +865,7 @@ impl Router {
                 let reason = format!("requested from {}", sender.hello.node_name);
                 warn!(node = %from, name = %sender.hello.node_name, "power-off requested by a widget");
                 // Nothing stays pressed on any PC.
-                self.release_everywhere(&mut st);
+                self.release_everywhere(st);
                 for n in st.nodes.values() {
                     n.send(Control::ShuttingDown {
                         reason: reason.clone(),
@@ -941,19 +968,39 @@ impl Router {
     }
 
     /// Persist the settings and send them to every widget.
-    fn settings_changed(&self, st: &State) {
+    fn settings_changed(&self, st: &mut State) {
         let msg = self.settings_msg(st);
-        if let Some(path) = &st.settings_path {
-            if let Err(e) = crate::settings::save(path, &msg) {
-                warn!("{e:#}");
-            }
-        }
+        st.settings_dirty = st.settings_path.is_some();
         for w in st
             .nodes
             .values()
             .filter(|n| n.hello.kind == NodeKind::Widget)
         {
             w.send(Control::Settings(msg.clone()));
+        }
+    }
+
+    /// Release `state`, then write `settings.toml` if it changed. The
+    /// write holds only `save`, and takes the settings again under it, so
+    /// the last write is always the newest state.
+    fn unlock_and_save(&self, mut guard: MutexGuard<'_, State>) {
+        let dirty = std::mem::take(&mut guard.settings_dirty);
+        drop(guard);
+        if dirty {
+            self.save_settings();
+        }
+    }
+
+    fn save_settings(&self) {
+        let _one_at_a_time = self.save.lock().unwrap_or_else(|e| e.into_inner());
+        let (path, msg) = {
+            let st = self.lock();
+            (st.settings_path.clone(), self.settings_msg(&st))
+        };
+        if let Some(path) = path {
+            if let Err(e) = crate::settings::save(&path, &msg) {
+                warn!("{e:#}");
+            }
         }
     }
 
@@ -1208,22 +1255,25 @@ impl Router {
                 exposures,
                 ..
             } = &mut *st;
+            // An exclusive receiver's keys stay where they are: no release
+            // datagram, and the agent is told not to release them itself.
+            let keep: Vec<u8> = devices
+                .values()
+                .filter(|d| exposures.contains_key(&d.dev.receiver))
+                .map(|d| d.dev.id)
+                .collect();
             if let Some(n) = nodes.get_mut(&old) {
-                // An exclusive receiver's keys stay where they are.
-                for d in devices
-                    .values()
-                    .filter(|d| !exposures.contains_key(&d.dev.receiver))
-                {
+                for d in devices.values().filter(|d| !keep.contains(&d.dev.id)) {
                     for r in &d.release {
                         if let Some(b) = n.datagram(d.dev.id, FLAG_RELEASE_ALL, r) {
                             n.link.send_datagram(b);
                         }
                     }
                 }
-                n.send(Control::Deactivate);
+                n.send(Control::Deactivate { keep: keep.clone() });
             }
             for h in st.nodes.values().filter(|n| n.helps() == Some(old)) {
-                h.send(Control::Deactivate);
+                h.send(Control::Deactivate { keep: keep.clone() });
             }
         }
         st.active = Some(target);
@@ -1261,7 +1311,11 @@ impl Router {
     /// exclusive agent, else to the active agent.
     pub fn on_report(&self, dev_id: u8, report: &[u8]) {
         let mut guard = self.lock();
-        let st = &mut *guard;
+        self.report_locked(&mut guard, dev_id, report);
+        self.unlock_and_save(guard);
+    }
+
+    fn report_locked(&self, st: &mut State, dev_id: u8, report: &[u8]) {
         let Some(dev) = st.devices.get(&dev_id) else {
             return;
         };
@@ -2994,7 +3048,7 @@ mod tests {
     fn exclusive_receiver_goes_only_to_its_agent() {
         let r = two_receivers(None);
         let a = join(&r, NodeKind::Agent).unwrap();
-        let b = join(&r, NodeKind::Agent).unwrap();
+        let mut b = join(&r, NodeKind::Agent).unwrap();
         let mut w = join(&r, NodeKind::Widget).unwrap();
         assert_eq!(r.active(), Some(a.id));
         let names: Vec<_> = exposures(&mut w)
@@ -3032,7 +3086,12 @@ mod tests {
         // Switching to b and back does not touch the exclusive receiver:
         // no release-all for its devices on b.
         force_switch(&r, b.id);
+        b.msgs();
         force_switch(&r, a.id);
+        // b is told to keep the exclusive receiver's keys held.
+        assert!(b
+            .msgs()
+            .contains(&Control::Deactivate { keep: vec![16, 17] }));
         a.link.take();
         let to_b = b.link.take();
         assert!(to_b
@@ -3357,5 +3416,53 @@ mod tests {
         let ids = |n: &TestNode| n.link.take().iter().map(|d| d.0).collect::<Vec<_>>();
         assert_eq!(ids(&a), [0, 0, 1]);
         assert_eq!(ids(&b), [16, 16, 17]);
+    }
+
+    /// The exclusive agent of the HID++ receiver reconnects (with another
+    /// OS): its keyboard layout and LEDs are applied again.
+    #[test]
+    fn exclusive_agent_reconnecting_gets_layout_and_leds_back() {
+        let r = two_receivers(None);
+        let writes: Arc<Mutex<Vec<Vec<u8>>>> = Arc::default();
+        struct W(Arc<Mutex<Vec<Vec<u8>>>>);
+        impl ReportWriter for W {
+            fn write(&self, report: &[u8]) -> bool {
+                self.0.lock().unwrap().push(report.to_vec());
+                true
+            }
+        }
+        r.add_device_with_writer(device(0, BOOT_KEYBOARD), Some(Arc::new(W(writes.clone()))));
+        let _linux = join_os(&r, Os::Linux);
+        let mac = join_os(&r, Os::MacOs);
+        let w = join(&r, NodeKind::Widget).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        r.attach_ctl(tx);
+        assert_eq!(profiles(&rx), [Some(OsKind::Linux)]);
+        r.on_control(
+            w.id,
+            Control::SetExposure {
+                receiver: 0,
+                mode: exclusive(mac.id),
+            },
+        );
+        assert_eq!(profiles(&rx), [Some(OsKind::MacOs)]);
+        r.on_output(mac.id, 0, 0, &[0x02]);
+        r.unregister(mac.id, mac.reg);
+        writes.lock().unwrap().clear();
+
+        let (ctl, _rx) = unbounded_channel();
+        r.register(
+            Hello {
+                node_id: mac.id,
+                node_name: "now Windows".into(),
+                os: Os::Windows,
+                kind: NodeKind::Agent,
+            },
+            Arc::new(FakeLink::default()),
+            ctl,
+        )
+        .unwrap();
+        assert_eq!(profiles(&rx), [Some(OsKind::Windows)]);
+        assert_eq!(*writes.lock().unwrap(), [vec![0x02]]);
     }
 }

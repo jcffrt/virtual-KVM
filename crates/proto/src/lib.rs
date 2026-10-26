@@ -40,7 +40,7 @@ use uuid::Uuid;
 /// * 7: `Shutdown` (widget -> hub) and `ShuttingDown` (hub -> nodes).
 /// * 8: several receivers: [`HidDevice::receiver`], per-receiver
 ///   [`Exposure`] in [`HubSettings::exposures`], `SetExposure` (widget ->
-///   hub), [`HubStatus::held`].
+///   hub), [`HubStatus::held`], `keep` in `Deactivate`.
 pub const PROTO_VERSION: u16 = 8;
 
 /// DNS-SD service type the hub advertises on the LAN.
@@ -449,9 +449,14 @@ pub enum Control {
     Activate {
         entry: Option<Entry>,
     },
-    /// hub -> agent. This node no longer receives input. A "release all"
-    /// datagram for every device precedes this message.
-    Deactivate,
+    /// hub -> agent and its edge helpers. This node no longer receives
+    /// input. A "release all" datagram for every device not in `keep`
+    /// precedes this message, and the agent releases those devices too.
+    /// `keep`: device ids of receivers exposed exclusively (ADR 0030),
+    /// whose keys must stay held.
+    Deactivate {
+        keep: Vec<u8>,
+    },
     /// widget -> hub.
     PairingStart {
         receiver: String,
@@ -516,7 +521,7 @@ impl Control {
             Control::Layout { .. } => "Layout",
             Control::SwitchTo { .. } => "SwitchTo",
             Control::Activate { .. } => "Activate",
-            Control::Deactivate => "Deactivate",
+            Control::Deactivate { .. } => "Deactivate",
             Control::PairingStart { .. } => "PairingStart",
             Control::PairingEvent(_) => "PairingEvent",
             Control::PairingStop => "PairingStop",
@@ -698,7 +703,8 @@ mod tests {
                     scale: Some(1.25),
                 }],
             },
-            Control::Deactivate,
+            Control::Deactivate { keep: vec![] },
+            Control::Deactivate { keep: vec![16, 17] },
             Control::ReceiverDevices {
                 devices: vec![PairedDevice {
                     slot: 1,

@@ -61,8 +61,10 @@ pub trait HidSink {
     fn tick(&mut self, _now: Instant) {}
     /// This node now receives input; place the pointer at the entry edge.
     fn activate(&mut self, _enter_edge: Option<Edge>, _pos_ratio: Option<f32>) {}
-    /// This node no longer receives input.
-    fn deactivate(&mut self) {}
+    /// This node no longer receives input. The core has already sent a
+    /// release report to every device but those in `keep` (exclusive
+    /// receivers, ADR 0030), whose keys must stay held.
+    fn deactivate(&mut self, _keep: &[u8]) {}
     /// Output reports of the virtual devices, forwarded to the hub so the
     /// real keyboard's LEDs show this PC's state. Called once; `None` if
     /// the sink has no way to see them.
@@ -386,6 +388,13 @@ impl Session {
         }
     }
 
+    /// No longer active: release everything but the devices in `keep`.
+    fn deactivate(&mut self, keep: &[u8], sink: &mut dyn HidSink) {
+        self.active = false;
+        self.release_except(keep, sink);
+        sink.deactivate(keep);
+    }
+
     /// Call `devices_ready` if the list has settled by `now`.
     fn poll_ready(&mut self, sink: &mut dyn HidSink, now: Instant) {
         if self.ready_at.is_some_and(|t| now >= t) {
@@ -395,7 +404,12 @@ impl Session {
     }
 
     fn release_all(&self, sink: &mut dyn HidSink) {
-        for (id, reports) in &self.release {
+        self.release_except(&[], sink);
+    }
+
+    /// Release every device but those in `keep`.
+    fn release_except(&self, keep: &[u8], sink: &mut dyn HidSink) {
+        for (id, reports) in self.release.iter().filter(|(id, _)| !keep.contains(id)) {
             for r in reports {
                 let _ = sink.input(*id, r);
             }
@@ -570,11 +584,9 @@ async fn session_inner(
                         s.active = true;
                         sink.activate(enter_edge, pos_ratio);
                     }
-                    Control::Deactivate => {
-                        info!("inactive");
-                        s.active = false;
-                        s.release_all(sink);
-                        sink.deactivate();
+                    Control::Deactivate { keep } => {
+                        info!(?keep, "inactive");
+                        s.deactivate(&keep, sink);
                     }
                     Control::Ping(x) => wire::write_frame(&mut send, &Control::Pong(x)).await?,
                     Control::Pong(x) => s.on_pong(x),

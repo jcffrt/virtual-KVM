@@ -18,7 +18,7 @@ enum Ev {
     DestroyAll,
     Ready,
     Activate,
-    Deactivate,
+    Deactivate(Vec<u8>),
 }
 
 #[derive(Clone, Default)]
@@ -54,8 +54,8 @@ impl HidSink for RecSink {
     fn activate(&mut self, _: Option<Edge>, _: Option<f32>) {
         self.0.lock().unwrap().push(Ev::Activate);
     }
-    fn deactivate(&mut self) {
-        self.0.lock().unwrap().push(Ev::Deactivate);
+    fn deactivate(&mut self, keep: &[u8]) {
+        self.0.lock().unwrap().push(Ev::Deactivate(keep.to_vec()));
     }
 }
 
@@ -750,4 +750,31 @@ async fn output_reports_reach_the_receiver() {
     }
     assert_eq!(written(), [vec![0x00], vec![0x02]], "test timed out");
     let _ = std::fs::remove_dir_all(&hub.dir);
+}
+
+/// `Deactivate { keep }` (ADR 0030): the devices of an exclusive receiver
+/// keep their keys; the others are released.
+#[test]
+fn deactivate_keeps_the_exclusive_devices() {
+    let events: Arc<Mutex<Vec<Ev>>> = Arc::default();
+    let sink = RecSink(events.clone(), Duration::ZERO);
+    let mut rec = RecSink(events, Duration::ZERO);
+    let mut s = Session::new();
+    s.set_devices(vec![hid(0), hid(16)], &mut rec, Instant::now());
+    s.active = true;
+    sink.0.lock().unwrap().clear();
+
+    s.deactivate(&[16], &mut rec);
+    assert!(!s.active);
+    let ev = sink.events();
+    assert!(ev.iter().any(|e| matches!(e, Ev::Input(0, _))));
+    assert!(!ev.iter().any(|e| matches!(e, Ev::Input(16, _))));
+    assert_eq!(ev.last(), Some(&Ev::Deactivate(vec![16])));
+
+    // Without anything to keep, everything is released.
+    sink.0.lock().unwrap().clear();
+    s.deactivate(&[], &mut rec);
+    let ev = sink.events();
+    assert!(ev.iter().any(|e| matches!(e, Ev::Input(0, _))));
+    assert!(ev.iter().any(|e| matches!(e, Ev::Input(16, _))));
 }

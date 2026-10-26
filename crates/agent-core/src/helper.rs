@@ -111,7 +111,7 @@ async fn session(
                             platform.warp(p);
                         }
                     }
-                    Control::Deactivate => {
+                    Control::Deactivate { .. } => {
                         let to = sw.deactivate(platform.pointer());
                         info!(?to, "inactive; pointer parked");
                         if let Some(p) = to {

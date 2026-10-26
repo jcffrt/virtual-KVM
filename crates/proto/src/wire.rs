@@ -94,10 +94,15 @@ mod tests {
     async fn async_roundtrip() {
         let (mut a, mut b) = tokio::io::duplex(1024);
         write_frame(&mut a, &Control::Pong(9)).await.unwrap();
-        write_frame(&mut a, &Control::Deactivate).await.unwrap();
+        write_frame(&mut a, &Control::Deactivate { keep: vec![] })
+            .await
+            .unwrap();
         drop(a);
         assert_eq!(read_frame(&mut b).await.unwrap(), Some(Control::Pong(9)));
-        assert_eq!(read_frame(&mut b).await.unwrap(), Some(Control::Deactivate));
+        assert_eq!(
+            read_frame(&mut b).await.unwrap(),
+            Some(Control::Deactivate { keep: vec![] })
+        );
         assert_eq!(read_frame(&mut b).await.unwrap(), None);
     }
 }

@@ -207,7 +207,13 @@ impl HidSink for KarabinerSink {
         debug!(?enter_edge, ?pos_ratio, "activate");
     }
 
-    fn deactivate(&mut self) {
+    fn deactivate(&mut self, keep: &[u8]) {
+        // With devices to keep (an exclusive receiver, ADR 0030) the core's
+        // per-device release reports already went through the mapper; a
+        // global release would drop the kept keys too.
+        if !keep.is_empty() {
+            return;
+        }
         let out = self.mapper.release_all();
         self.resync = false;
         self.deliver(out);
