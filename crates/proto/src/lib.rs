@@ -43,7 +43,10 @@ use uuid::Uuid;
 ///   hub), [`HubStatus::held`], `keep` in `Deactivate`.
 /// * 9: `Unexposed` (agent -> hub) and [`NodeInfo::unexposed`]: devices a
 ///   USB gadget could not present (ADR 0031).
-pub const PROTO_VERSION: u16 = 9;
+/// * 10: receivers added and removed from the widget (ADR 0032):
+///   `UnclaimedReceivers` (hub -> widgets), `AddReceiver` and
+///   `RemoveReceiver` (widget -> hub), `ReceiverResult` (hub -> widget).
+pub const PROTO_VERSION: u16 = 10;
 
 /// DNS-SD service type the hub advertises on the LAN.
 pub const SERVICE_TYPE: &str = "_rawkvm._udp.local.";
@@ -107,6 +110,31 @@ pub struct HidDevice {
     /// Receiver this interface belongs to: the index of its `[[receiver]]`
     /// block in the hub config (0 for the first).
     pub receiver: u8,
+}
+
+/// What a USB HID device carries, from its report descriptors.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum DeviceKind {
+    Keyboard,
+    Mouse,
+    /// Neither: consumer keys, vendor collections...
+    Other,
+}
+
+/// A USB HID device plugged into the hub's board that no `[[receiver]]`
+/// block matches (ADR 0032). The hub never takes it on its own; a widget
+/// may add it with `AddReceiver`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct UnclaimedReceiver {
+    pub vid: u16,
+    pub pid: u16,
+    /// Product name, as the kernel reports it.
+    pub name: String,
+    pub serial: Option<String>,
+    /// Its HID interfaces (hidraw nodes).
+    pub interfaces: u8,
+    /// What those interfaces carry, sorted, without repetitions.
+    pub kinds: Vec<DeviceKind>,
 }
 
 /// Screen edge, in the coordinate system of the node that owns the screen.
@@ -518,6 +546,28 @@ pub enum Control {
     Unexposed {
         devices: Vec<u8>,
     },
+    /// hub -> widgets, on connect and on change. USB HID devices on the
+    /// hub's board that no receiver block matches.
+    UnclaimedReceivers {
+        receivers: Vec<UnclaimedReceiver>,
+    },
+    /// widget -> hub. Add a `[[receiver]]` block for that unclaimed device
+    /// (only that product) and open it now. Answered with `ReceiverResult`;
+    /// on success `Settings` (and soon `DeviceList`) reach every node.
+    AddReceiver {
+        vid: u16,
+        pid: u16,
+    },
+    /// widget -> hub. Close a receiver and remove its block and exposure.
+    /// Refused for the last one. Answered with `ReceiverResult`.
+    RemoveReceiver {
+        receiver: u8,
+    },
+    /// hub -> the widget that sent `AddReceiver` / `RemoveReceiver`.
+    ReceiverResult {
+        ok: bool,
+        message: String,
+    },
 }
 
 impl Control {
@@ -548,6 +598,10 @@ impl Control {
             Control::ShuttingDown { .. } => "ShuttingDown",
             Control::SetExposure { .. } => "SetExposure",
             Control::Unexposed { .. } => "Unexposed",
+            Control::UnclaimedReceivers { .. } => "UnclaimedReceivers",
+            Control::AddReceiver { .. } => "AddReceiver",
+            Control::RemoveReceiver { .. } => "RemoveReceiver",
+            Control::ReceiverResult { .. } => "ReceiverResult",
         }
     }
 }
@@ -687,6 +741,25 @@ mod tests {
                 mode: Exposure::Network,
             },
             Control::Unexposed { devices: vec![2] },
+            Control::UnclaimedReceivers {
+                receivers: vec![UnclaimedReceiver {
+                    vid: 0x25a7,
+                    pid: 0xfa09,
+                    name: "Compx 2.4G Receiver".into(),
+                    serial: None,
+                    interfaces: 2,
+                    kinds: vec![DeviceKind::Keyboard, DeviceKind::Mouse],
+                }],
+            },
+            Control::AddReceiver {
+                vid: 0x25a7,
+                pid: 0xfa09,
+            },
+            Control::RemoveReceiver { receiver: 1 },
+            Control::ReceiverResult {
+                ok: false,
+                message: "it is the last receiver".into(),
+            },
             Control::Hello {
                 proto_ver: PROTO_VERSION,
                 node_id: Uuid::new_v4(),

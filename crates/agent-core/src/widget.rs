@@ -51,6 +51,12 @@ pub struct WidgetState {
     pub pairing_until_ms: Option<u64>,
     /// The last pairing event.
     pub pairing_last: Option<PairingEvent>,
+    /// USB HID devices on the hub's board no receiver block matches
+    /// (ADR 0032).
+    pub unclaimed: Vec<proto::UnclaimedReceiver>,
+    /// The hub's answer to the last `AddReceiver` / `RemoveReceiver`:
+    /// (ok, message).
+    pub receiver_result: Option<(bool, String)>,
     pub rtt_ms: Option<f64>,
 }
 
@@ -92,6 +98,10 @@ impl WidgetState {
             Control::Settings(s) => self.settings = Some(s.clone()),
             Control::DeviceList { devices } => self.devices = devices.clone(),
             Control::ReceiverDevices { devices } => self.paired_devices = Some(devices.clone()),
+            Control::UnclaimedReceivers { receivers } => self.unclaimed = receivers.clone(),
+            Control::ReceiverResult { ok, message } => {
+                self.receiver_result = Some((*ok, message.clone()))
+            }
             Control::PairingEvent(e) => {
                 match e {
                     PairingEvent::Started { timeout_s } => {
@@ -132,6 +142,12 @@ impl WidgetShared {
             *st = WidgetState::default();
             true
         });
+    }
+
+    /// Forget the answer to the previous receiver change, before asking
+    /// for a new one.
+    pub fn clear_receiver_result(&self) {
+        self.update(|st| st.receiver_result.take().is_some());
     }
 
     /// Tell the UI to redraw (the config it shows next to the state changed).
@@ -353,5 +369,22 @@ mod tests {
         assert_eq!(st.pairing_last, Some(PairingEvent::TimedOut));
         assert!(st.apply(&Control::ReceiverDevices { devices: vec![] }));
         assert_eq!(st.paired_devices, Some(vec![]));
+        let u = proto::UnclaimedReceiver {
+            vid: 0x25a7,
+            pid: 0xfa09,
+            name: "Compx".into(),
+            serial: None,
+            interfaces: 2,
+            kinds: vec![proto::DeviceKind::Mouse],
+        };
+        assert!(st.apply(&Control::UnclaimedReceivers {
+            receivers: vec![u.clone()]
+        }));
+        assert_eq!(st.unclaimed, [u]);
+        assert!(st.apply(&Control::ReceiverResult {
+            ok: false,
+            message: "overlap".into()
+        }));
+        assert_eq!(st.receiver_result, Some((false, "overlap".into())));
     }
 }
