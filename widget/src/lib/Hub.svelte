@@ -14,6 +14,37 @@
   // A receiver was added or removed from this window: show the hub's answer.
   let receiverAsked = $state(false);
 
+  // Bluetooth bridges (ADR 0033): the hub says the seconds of pairing left
+  // when the bridge reported them; count down from there. Keyed by the
+  // value, so a status resent for another reason does not restart it.
+  let btDeadline = {};
+  let now = $state(Date.now());
+  $effect(() => {
+    if (!view.nodes.some((n) => n.bridge?.discoverable_secs)) return;
+    const t = setInterval(() => (now = Date.now()), 500);
+    return () => clearInterval(t);
+  });
+  function btLeft(n) {
+    const secs = n.bridge?.discoverable_secs;
+    if (!secs) {
+      delete btDeadline[n.id];
+      return 0;
+    }
+    const d = btDeadline[n.id];
+    if (!d || d.secs !== secs) btDeadline[n.id] = { secs, until: Date.now() + secs * 1000 };
+    return Math.max(0, Math.ceil((btDeadline[n.id].until - now) / 1000));
+  }
+  let confirmBtForget = $state(null);
+  async function bt(cmd, args) {
+    message = '';
+    confirmBtForget = null;
+    try {
+      await invoke(cmd, args);
+    } catch (e) {
+      message = String(e);
+    }
+  }
+
   async function addReceiver(u) {
     message = '';
     receiverAsked = true;
@@ -100,7 +131,9 @@
 
   // Connected agents, plus the exclusive one of `e` if it is not connected.
   function exposureTargets(e) {
-    const agents = view.nodes.filter((n) => n.role === 'agent').map((n) => ({ id: n.id, name: n.name }));
+    const agents = view.nodes
+      .filter((n) => n.role === 'agent')
+      .map((n) => ({ id: n.id, name: n.is_bridge ? `${n.name} (Bluetooth)` : n.name }));
     if (e.agent && !agents.some((a) => a.id === e.agent)) {
       agents.push({ id: e.agent, name: `${e.agent_name ?? e.agent.slice(0, 8)} (desconectado)` });
     }
@@ -163,8 +196,8 @@
     </thead>
     <tbody>
       {#each view.nodes as n (n.id)}
-        <tr class:grey={n.role === 'agent' && !n.has_helper} class:active={n.active}>
-          <td>{n.role === 'agent' ? n.index : ''}</td>
+        <tr class:grey={n.role === 'agent' && !n.has_helper && !n.is_bridge} class:active={n.active}>
+          <td>{n.role === 'agent' && !n.is_bridge ? n.index : ''}</td>
           <td>
             {n.name}{#if n.active} <span class="badge">activo</span>{/if}
             {#if n.unexposed.length > 0}
@@ -172,17 +205,48 @@
                 No llegan a su PC por USB: {n.unexposed.join('; ')}
               </div>
             {/if}
+            {#if n.is_bridge}
+              <div class="small">
+                {#if n.bridge?.bonded}
+                  PC: {n.bridge.bonded}
+                  {#if n.bridge.connected}<span class="badge">conectado</span>{:else}<span class="muted"> · sin conexión</span>{/if}
+                {:else}
+                  <span class="muted">Sin PC emparejado</span>
+                {/if}
+              </div>
+              {#if n.bridge?.repair_needed}
+                <div class="bad small">
+                  Han cambiado los dispositivos de este puente: en el PC, quita «{n.name}» de Bluetooth y vuelve a emparejarlo. Hasta entonces no llega la entrada.
+                </div>
+              {/if}
+              <div class="row small">
+                {#if btLeft(n) > 0}
+                  <span>Visible para emparejar: {btLeft(n)} s</span>
+                  <button onclick={() => bt('bt_discoverable', { node: n.id, secs: 0 })}>Parar</button>
+                {:else}
+                  <button onclick={() => bt('bt_discoverable', { node: n.id, secs: 60 })} disabled={!view.connected}>Hacer visible 60 s</button>
+                {/if}
+                {#if n.bridge?.bonded}
+                  {#if confirmBtForget === n.id}
+                    <button onclick={() => (confirmBtForget = null)}>Cancelar</button>
+                    <button class="primary" onclick={() => bt('bt_forget', { node: n.id })}>Olvidar</button>
+                  {:else}
+                    <button onclick={() => (confirmBtForget = n.id)} disabled={!view.connected}>Olvidar PC</button>
+                  {/if}
+                {/if}
+              </div>
+            {/if}
           </td>
           <td>{n.os}</td>
           <td>
             {roleLabel[n.role]}{#if n.helper_of} de {n.helper_of}{/if}
-            {#if n.role === 'agent' && !n.has_helper}<span class="muted"> · sin helper</span>{/if}
+            {#if n.is_bridge}<span class="muted"> · puente Bluetooth</span>{:else if n.role === 'agent' && !n.has_helper}<span class="muted"> · sin helper</span>{/if}
           </td>
-          <td>{n.role === 'agent' ? n.screens : ''}</td>
+          <td>{n.role === 'agent' && !n.is_bridge ? n.screens : ''}</td>
           <td>{n.rtt_ms != null ? `${n.rtt_ms.toFixed(0)} ms` : ''}</td>
           <td class="mono muted">{n.role === 'agent' && view.hotkey && n.index >= 1 && n.index <= 4 ? `${view.hotkey}, ${n.index}` : ''}</td>
           <td>
-            {#if n.role === 'agent' && !n.active && view.connected}
+            {#if n.role === 'agent' && !n.is_bridge && !n.active && view.connected}
               <button onclick={() => switchTo(n.id)}>Usar</button>
             {/if}
           </td>

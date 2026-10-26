@@ -383,6 +383,21 @@ pub struct NodeView {
     /// Interfaces this agent cannot present to its PC (a USB gadget with
     /// more interfaces than the kernel allows, ADR 0031), as labels.
     pub unexposed: Vec<String>,
+    /// A Bluetooth bridge (ADR 0033): its PC and pairing state. `None` for
+    /// other nodes, and for a bridge that has not said its state yet.
+    pub bridge: Option<BridgeView>,
+    pub is_bridge: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct BridgeView {
+    /// The bonded PC, or None.
+    pub bonded: Option<String>,
+    pub connected: bool,
+    /// Seconds of pairing left when the hub last heard (the front end
+    /// counts down).
+    pub discoverable_secs: Option<u32>,
+    pub repair_needed: bool,
 }
 
 fn os_name(os: Os) -> &'static str {
@@ -427,6 +442,13 @@ pub fn view(st: &WidgetState, cfg: &AgentConfig) -> View {
                 active: Some(n.node_id) == active,
                 rtt_ms: n.rtt_ms,
                 unexposed: n.unexposed.iter().map(|&id| device_label(st, id)).collect(),
+                bridge: n.bridge.as_ref().map(|b| BridgeView {
+                    bonded: b.bonded.clone(),
+                    connected: b.connected,
+                    discoverable_secs: b.discoverable_secs,
+                    repair_needed: b.repair_needed,
+                }),
+                is_bridge: n.kind == NodeKind::Agent && n.os == Os::Bridge,
             }
         })
         .collect();
@@ -538,6 +560,40 @@ mod tests {
             unexposed: Vec::new(),
             bridge: None,
         }
+    }
+
+    #[test]
+    fn a_bridge_shows_its_pc() {
+        let mut bridge = info("puente", NodeKind::Agent, 0, 0, Os::Bridge);
+        bridge.bridge = Some(proto::BridgeStatus {
+            bonded: Some("GAMER".into()),
+            connected: false,
+            discoverable_secs: Some(42),
+            repair_needed: true,
+        });
+        let mac = info("MacBook", NodeKind::Agent, 1, 2, Os::MacOs);
+        let st = WidgetState {
+            status: Some(HubStatus {
+                hub_name: "hub".into(),
+                active: Some(mac.node_id),
+                nodes: vec![bridge, mac],
+                device_count: 0,
+                uptime_s: 1,
+                version: String::new(),
+                held: Vec::new(),
+            }),
+            ..Default::default()
+        };
+        let v = view(&st, &AgentConfig::default());
+        let b = v.nodes.iter().find(|n| n.name == "puente").unwrap();
+        assert!(b.is_bridge);
+        assert_eq!(b.os, "puente Bluetooth");
+        let bv = b.bridge.as_ref().unwrap();
+        assert_eq!(bv.bonded.as_deref(), Some("GAMER"));
+        assert_eq!(bv.discoverable_secs, Some(42));
+        assert!(bv.repair_needed && !bv.connected);
+        let m = v.nodes.iter().find(|n| n.name == "MacBook").unwrap();
+        assert!(!m.is_bridge && m.bridge.is_none());
     }
 
     #[test]

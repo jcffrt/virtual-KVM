@@ -450,6 +450,24 @@ fn set_exposure(
     state.send(Control::SetExposure { receiver, mode })
 }
 
+/// Open pairing on a Bluetooth bridge for `secs` (0: close), ADR 0033.
+#[tauri::command]
+fn bt_discoverable(
+    state: tauri::State<'_, Arc<AppState>>,
+    node: Uuid,
+    secs: u8,
+) -> Result<(), String> {
+    info!(%node, secs, "bridge pairing");
+    state.send(Control::BtDiscoverable { node, secs })
+}
+
+/// Make a Bluetooth bridge forget the PC it is bonded with.
+#[tauri::command]
+fn bt_forget(state: tauri::State<'_, Arc<AppState>>, node: Uuid) -> Result<(), String> {
+    info!(%node, "bridge: forget the PC");
+    state.send(Control::BtForget { node })
+}
+
 /// Take an unclaimed USB device of the hub's board as a receiver
 /// (ADR 0032); the hub answers with `ReceiverResult`.
 #[tauri::command]
@@ -807,6 +825,8 @@ pub fn run() {
             canvas_reset,
             set_settings,
             set_exposure,
+            bt_discoverable,
+            bt_forget,
             add_receiver,
             remove_receiver,
             set_edge_options,
