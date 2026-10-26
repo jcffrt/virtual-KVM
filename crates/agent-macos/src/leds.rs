@@ -7,8 +7,8 @@
 //! Karabiner-Elements reads it the same way: it opens the virtual keyboard
 //! with IOHIDManager, not seized, and watches page 0x08 values. A thread
 //! here does that and turns the state into a boot keyboard LED byte (bit 0
-//! Num Lock, bit 1 Caps Lock, bit 2 Scroll Lock) for the receiver's
-//! keyboard interface.
+//! Num Lock, bit 1 Caps Lock, bit 2 Scroll Lock) for every keyboard
+//! interface of the hub's receivers, as macOS does with its own keyboards.
 //!
 //! Opening a keyboard needs Input Monitoring (TCC) approval for the agent
 //! binary; without it the open fails and only a warning is logged. The
@@ -30,8 +30,9 @@ const PRODUCT_PREFIX: &str = "Karabiner DriverKit VirtualHIDKeyboard";
 const USAGE_PAGE_LEDS: u32 = 0x08;
 const RESCAN: Duration = Duration::from_secs(5);
 
-/// The hub device and report ID of the receiver's keyboard LED report.
-pub type Target = Arc<Mutex<Option<(u8, Option<u8>)>>>;
+/// The hub devices and report IDs of the keyboard LED reports: one per
+/// receiver keyboard (with two receivers, the last one used to win alone).
+pub type Target = Arc<Mutex<Vec<(u8, Option<u8>)>>>;
 
 /// The keyboard LED output report of `dev`, if it has one: one byte on a
 /// keyboard application collection.
@@ -107,8 +108,12 @@ impl Ctx {
         }
         *leds = new;
         debug!(leds = new, "Mac keyboard LEDs");
-        let target = *self.target.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(t) = target {
+        let targets = self
+            .target
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        for t in targets {
             let _ = self.tx.send(report(t, new));
         }
     }
@@ -394,7 +399,7 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let ctx = Ctx {
             tx,
-            target: Arc::new(Mutex::new(Some((0, None)))),
+            target: Arc::new(Mutex::new(vec![(0, None)])),
             leds: Mutex::new(0),
         };
         ctx.on_value(USAGE_PAGE_LEDS, 2, 1);
@@ -405,5 +410,14 @@ mod tests {
             .map(|o| o.report)
             .collect();
         assert_eq!(got, [vec![0x02], vec![0x00]]);
+
+        // Two receivers (Logitech id 0, Compx id 16 with report ID 1): both
+        // keyboards get the LEDs, not only the last one listed.
+        *ctx.target.lock().unwrap() = vec![(0, None), (16, Some(1))];
+        ctx.on_value(USAGE_PAGE_LEDS, 2, 1);
+        let got: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok())
+            .map(|o| (o.dev_id, o.report))
+            .collect();
+        assert_eq!(got, [(0, vec![0x02]), (16, vec![1, 0x02])]);
     }
 }

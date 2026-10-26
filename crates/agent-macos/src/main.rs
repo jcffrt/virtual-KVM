@@ -148,9 +148,11 @@ impl HidSink for KarabinerSink {
     fn create(&mut self, dev: &HidDevice) -> Result<()> {
         self.mapper.add_device(dev);
         self.devices.push(dev.clone());
-        if let Some(t) = leds::led_report(dev) {
-            *self.led_target.lock().unwrap_or_else(|e| e.into_inner()) = Some(t);
-        }
+        // Every keyboard of the list gets the LEDs. Rebuilt from the list
+        // being created; kept across a disconnection (agent-core drops
+        // reports for devices it no longer has).
+        *self.led_target.lock().unwrap_or_else(|e| e.into_inner()) =
+            self.devices.iter().filter_map(leds::led_report).collect();
         if let (Some(vhid), Some((vid, pid))) =
             (&self.vhid, Mapper::keyboard_identity(&self.devices))
         {
