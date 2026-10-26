@@ -204,6 +204,17 @@ struct OpenIface {
     receiver: usize,
     /// Set when that block is removed: the reader thread ends.
     stop: Arc<AtomicBool>,
+    /// The receiver's HID++/DJ interface.
+    dj: bool,
+    /// Opened with HID++ (it was the first Logitech block then).
+    hidpp: bool,
+}
+
+/// Close (to reopen with HID++) a DJ interface opened without it whose
+/// block is now the first Logitech one: the one before was removed from
+/// the widget (ADR 0032).
+fn needs_hidpp_reopen(o: &OpenIface, hidpp_receiver: Option<usize>) -> bool {
+    o.dj && !o.hidpp && hidpp_receiver == Some(o.receiver)
 }
 
 /// Grab the evdev nodes of `iface` not grabbed yet. They may appear a moment
@@ -251,6 +262,10 @@ fn scan_loop(router: Arc<Router>) {
             {
                 info!("closing {phys}: its receiver was removed");
                 ids.remove(phys);
+            } else if needs_hidpp_reopen(o, hidpp_receiver) && !o.stop.swap(true, Ordering::Relaxed)
+            {
+                // Same block, same phys: it keeps its id.
+                info!("reopening {phys} with HID++: its receiver is now the first Logitech one");
             }
         }
         let found = match hidraw::enumerate() {
@@ -324,10 +339,14 @@ fn scan_loop(router: Arc<Router>) {
                 );
             }
             let stop = Arc::new(AtomicBool::new(false));
+            let dj = receiver::is_dj_interface(&DescriptorInfo::parse(&iface.descriptor));
+            let with_hidpp = dj && hidpp_receiver == Some(r);
             let mut o = OpenIface {
                 grabs: HashMap::new(),
                 receiver: r,
                 stop: stop.clone(),
+                dj,
+                hidpp: with_hidpp,
             };
             if m.grab_evdev {
                 grab_new(&iface, &mut o.grabs);
@@ -350,11 +369,10 @@ fn scan_loop(router: Arc<Router>) {
                 .map_err(|e| warn!("{}: no output reports: {e}", iface.hidraw.display()))
                 .ok();
             // The HID++ interface: our requests' replies stay in the hub.
-            let hidpp = (hidpp_receiver == Some(r)
-                && receiver::is_dj_interface(&DescriptorInfo::parse(&iface.descriptor)))
-            .then(|| writer.clone())
-            .flatten()
-            .map(|w| Arc::new(Hidpp::new(w)));
+            let hidpp = with_hidpp
+                .then(|| writer.clone())
+                .flatten()
+                .map(|w| Arc::new(Hidpp::new(w)));
             if let Some(h) = &hidpp {
                 router.attach_receiver(h.clone(), r as u8);
             }
@@ -507,5 +525,22 @@ mod tests {
             Some(17)
         );
         assert_eq!(to_hid_device(&other(1), 17, 1).receiver, 1);
+    }
+
+    #[test]
+    fn hidpp_moves_to_the_next_logitech_receiver() {
+        let open = |receiver, dj, hidpp| OpenIface {
+            grabs: HashMap::new(),
+            receiver,
+            stop: Arc::default(),
+            dj,
+            hidpp,
+        };
+        // The first Logitech block (0) was removed: block 2 is now first.
+        assert!(needs_hidpp_reopen(&open(2, true, false), Some(2)));
+        assert!(!needs_hidpp_reopen(&open(2, true, true), Some(2)));
+        assert!(!needs_hidpp_reopen(&open(2, false, false), Some(2)));
+        assert!(!needs_hidpp_reopen(&open(3, true, false), Some(2)));
+        assert!(!needs_hidpp_reopen(&open(2, true, false), None));
     }
 }

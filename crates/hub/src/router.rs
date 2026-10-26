@@ -460,6 +460,8 @@ impl Router {
 
     /// The HID++ interface closed (receiver unplugged).
     pub fn detach_receiver(&self) {
+        // Until the scan thread attaches the next one (ADR 0032).
+        self.lock().hidpp_receiver = None;
         self.set_hidpp(None);
         self.ctl.lock().unwrap_or_else(|e| e.into_inner()).take();
         self.set_receiver_devices(Vec::new());
