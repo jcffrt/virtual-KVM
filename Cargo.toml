@@ -10,6 +10,7 @@ members = [
     "crates/agent-windows",
     "crates/edge-windows",
     "crates/agent-gadget",
+    "crates/agent-bt",
 ]
 # The widget (Tauri) is its own workspace: widget/src-tauri.
 exclude = ["widget"]

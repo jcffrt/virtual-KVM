@@ -1,0 +1,28 @@
+[package]
+name = "rawkvm-agent-bt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "RawKVM agent that presents a receiver of the hub to one PC as a Bluetooth keyboard and mouse"
+
+[lib]
+name = "rawkvm_agent_bt"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rawkvm-bt-poc"
+path = "src/bin/poc.rs"
+
+[dependencies]
+proto.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+bluer = { version = "0.17", features = ["bluetoothd", "l2cap", "rfcomm"] }
+# libdbus built from source: the binary is static (musl), like the hub.
+dbus = { version = "0.9", features = ["vendored"] }
