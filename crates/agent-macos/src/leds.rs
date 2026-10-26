@@ -13,6 +13,14 @@
 //! Opening a keyboard needs Input Monitoring (TCC) approval for the agent
 //! binary; without it the open fails and only a warning is logged. The
 //! state is known from the first change after the open.
+//!
+//! Karabiner creates the virtual keyboard again whenever its parameters
+//! change, and the agent changes them as soon as it gets the hub's device
+//! list (the keyboard takes the receiver's vid and pid). The watcher must
+//! follow the new device: every few seconds it enumerates the HID devices
+//! with a fresh IOHIDManager (an unscheduled manager keeps returning the
+//! set it saw first) and compares registry entry ids. Watching the first
+//! keyboard only, it stayed on a dead device and never saw an LED.
 // Off macOS only the stub of `ffi` is built.
 #![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 
@@ -89,6 +97,26 @@ pub fn spawn(tx: OutputSender, target: Target) {
     }
 }
 
+/// What the watcher does after a scan, from the registry entry id of the
+/// device it watches and the one it found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Step {
+    Keep,
+    /// The device is gone: stop watching it.
+    Close,
+    /// Watch the found device (closing the current one, if any).
+    Open(u64),
+}
+
+fn step(current: Option<u64>, found: Option<u64>) -> Step {
+    match (current, found) {
+        (Some(c), Some(f)) if c == f => Step::Keep,
+        (_, Some(f)) => Step::Open(f),
+        (Some(_), None) => Step::Close,
+        (None, None) => Step::Keep,
+    }
+}
+
 /// What the input value callback needs; lives as long as the thread.
 struct Ctx {
     tx: OutputSender,
@@ -97,6 +125,11 @@ struct Ctx {
 }
 
 impl Ctx {
+    /// A new virtual keyboard: its LEDs are unknown until macOS sets them.
+    fn forget(&self) {
+        *self.leds.lock().unwrap_or_else(|e| e.into_inner()) = 0;
+    }
+
     fn on_value(&self, usage_page: u32, usage: u32, value: isize) {
         if usage_page != USAGE_PAGE_LEDS {
             return;
@@ -152,6 +185,8 @@ mod ffi {
         fn IOHIDManagerCreate(allocator: *const c_void, options: u32) -> Ref;
         fn IOHIDManagerSetDeviceMatching(manager: Ref, matching: *const c_void);
         fn IOHIDManagerCopyDevices(manager: Ref) -> Ref;
+        fn IOHIDDeviceGetService(device: Ref) -> u32;
+        fn IORegistryEntryGetRegistryEntryID(entry: u32, id: *mut u64) -> i32;
         fn IOHIDDeviceGetProperty(device: Ref, key: *const c_void) -> *const c_void;
         fn IOHIDDeviceOpen(device: Ref, options: u32) -> IOReturn;
         fn IOHIDDeviceClose(device: Ref, options: u32) -> IOReturn;
@@ -175,7 +210,6 @@ mod ffi {
         fn CFRetain(cf: *const c_void) -> *const c_void;
         fn CFSetGetCount(set: *const c_void) -> CFIndex;
         fn CFSetGetValues(set: *const c_void, values: *mut *const c_void);
-        fn CFSetContainsValue(set: *const c_void, value: *const c_void) -> u8;
         fn CFGetTypeID(cf: *const c_void) -> usize;
         fn CFStringGetTypeID() -> usize;
         fn CFStringCreateWithCString(
@@ -267,6 +301,59 @@ mod ffi {
         ctx.on_value(page, usage, v);
     }
 
+    /// The registry entry id of `device`, which tells two incarnations of
+    /// the virtual keyboard apart.
+    fn registry_id(device: Ref) -> Option<u64> {
+        let mut id = 0u64;
+        // SAFETY: valid device; the service is not retained (get rule).
+        let r =
+            unsafe { IORegistryEntryGetRegistryEntryID(IOHIDDeviceGetService(device), &mut id) };
+        (r == 0).then_some(id)
+    }
+
+    /// The Karabiner virtual keyboard now, retained, with its registry id:
+    /// enumerated with a fresh manager every time.
+    fn find_keyboard(manufacturer: &CfStr, product: &CfStr) -> Option<(Ref, u64)> {
+        // SAFETY: plain IOKit calls; manager and set are released below.
+        let manager = unsafe { IOHIDManagerCreate(std::ptr::null(), 0) };
+        if manager.is_null() {
+            return None;
+        }
+        // SAFETY: null matching = every HID device; filtered below.
+        unsafe { IOHIDManagerSetDeviceMatching(manager, std::ptr::null()) };
+        // SAFETY: the set is owned by us and released below.
+        let set = unsafe { IOHIDManagerCopyDevices(manager) };
+        let mut found = None;
+        if !set.is_null() {
+            // SAFETY: valid set; the buffer has room for every value.
+            let devices = unsafe {
+                let n = CFSetGetCount(set).max(0) as usize;
+                let mut v = vec![std::ptr::null::<c_void>(); n];
+                CFSetGetValues(set, v.as_mut_ptr());
+                v
+            };
+            found = devices
+                .into_iter()
+                .map(|d| d as Ref)
+                .filter(|&d| {
+                    string_property(d, manufacturer).as_deref() == Some(MANUFACTURER)
+                        && string_property(d, product)
+                            .is_some_and(|p| p.starts_with(PRODUCT_PREFIX))
+                })
+                .find_map(|d| registry_id(d).map(|id| (d, id)))
+                .map(|(d, id)| {
+                    // SAFETY: keep it beyond the set and the manager.
+                    unsafe { CFRetain(d) };
+                    (d, id)
+                });
+            // SAFETY: copied above.
+            unsafe { CFRelease(set) };
+        }
+        // SAFETY: created above.
+        unsafe { CFRelease(manager) };
+        found
+    }
+
     pub(super) fn run(tx: OutputSender, target: Target) {
         let ctx: &'static Ctx = Box::leak(Box::new(Ctx {
             tx,
@@ -275,55 +362,45 @@ mod ffi {
         }));
         let manufacturer = CfStr::new("Manufacturer");
         let product = CfStr::new("Product");
-        // SAFETY: plain IOKit calls; the manager lives as long as the thread.
-        let manager = unsafe { IOHIDManagerCreate(std::ptr::null(), 0) };
-        if manager.is_null() {
-            warn!("keyboard LEDs not watched: IOHIDManagerCreate failed");
-            return;
-        }
-        // SAFETY: null matching = every HID device; filtered below.
-        unsafe { IOHIDManagerSetDeviceMatching(manager, std::ptr::null()) };
         // SAFETY: the current thread's run loop and the default mode.
         let (run_loop, mode) = unsafe { (CFRunLoopGetCurrent(), kCFRunLoopDefaultMode) };
-        let mut current: Option<Ref> = None;
+        // The device watched, retained and scheduled, and its registry id.
+        let mut current: Option<(Ref, u64)> = None;
         let mut warned = false;
         loop {
-            // SAFETY: the set is owned by us and released below.
-            let set = unsafe { IOHIDManagerCopyDevices(manager) };
-            if let Some(d) = current {
-                // SAFETY: valid set (or null) and device.
-                let present = !set.is_null() && unsafe { CFSetContainsValue(set, d) } != 0;
-                if !present {
-                    info!("the Karabiner virtual keyboard is gone");
+            let mut found = find_keyboard(&manufacturer, &product);
+            let close_current = |current: &mut Option<(Ref, u64)>| {
+                if let Some((d, _)) = current.take() {
                     // SAFETY: d was opened, scheduled and retained by us.
                     unsafe {
                         IOHIDDeviceUnscheduleFromRunLoop(d, run_loop, mode);
                         IOHIDDeviceClose(d, K_IOHID_OPTIONS_TYPE_NONE);
                         CFRelease(d);
                     }
-                    current = None;
                 }
-            }
-            if current.is_none() && !set.is_null() {
-                // SAFETY: valid set; the buffer has room for every value.
-                let devices = unsafe {
-                    let n = CFSetGetCount(set).max(0) as usize;
-                    let mut v = vec![std::ptr::null::<c_void>(); n];
-                    CFSetGetValues(set, v.as_mut_ptr());
-                    v
-                };
-                let found = devices.into_iter().map(|d| d as Ref).find(|&d| {
-                    string_property(d, &manufacturer).as_deref() == Some(MANUFACTURER)
-                        && string_property(d, &product)
-                            .is_some_and(|p| p.starts_with(PRODUCT_PREFIX))
-                });
-                if let Some(d) = found {
+            };
+            match step(current.map(|c| c.1), found.map(|f| f.1)) {
+                Step::Keep => {}
+                Step::Close => {
+                    info!("the Karabiner virtual keyboard is gone");
+                    close_current(&mut current);
+                }
+                Step::Open(id) => {
+                    if current.is_some() {
+                        info!(
+                            registry_id = id,
+                            "the Karabiner virtual keyboard was created again"
+                        );
+                    }
+                    close_current(&mut current);
+                    // Taken: watched from here, or released if it cannot be.
+                    let (d, _) = found.take().expect("found when the step is Open");
                     // SAFETY: valid device; not seized, like Karabiner-Elements.
                     let r = unsafe { IOHIDDeviceOpen(d, K_IOHID_OPTIONS_TYPE_NONE) };
                     if r == 0 {
-                        // SAFETY: d stays retained while registered; ctx is 'static.
+                        ctx.forget();
+                        // SAFETY: d is retained while registered; ctx is 'static.
                         unsafe {
-                            CFRetain(d);
                             IOHIDDeviceRegisterInputValueCallback(
                                 d,
                                 Some(on_value),
@@ -331,24 +408,32 @@ mod ffi {
                             );
                             IOHIDDeviceScheduleWithRunLoop(d, run_loop, mode);
                         }
-                        info!("watching the keyboard LEDs of the Karabiner virtual keyboard");
-                        current = Some(d);
+                        info!(
+                            registry_id = id,
+                            "watching the keyboard LEDs of the Karabiner virtual keyboard"
+                        );
+                        // Retained by find_keyboard: released with `current`.
+                        current = Some((d, id));
                         warned = false;
-                    } else if !warned {
-                        let why = if r == K_IO_RETURN_NOT_PERMITTED {
-                            "not permitted: allow the agent in System Settings > Privacy & \
-                             Security > Input Monitoring (docs/macos-instalacion.md)"
-                        } else {
-                            "IOHIDDeviceOpen failed"
-                        };
-                        warn!(code = format!("{r:#x}"), "keyboard LEDs not watched: {why}");
-                        warned = true;
+                    } else {
+                        // SAFETY: retained by find_keyboard.
+                        unsafe { CFRelease(d) };
+                        if !warned {
+                            let why = if r == K_IO_RETURN_NOT_PERMITTED {
+                                "not permitted: allow the agent in System Settings > Privacy & \
+                                 Security > Input Monitoring (docs/macos-instalacion.md)"
+                            } else {
+                                "IOHIDDeviceOpen failed"
+                            };
+                            warn!(code = format!("{r:#x}"), "keyboard LEDs not watched: {why}");
+                            warned = true;
+                        }
                     }
                 }
             }
-            if !set.is_null() {
-                // SAFETY: copied above.
-                unsafe { CFRelease(set) };
+            if let Some((d, _)) = found {
+                // SAFETY: retained by find_keyboard and not kept.
+                unsafe { CFRelease(d) };
             }
             // SAFETY: runs this thread's run loop (the callbacks) for a while.
             let r = unsafe { CFRunLoopRunInMode(mode, RESCAN.as_secs_f64(), 0) };
@@ -419,5 +504,29 @@ mod tests {
             .map(|o| (o.dev_id, o.report))
             .collect();
         assert_eq!(got, [(0, vec![0x02]), (16, vec![1, 0x02])]);
+    }
+
+    /// The virtual keyboard is created again when the agent sets its
+    /// identity: the watcher must move to the new one.
+    #[test]
+    fn the_watcher_follows_a_recreated_keyboard() {
+        assert_eq!(step(None, None), Step::Keep);
+        assert_eq!(step(None, Some(7)), Step::Open(7));
+        assert_eq!(step(Some(7), Some(7)), Step::Keep);
+        assert_eq!(step(Some(7), Some(9)), Step::Open(9));
+        assert_eq!(step(Some(9), None), Step::Close);
+
+        // A new keyboard starts from unknown LEDs: the first value is sent
+        // even if it equals what the old one had.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let ctx = Ctx {
+            tx,
+            target: Arc::new(Mutex::new(vec![(0, None)])),
+            leds: Mutex::new(0),
+        };
+        ctx.on_value(USAGE_PAGE_LEDS, 2, 1);
+        ctx.forget();
+        ctx.on_value(USAGE_PAGE_LEDS, 2, 1);
+        assert_eq!(std::iter::from_fn(|| rx.try_recv().ok()).count(), 2);
     }
 }
