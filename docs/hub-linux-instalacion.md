@@ -48,6 +48,50 @@ journalctl -u rawkvm-hub -f     # "DJ mode switched off", "device ... added" x3,
 
 Igual que instalar, con el paquete nuevo: `sudo apt install ./rawkvm-hub_<versión>_arm64.deb`. La configuración, el token, el certificado y el layout se conservan, y el servicio se reinicia con el binario nuevo. Todos los agentes deben tener la misma versión de protocolo que el hub (ver `docs/protocol.md`).
 
+Desde la fase 6 (protocolo 8), `hub.toml` puede describir varios receptores con bloques `[[receiver]]`. Un `hub.toml` antiguo, con un solo `[receiver]`, sigue funcionando sin tocarlo.
+
+## Varios receptores
+
+El hub puede leer a la vez varios receptores USB, de Logitech o de otro fabricante (por ejemplo, el dongle de 2,4 GHz de un ratón genérico). Cada uno se describe en un bloque `[[receiver]]` de `/etc/rawkvm/hub.toml`. Decisiones: [ADR 0030](adr/0030-varios-receptores-y-exposicion.md).
+
+1. Enchufar el receptor nuevo en la placa y buscar su fabricante y producto:
+
+   ```sh
+   lsusb
+   # Bus 001 Device 004: ID 046d:c52b Logitech, Inc. Unifying Receiver
+   # Bus 001 Device 005: ID 248a:8367 Telink Wireless Receiver   <- el de otra marca
+   ```
+
+2. Añadir un bloque por receptor. Si `hub.toml` tiene un `[receiver]` (tabla única), se cambia por `[[receiver]]`:
+
+   ```toml
+   [[receiver]]
+   name = "logitech"            # se ve en el widget y en settings.toml
+   # vid, pids, force_normal_mode...: los de Logitech por defecto
+
+   [[receiver]]
+   name = "generico"
+   vid = 0x248a                 # el primer número de lsusb
+   pids = [0x8367]              # opcional: sin pids, cualquier producto de ese vid
+   ```
+
+3. Reiniciar el hub y comprobar que reconoce las interfaces de los dos receptores:
+
+   ```sh
+   sudo systemctl restart rawkvm-hub
+   sudo rawkvm-hub --list | grep forward
+   # [forward r0] /dev/hidraw0 ...  [forward r1] /dev/hidraw3 ...
+   journalctl -u rawkvm-hub -b | grep -E "reading receiver|opened"
+   ```
+
+Hay que tener en cuenta:
+
+- **Lo HID++ es solo de Logitech y solo del primer bloque Logitech:** emparejar y olvidar dispositivos, la batería, la velocidad del puntero, Fn y el perfil del teclado según el sistema. Si hay más de un receptor Logitech, los demás se reenvían igual, pero sin esas funciones. `force_normal_mode` en un bloque de otra marca se ignora (el hub lo avisa al arrancar).
+- **Valores por defecto según la marca.** Para un `vid` distinto de Logitech (`0x046d`), `pids` vale «cualquier producto» y `require_hid_generic` está desactivado: el hub reenvía las interfaces aunque las tenga otro driver del kernel, porque `hidraw` entrega los informes crudos igual.
+- **Dos bloques no pueden solaparse** (mismo `vid` y algún producto en común, o alguno sin `pids`). Si se solapan, el hub no arranca y lo dice en el registro. Los nombres deben ser distintos. El nombre por defecto es `receiver-0`, `receiver-1`…, según la posición del bloque.
+- **Identificadores de los dispositivos:** las interfaces del primer receptor son 0, 1, 2, como antes; las del segundo, 16, 17…
+- **Destino de la entrada de cada receptor.** Por defecto la entrada de cada receptor va al equipo activo («Red local (todos los equipos)»). En la pestaña **Hub** del widget, en «Receptores», se puede dar un receptor **en exclusiva** a un equipo. Entonces su teclado y su ratón van siempre a ese equipo, sin cambiar con los bordes ni con el atajo. Si ese equipo no está conectado, la entrada se descarta, y el widget lo avisa. Para devolverlo a la red desde su propio teclado: **modificador del atajo dos veces y `Esc`** (por defecto Ctrl, Ctrl, Esc). Funciona aunque el atajo esté desactivado. El hub guarda la exposición en `/var/lib/rawkvm/settings.toml` (`[[exposure]]`), por nombre de receptor; borrar ese fichero lo devuelve todo a la red.
+
 ## Pasar de la instalación manual al paquete
 
 Antes de la versión 0.5.0 el hub se instalaba con `deploy/hub-linux/install.sh`, en `/usr/local/bin` y con la unidad en `/etc/systemd/system`. El paquete lo detecta y:
