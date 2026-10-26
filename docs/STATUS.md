@@ -910,3 +910,8 @@ Según [fase8-plan.md](fase8-plan.md); decisiones en el [ADR 0032](adr/0032-rece
   4. reiniciar el hub: el bloque sigue, ahora con índice 1 (ids 16 y 17);
   5. `sudo rawkvm-hub --list` muestra «unclaimed USB HID devices» con lo que haya enchufado sin configurar.
 - **Sigue sin asignar:** el hallazgo de empaquetado del postinst (identidad nueva al instalar).
+- **Correcciones tras la revisión de Claude Desktop** (ADR 0032 actualizado):
+  1. El bloque añadido queda el último de `hub.toml`. Antes `toml_edit` lo colocaba tras la primera tabla con posición, así que el índice cambiaba al reiniciar.
+  2. `UnclaimedReceiver.port`: el widget usa vid:pid y número de serie o puerto como clave de la lista, que antes se repetía con dos dongles iguales.
+  3. Si se quita el primer Logitech, el siguiente, ya abierto, recibe HID++: el hilo de escaneo cierra su interfaz DJ y la reabre con el mismo id.
+  4. La reproducción del `.hidrec` usa ids `16 × receptor + interfaz`, como el hub real.
