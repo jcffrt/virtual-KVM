@@ -32,8 +32,9 @@ pub fn path_in(state_dir: &Path) -> PathBuf {
 struct File {
     hysteresis_ms: u32,
     hotkey: HotkeyFile,
+    /// Each entry checked on its own: a bad one is skipped, not fatal.
     #[serde(default)]
-    exposure: Vec<ExposureEntry>,
+    exposure: Vec<toml::Value>,
 }
 
 /// One `[[exposure]]`: `receiver` is the block's `name` in `hub.toml`.
@@ -87,7 +88,13 @@ pub fn load(path: &Path) -> Result<Option<Saved>> {
                     exposures: f
                         .exposure
                         .into_iter()
-                        .map(|e| (e.receiver, Exposure::Exclusive { agent: e.exclusive }))
+                        .filter_map(|v| match ExposureEntry::deserialize(v.clone()) {
+                            Ok(e) => Some((e.receiver, Exposure::Exclusive { agent: e.exclusive })),
+                            Err(e) => {
+                                tracing::warn!("{}: [[exposure]] {v} ignored: {e}", path.display());
+                                None
+                            }
+                        })
                         .collect(),
                 })
             })
@@ -171,6 +178,24 @@ mod tests {
         assert!(
             text.contains("[[exposure]]") && !text.contains("logi"),
             "{text}"
+        );
+
+        // A bad [[exposure]] is skipped; the rest still loads.
+        fs::write(
+            &path,
+            format!(
+                "hysteresis_ms = 200\nhotkey = true\n\
+                 [[exposure]]\nreceiver = \"a\"\nexclusive = \"no-es-uuid\"\n\
+                 [[exposure]]\nreceiver = \"b\"\nexclusive = \"{agent}\"\nextra = 1\n\
+                 [[exposure]]\nreceiver = \"c\"\nexclusive = \"{agent}\"\n"
+            ),
+        )
+        .unwrap();
+        let saved = load(&path).unwrap().unwrap();
+        assert_eq!(saved.settings.hysteresis_ms, 200);
+        assert_eq!(
+            saved.exposures,
+            [("c".into(), Exposure::Exclusive { agent })]
         );
 
         // Written by a v5 hub.
