@@ -1313,11 +1313,15 @@ dependencies = [
  "bluer",
  "clap",
  "dbus",
+ "rawkvm-agent-core",
  "rawkvm-bridge-core",
  "rawkvm-proto",
+ "serde",
  "tokio",
+ "toml 0.8.23",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

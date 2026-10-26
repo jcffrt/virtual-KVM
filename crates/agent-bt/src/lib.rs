@@ -5,8 +5,12 @@
 //! The modules here are plain data (SDP record, HIDP transactions) and
 //! build everywhere; BlueZ is only used by the Linux binaries.
 
+pub mod bridge;
 pub mod hidp;
 pub mod sdp;
+pub mod sink;
+pub mod stack;
+pub mod store;
 
 /// Keyboard (report ID 1, boot layout with the LED output report) and
 /// mouse (report ID 2: three buttons, X, Y, wheel): the fixed descriptor of
