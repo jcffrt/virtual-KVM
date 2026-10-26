@@ -341,8 +341,12 @@ impl ApplyError {
     }
 
     /// The `functions/hid.<instance>` directory of `gadget` whose creation
-    /// failed (`usb_f_hid` out of instances), as its instance name.
+    /// failed because `usb_f_hid` is out of instances (`ENODEV`), as its
+    /// instance name. Any other error (EBUSY, ENOMEM...) is not a limit.
     pub fn failed_function(&self, gadget: &Path) -> Option<&str> {
+        if self.source.raw_os_error() != Some(libc::ENODEV) {
+            return None;
+        }
         let Op::Mkdir(p) = &self.op else { return None };
         if p.parent()? != gadget.join("functions") {
             return None;
@@ -626,6 +630,12 @@ pub(crate) mod tests {
         );
         let w = err(Op::Write(g.join("functions/hid.usb2/protocol"), vec![]));
         assert_eq!(w.failed_function(g), None);
+        // Only ENODEV means "out of instances".
+        let busy = ApplyError {
+            op: Op::Mkdir(g.join("functions/hid.usb17")),
+            source: io::Error::from_raw_os_error(libc::EBUSY),
+        };
+        assert_eq!(busy.failed_function(g), None);
     }
 
     #[test]

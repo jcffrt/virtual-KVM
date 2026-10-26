@@ -178,18 +178,17 @@ impl GadgetSink {
         self.teardown()?;
         let g = self.gadget_dir();
         if let Err(e) = configfs::apply_on(&configfs::build_ops(&g, &spec), self.fs.as_mut()) {
-            // A function after the first one failed: usb_f_hid is out of
-            // instances (HIDG_MINORS, or minors held by another gadget).
-            let fitted = e.failed_function(&g).and_then(|inst| {
-                spec.functions
-                    .iter()
-                    .position(|f| f.instance == inst)
-                    .filter(|&k| k > 0)
-            });
-            if let Some(fitted) = fitted {
+            // usb_f_hid is out of instances (HIDG_MINORS, or minors held
+            // by another gadget): build with the functions that fitted.
+            let fitted = e
+                .failed_function(&g)
+                .and_then(|inst| spec.functions.iter().position(|f| f.instance == inst));
+            if let Some(fitted) = fitted.filter(|&k| k > 0) {
                 return Err(BuildError::NoRoom { fitted });
             }
-            let hint = if e.is_missing_support() {
+            let hint = if fitted == Some(0) {
+                " (no free HID function: another gadget holds all of usb_f_hid's instances)"
+            } else if e.is_missing_support() {
                 " (is libcomposite loaded and ConfigFS mounted?)"
             } else {
                 ""
@@ -344,6 +343,10 @@ impl HidSink for GadgetSink {
                 }
                 Err(BuildError::Other(e)) => {
                     warn!("{e:#}");
+                    // Do not hold usb_f_hid instances with a half-built tree.
+                    if let Err(e) = self.teardown() {
+                        warn!("{e:#}");
+                    }
                     break;
                 }
             }
@@ -497,6 +500,8 @@ mod tests {
         sim: SimConfigFs,
         room: Arc<AtomicUsize>,
         live: usize,
+        /// Fail the mkdir of the function after this many with EBUSY, once.
+        busy_at: Option<usize>,
     }
 
     fn is_function(p: &Path) -> bool {
@@ -508,6 +513,10 @@ mod tests {
     impl Backend for LimitedHid {
         fn mkdir(&mut self, p: &Path) -> io::Result<()> {
             if is_function(p) {
+                if self.busy_at == Some(self.live) {
+                    self.busy_at = None;
+                    return Err(io::Error::from_raw_os_error(libc::EBUSY));
+                }
                 if self.live >= self.room.load(Ordering::SeqCst) {
                     return Err(io::Error::from_raw_os_error(libc::ENODEV));
                 }
@@ -543,6 +552,10 @@ mod tests {
 
     impl Rig {
         fn new(room: usize) -> Self {
+            Self::with_busy(room, None)
+        }
+
+        fn with_busy(room: usize, busy_at: Option<usize>) -> Self {
             let root = std::env::temp_dir().join(format!("rawkvm-gsink-{}", uuid::Uuid::new_v4()));
             let paths = Paths {
                 configfs: root.join("configfs"),
@@ -560,6 +573,7 @@ mod tests {
                 },
                 room: room.clone(),
                 live: 0,
+                busy_at,
             };
             let opts = Options {
                 expose_hidpp: true,
@@ -656,6 +670,34 @@ mod tests {
         rig.announce(&devs);
         assert!(!rig.sink.is_bound());
         assert_eq!(rig.sink.unexposed(), [0, 1, 2, 16, 17]);
+        // The log says why, not "is libcomposite loaded?".
+        let spec = configfs::spec_for(&devs, &rig.sink.opts).unwrap();
+        let Err(BuildError::Other(e)) = rig.sink.build(spec) else {
+            panic!("built without room");
+        };
+        let msg = format!("{e:#}");
+        assert!(msg.contains("no free HID function"), "{msg}");
+        assert!(!msg.contains("libcomposite"), "{msg}");
+    }
+
+    #[test]
+    fn a_transient_error_does_not_shrink_the_gadget() {
+        let Some(devs) = two_receivers() else { return };
+        // The third function's mkdir fails with EBUSY: not a limit.
+        let mut rig = Rig::with_busy(configfs::HIDG_MINORS, Some(2));
+        rig.announce(&devs);
+        assert!(!rig.sink.is_bound());
+        // The half-built tree is gone at once (no instances held).
+        assert!(!rig.root.join("configfs/rawkvm").exists());
+        assert_eq!(rig.sink.unexposed(), [0, 1, 2, 16, 17]);
+
+        // The same list again (hub reconnection) tries the full size.
+        rig.announce(&devs);
+        assert_eq!(
+            rig.functions(),
+            ["hid.usb0", "hid.usb1", "hid.usb16", "hid.usb17"]
+        );
+        assert_eq!(rig.sink.unexposed(), [2]);
     }
 
     #[test]

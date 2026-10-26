@@ -30,8 +30,10 @@ Con los dos receptores de la Zero quedan los ids 0, 1, 16 y 17, y queda fuera el
 
 ### Un `mkdir` fallido no tira el gadget
 
-- Si falla el `mkdir` de una función que no es la primera, el kernel no tiene más sitio. El gadget ya ha creado `k` funciones, así que vuelve a planificar con un límite de `k`: misma prioridad, `k` interfaces. Desmonta lo creado y construye de nuevo. Avisa en el log: `the kernel has room for only k HID functions`.
-- Si falla la primera, no es falta de sitio sino falta de soporte (`libcomposite`, `usb_f_hid`, ConfigFS). Se trata como antes: error en el log y sin gadget.
+- Solo un **`ENODEV`** al crear una función significa que `usb_f_hid` no tiene más instancias.
+  - **En la función `k` (k > 0):** el gadget vuelve a planificar con un límite de `k` (misma prioridad, `k` interfaces), desmonta lo creado y construye de nuevo. Avisa en el log: `the kernel has room for only k HID functions`.
+  - **En la primera función:** no queda ninguna libre, porque otro gadget las tiene todas. No hay gadget, y el log lo dice (`no free HID function: another gadget holds all of usb_f_hid's instances`).
+- **Cualquier otro error** (`EBUSY`, `ENOMEM`, un resto que no es un directorio, falta de `libcomposite` o de ConfigFS) no es un límite y no encoge el gadget. Se avisa en el log y se desmonta al momento el árbol a medias, para que no retenga instancias. Ese intento queda sin gadget. La siguiente `DeviceList`, aunque sea la misma, vuelve a probar la lista completa.
 - El límite aprendido vale **solo para esa lista de dispositivos**:
   - si llega la misma lista (el hub se reconecta), se conserva el gadget, sin volver a enumerar en el PC;
   - si llega una lista distinta, se reintenta con el límite completo.
