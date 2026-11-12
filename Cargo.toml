@@ -11,8 +11,8 @@ members = [
     "crates/edge-windows",
     "crates/agent-gadget",
 ]
-# The widget (Tauri) is its own workspace: widget/src-tauri.
-exclude = ["widget"]
+# The widget (Tauri) and the ESP32 firmware are their own workspaces.
+exclude = ["widget", "firmware"]
 
 [workspace.package]
 version = "0.8.1"
