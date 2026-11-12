@@ -66,7 +66,10 @@ pub enum Up {
     Pong(u32),
     /// An output report the PC sent to interface `dev_id` (keyboard LEDs),
     /// report ID first only if the interface uses IDs.
-    Output { dev_id: u8, report: Vec<u8> },
+    Output {
+        dev_id: u8,
+        report: Vec<u8>,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,13 +81,19 @@ pub enum Reject {
 /// Hub -> node.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub enum Down {
-    Welcome { hub_name: String, index: u8 },
+    Welcome {
+        hub_name: String,
+        index: u8,
+    },
     /// Followed by the hub closing the connection.
     Reject(Reject),
     /// What to present on USB. Sent on connect and when it changes.
     Gadget(Gadget),
     /// An input report for interface `dev_id`, as the receiver produced it.
-    Report { dev_id: u8, report: Vec<u8> },
+    Report {
+        dev_id: u8,
+        report: Vec<u8>,
+    },
     Ping(u32),
     Pong(u32),
 }
@@ -195,7 +204,7 @@ impl Cipher {
 /// Frame length from its 2-byte prefix, if acceptable.
 pub fn frame_len(prefix: [u8; 2]) -> Result<usize, Error> {
     let n = u16::from_le_bytes(prefix) as usize;
-    if n < TAG_LEN || n > MAX_FRAME {
+    if !(TAG_LEN..=MAX_FRAME).contains(&n) {
         return Err(Error::TooLong);
     }
     Ok(n)

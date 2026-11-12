@@ -21,6 +21,7 @@ path = "src/netwatch_main.rs"
 
 [dependencies]
 proto.workspace = true
+light.workspace = true
 anyhow.workspace = true
 bytes.workspace = true
 clap.workspace = true

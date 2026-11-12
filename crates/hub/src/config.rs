@@ -26,6 +26,10 @@ pub struct HubConfig {
     /// Pairing token, 64 hex characters. Agents must present it in `Hello`.
     pub token: String,
     pub listen: SocketAddr,
+    /// TCP address of the light link for ESP32 gadgets (`crates/light`).
+    /// `None` (an empty string is not accepted: remove the key) disables it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub light_listen: Option<SocketAddr>,
     /// Where the TLS certificate and key are kept.
     pub state_dir: PathBuf,
     /// Advertise the hub with mDNS / DNS-SD.
@@ -232,6 +236,7 @@ impl Default for HubConfig {
             hub_id: Uuid::nil(),
             token: String::new(),
             listen: SocketAddr::from(([0, 0, 0, 0], proto::DEFAULT_PORT)),
+            light_listen: Some(SocketAddr::from(([0, 0, 0, 0], light::DEFAULT_PORT))),
             state_dir: PathBuf::from(DEFAULT_STATE_DIR),
             mdns: true,
             receivers: vec![ReceiverMatch {

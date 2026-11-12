@@ -1,7 +1,7 @@
 //! RawKVM hub: reads raw HID reports from the Logitech receiver and forwards
 //! them, uninterpreted, to the active agent over QUIC.
 
-use rawkvm_hub::{config, hidrec, layout, nodes, router, server};
+use rawkvm_hub::{config, hidrec, layout, light, nodes, router, server};
 #[cfg(target_os = "linux")]
 use rawkvm_hub::{devices, hidraw};
 
@@ -269,6 +269,15 @@ async fn serve(args: Args) -> Result<()> {
     } else {
         None
     };
+
+    if let Some(addr) = cfg.light_listen {
+        let (router, token) = (router.clone(), cfg.token_bytes()?);
+        tokio::spawn(async move {
+            if let Err(e) = light::serve(addr, token, router).await {
+                warn!("light link disabled: {e:#}");
+            }
+        });
+    }
 
     tokio::select! {
         r = server::serve(&cfg, &identity, router) => r,
