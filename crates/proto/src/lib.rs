@@ -12,6 +12,7 @@
 
 pub mod datagram;
 pub mod descriptor;
+pub mod gadget;
 pub mod wire;
 
 use serde::{Deserialize, Serialize};
