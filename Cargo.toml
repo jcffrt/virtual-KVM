@@ -10,6 +10,7 @@ members = [
     "crates/agent-windows",
     "crates/edge-windows",
     "crates/agent-gadget",
+    "crates/light",
 ]
 # The widget (Tauri) and the ESP32 firmware are their own workspaces.
 exclude = ["widget", "firmware"]
@@ -24,6 +25,7 @@ repository = "https://github.com/jcffrt/virtual-KVM"
 [workspace.dependencies]
 proto = { path = "crates/proto", package = "rawkvm-proto" }
 agent-core = { path = "crates/agent-core", package = "rawkvm-agent-core" }
+light = { path = "crates/light", package = "rawkvm-light" }
 
 anyhow = "1"
 bytes = "1"

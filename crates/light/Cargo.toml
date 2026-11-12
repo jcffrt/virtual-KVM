@@ -1,0 +1,19 @@
+[package]
+name = "rawkvm-light"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Light RawKVM link for microcontroller nodes: messages and encrypted framing (no_std)"
+
+[lib]
+name = "light"
+path = "src/lib.rs"
+
+# no_std + alloc: the ESP32 firmware (its own workspace) uses it by path.
+[dependencies]
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+hkdf = { version = "0.12", default-features = false }
+postcard = { version = "1", default-features = false, features = ["alloc"] }
+serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
+sha2 = { version = "0.10", default-features = false }
