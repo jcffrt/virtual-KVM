@@ -86,14 +86,17 @@ pub fn step_done() {
 }
 
 /// Logs what the previous run left: reset reason, panic, unfinished step.
-pub fn report_previous_run() {
+/// True if it panicked.
+pub fn report_previous_run() -> bool {
     log::info!("reset reason {:?}", esp_hal::system::reset_reason());
-    if let Some(p) = take(unsafe { &mut *core::ptr::addr_of_mut!(PANIC) }) {
+    let panicked = take(unsafe { &mut *core::ptr::addr_of_mut!(PANIC) });
+    if let Some(p) = &panicked {
         log::warn!("previous run panicked: {p}");
     }
     if let Some(s) = take(unsafe { &mut *core::ptr::addr_of_mut!(STEP) }) {
         log::warn!("previous run stopped at: {s}");
     }
+    panicked.is_some()
 }
 
 #[panic_handler]

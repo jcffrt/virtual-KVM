@@ -73,8 +73,14 @@ async fn main(spawner: Spawner) -> ! {
     esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 73744);
     // The logger allocates its lines: after the heap.
     netlog::init();
-    diag::report_previous_run();
-    let update_mode = diag::take_update_mode();
+    let panicked = diag::report_previous_run();
+    // After a panic, a boot in the update mode (WiFi only, no USB, back to
+    // normal after 2 min): a panic at every boot, say in the USB set-up,
+    // still leaves the board reachable for a fixed firmware.
+    let update_mode = diag::take_update_mode() | panicked;
+    if panicked {
+        warn!("safe boot after a panic: update mode");
+    }
     // Before core 1 starts: this may write the flash.
     let gadget: Option<&'static light::Gadget> = if update_mode {
         None

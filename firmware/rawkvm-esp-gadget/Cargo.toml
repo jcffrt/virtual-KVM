@@ -2,7 +2,7 @@
 edition      = "2024"
 name         = "rawkvm-esp-gadget"
 rust-version = "1.95"
-version      = "0.2.0"
+version      = "0.2.1"
 
 [[bin]]
 name = "rawkvm-esp-gadget"
@@ -59,7 +59,8 @@ smoltcp = { version = "0.14.0", default-features = false, features = [
 
 critical-section = "1.2.0"
 static_cell      = "2.1.1"
-embassy-usb = { version = "0.6", default-features = false, features = ["log"] }
+# One handler per HID interface plus the device events: 4 + 1 > the default 4.
+embassy-usb = { version = "0.6", default-features = false, features = ["log", "max-handler-count-8"] }
 embassy-sync = "0.7"
 embassy-futures = "0.1.2"
 esp-rom-sys = { version = "0.1.5", features = ["esp32s3"] }
