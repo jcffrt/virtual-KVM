@@ -132,22 +132,49 @@ fn linker_be_nice() {
     );
 }
 
-/// WiFi SSID and password from `../wifi.env` (KEY=value lines, not in git),
-/// or from the environment when the file is missing.
+/// Settings from `../wifi.env` (KEY=value lines, not in git), or from the
+/// environment when a key is missing there:
+/// - `WIFI_SSID`, `WIFI_PASS`: the 2.4 GHz network;
+/// - `HUB_TOKEN`: the hub's pairing token (`token` in its hub.toml);
+/// - `HUB_ADDR`: the hub's IPv4 address (default 192.168.1.39);
+/// - `NODE_NAME`: the name the hub and widget show (default "ESP32 gadget");
+/// - `NODE_OS`: the PC's OS, `windows` (default), `macos` or `linux`.
 fn wifi_credentials() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../wifi.env");
     println!("cargo:rerun-if-changed={}", path.display());
-    println!("cargo:rerun-if-env-changed=WIFI_SSID");
-    println!("cargo:rerun-if-env-changed=WIFI_PASS");
     let text = std::fs::read_to_string(&path).unwrap_or_default();
-    for key in ["WIFI_SSID", "WIFI_PASS"] {
-        let value = text
-            .lines()
+    let get = |key: &str| {
+        println!("cargo:rerun-if-env-changed={key}");
+        text.lines()
             .filter_map(|l| l.split_once('='))
             .find(|(k, _)| k.trim() == key)
             .map(|(_, v)| v.trim().to_string())
             .or_else(|| std::env::var(key).ok())
-            .unwrap_or_else(|| panic!("{key} missing: write it in {}", path.display()));
-        println!("cargo:rustc-env={key}={value}");
+    };
+    let required = |key: &str| {
+        get(key).unwrap_or_else(|| panic!("{key} missing: write it in {}", path.display()))
+    };
+    let token = required("HUB_TOKEN");
+    if token.len() != 64 || !token.chars().all(|c| c.is_ascii_hexdigit()) {
+        panic!("HUB_TOKEN in {} must be 64 hex characters", path.display());
+    }
+    let addr = get("HUB_ADDR").unwrap_or_else(|| "192.168.1.39".into());
+    if addr.parse::<std::net::Ipv4Addr>().is_err() {
+        panic!("HUB_ADDR in {} must be an IPv4 address", path.display());
+    }
+    let os = get("NODE_OS").unwrap_or_else(|| "windows".into()).to_lowercase();
+    if !["windows", "macos", "linux"].contains(&os.as_str()) {
+        panic!("NODE_OS must be windows, macos or linux");
+    }
+    let vars = [
+        ("WIFI_SSID", required("WIFI_SSID")),
+        ("WIFI_PASS", required("WIFI_PASS")),
+        ("HUB_TOKEN", token),
+        ("HUB_ADDR", addr),
+        ("NODE_NAME", get("NODE_NAME").unwrap_or_else(|| "ESP32 gadget".into())),
+        ("NODE_OS", os),
+    ];
+    for (k, v) in vars {
+        println!("cargo:rustc-env={k}={v}");
     }
 }

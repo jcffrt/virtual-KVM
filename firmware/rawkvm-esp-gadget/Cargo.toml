@@ -2,7 +2,7 @@
 edition      = "2024"
 name         = "rawkvm-esp-gadget"
 rust-version = "1.95"
-version      = "0.1.5"
+version      = "0.2.0"
 
 [[bin]]
 name = "rawkvm-esp-gadget"
@@ -63,6 +63,7 @@ embassy-usb = { version = "0.6", default-features = false, features = ["log"] }
 embassy-sync = "0.7"
 embassy-futures = "0.1.2"
 esp-rom-sys = { version = "0.1.5", features = ["esp32s3"] }
+light = { path = "../../crates/light", package = "rawkvm-light" }
 
 
 # For fine tuning these settings, please refer to https://doc.rust-lang.org/cargo/reference/profiles.html

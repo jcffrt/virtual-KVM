@@ -1,16 +1,16 @@
-//! RawKVM USB gadget on an ESP32-S3: phase 1 (bring-up).
+//! RawKVM USB gadget on an ESP32-S3.
 //!
-//! The board joins the WiFi and shows up on the PC's USB port as a keyboard
-//! and a mouse. A test client sends reports over TCP; the hub protocol comes
-//! in a later phase.
+//! The board joins the WiFi, connects to the hub over the light link
+//! (`crates/light`, hub.rs) and presents the hub's receiver interfaces on
+//! the PC's USB port (usb.rs), with the receiver's own descriptors. The
+//! interface set comes from the hub and is kept across resets (store.rs).
 //!
-//! Test protocol (TCP port 7790, one client at a time). Each frame is
+//! Service protocol (TCP port 7790, one client at a time), for the test
+//! client `firmware/tools/gadget_test.py`. Each frame is
 //! `[kind u8][len u8][payload; len]`:
-//! - client -> board: 1 keyboard report (8 bytes, boot layout), 2 mouse report
-//!   (7 bytes: buttons, x i16 LE, y i16 LE, wheel i8, pan i8), 3 ping (echoed
-//!   back as is), 0xF0 restart into the ROM download mode (to flash again
-//!   over USB without touching the BOOT button).
-//! - board -> client: 4 keyboard LEDs (1 byte), 5 text (status lines).
+//! - client -> board: 3 ping (echoed back), 0xF1/0xF2/0xF3 firmware update
+//!   (begin with the u32 LE size, data, end).
+//! - board -> client: 5 text (log lines).
 #![no_std]
 #![no_main]
 #![deny(
@@ -22,27 +22,16 @@
 use core::fmt::Write as _;
 
 use embassy_executor::Spawner;
-use embassy_futures::select::{Either3, select3};
+use embassy_futures::select::{Either, select};
 use embassy_net::{Runner, Stack, StackResources, tcp::TcpSocket};
-use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
 use embassy_time::{Duration, Timer};
-use embassy_usb::{
-    Builder,
-    class::hid::{
-        Config as HidConfig, HidBootProtocol, HidReaderWriter, HidSubclass, HidWriter,
-        ReportId, RequestHandler, State as HidState,
-    },
-    control::OutResponse,
-};
 use embedded_io_async::Write as _;
 use esp_hal::{
     clock::CpuClock,
-    peripherals::{LPWR, USB_DEVICE, USB_WRAP},
+    rng::Rng,
     rtc_cntl::{Rtc, RwdtStage, RwdtStageAction},
     system::{AppCoreGuard, CpuControl},
-    rng::Rng,
     timer::timg::TimerGroup,
-    usb::otg::{Usb, embassy_usb_device::Driver as UsbDriver},
 };
 use esp_radio::wifi::{
     AuthenticationMethodConfig, Config as WifiConfig, Interface, WifiController, sta::StationConfig,
@@ -58,51 +47,18 @@ mod netlog;
 mod ota;
 #[path = "../diag.rs"]
 mod diag;
+#[path = "../hub.rs"]
+mod hub;
+#[path = "../store.rs"]
+mod store;
+#[path = "../usb.rs"]
+mod usb;
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
 const SSID: &str = env!("WIFI_SSID");
 const PASSWORD: &str = env!("WIFI_PASS");
 const PORT: u16 = 7790;
-
-/// Boot keyboard (HID 1.11 appendix B.1) with the LED output report.
-const KEYBOARD_DESC: &[u8] = &[
-    0x05, 0x01, 0x09, 0x06, 0xA1, 0x01, // Generic Desktop, Keyboard, Application
-    0x05, 0x07, 0x19, 0xE0, 0x29, 0xE7, 0x15, 0x00, 0x25, 0x01, 0x75, 0x01, 0x95, 0x08,
-    0x81, 0x02, // modifiers
-    0x95, 0x01, 0x75, 0x08, 0x81, 0x01, // reserved
-    0x95, 0x05, 0x75, 0x01, 0x05, 0x08, 0x19, 0x01, 0x29, 0x05, 0x91, 0x02, // LEDs
-    0x95, 0x01, 0x75, 0x03, 0x91, 0x01, // LED padding
-    0x95, 0x06, 0x75, 0x08, 0x15, 0x00, 0x26, 0xFF, 0x00, 0x05, 0x07, 0x19, 0x00, 0x2A,
-    0xFF, 0x00, 0x81, 0x00, // keys
-    0xC0,
-];
-
-/// Mouse: 5 buttons, 16-bit X/Y, wheel, horizontal pan. 7 bytes, no report ID.
-const MOUSE_DESC: &[u8] = &[
-    0x05, 0x01, 0x09, 0x02, 0xA1, 0x01, // Generic Desktop, Mouse, Application
-    0x09, 0x01, 0xA1, 0x00, // Pointer, Physical
-    0x05, 0x09, 0x19, 0x01, 0x29, 0x05, 0x15, 0x00, 0x25, 0x01, 0x95, 0x05, 0x75, 0x01,
-    0x81, 0x02, // buttons
-    0x95, 0x01, 0x75, 0x03, 0x81, 0x01, // padding
-    0x05, 0x01, 0x09, 0x30, 0x09, 0x31, 0x16, 0x01, 0x80, 0x26, 0xFF, 0x7F, 0x75, 0x10,
-    0x95, 0x02, 0x81, 0x06, // X, Y relative
-    0x09, 0x38, 0x15, 0x81, 0x25, 0x7F, 0x75, 0x08, 0x95, 0x01, 0x81, 0x06, // wheel
-    0x05, 0x0C, 0x0A, 0x38, 0x02, 0x95, 0x01, 0x81, 0x06, // AC Pan
-    0xC0, 0xC0,
-];
-
-const KB_LEN: usize = 8;
-const MOUSE_LEN: usize = 7;
-
-static KB_REPORTS: Channel<CriticalSectionRawMutex, [u8; KB_LEN], 16> = Channel::new();
-static MOUSE_REPORTS: Channel<CriticalSectionRawMutex, [u8; MOUSE_LEN], 32> = Channel::new();
-/// Raised when the PC configures the USB device.
-static USB_CONFIGURED: embassy_sync::signal::Signal<CriticalSectionRawMutex, ()> =
-    embassy_sync::signal::Signal::new();
-static LEDS: Channel<CriticalSectionRawMutex, u8, 4> = Channel::new();
-
-type Usbd = UsbDriver<'static>;
 
 macro_rules! mk_static {
     ($t:ty, $val:expr) => {{
@@ -119,6 +75,12 @@ async fn main(spawner: Spawner) -> ! {
     netlog::init();
     diag::report_previous_run();
     let update_mode = diag::take_update_mode();
+    // Before core 1 starts: this may write the flash.
+    let gadget: Option<&'static light::Gadget> = if update_mode {
+        None
+    } else {
+        store::load().map(|g| &*alloc::boxed::Box::leak(alloc::boxed::Box::new(g)))
+    };
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
@@ -131,14 +93,16 @@ async fn main(spawner: Spawner) -> ! {
     if update_mode {
         info!("update mode: WiFi only, no USB");
         spawner.spawn(update_mode_timeout().unwrap());
-    } else {
+    } else if gadget.is_none() {
+        info!("no gadget yet: USB off until the hub sends one");
+    } else if let Some(g) = gadget {
         let (usb_fs, dp, dm) = (peripherals.USB_FS, peripherals.GPIO20, peripherals.GPIO19);
         static APP_CORE_STACK: static_cell::ConstStaticCell<esp_hal::system::Stack<16384>> =
             static_cell::ConstStaticCell::new(esp_hal::system::Stack::new());
         let cpu = mk_static!(CpuControl<'static>, CpuControl::new(peripherals.CPU_CTRL));
         let guard = cpu
             .start_app_core(APP_CORE_STACK.take(), move || {
-                embassy_futures::block_on(usb_main(usb_fs, dp, dm))
+                embassy_futures::block_on(usb::run(usb_fs, dp, dm, g))
             })
             .expect("start core 1");
         // Dropping the guard would stop core 1.
@@ -155,8 +119,8 @@ async fn main(spawner: Spawner) -> ! {
     // ---- WiFi ----------------------------------------------------------------
     // Experiment: the PC never configured the device when the WiFi came up
     // during enumeration. Start the WiFi once configured (6 s at most).
-    let configured = !update_mode
-        && embassy_time::with_timeout(Duration::from_secs(6), USB_CONFIGURED.wait())
+    let configured = gadget.is_some()
+        && embassy_time::with_timeout(Duration::from_secs(6), usb::CONFIGURED.wait())
             .await
             .is_ok();
     info!("starting wifi (usb configured: {configured})");
@@ -178,132 +142,10 @@ async fn main(spawner: Spawner) -> ! {
     if let Some(cfg) = stack.config_v4() {
         info!("ip {}", cfg.address);
     }
+    if !update_mode {
+        spawner.spawn(hub::task(stack, gadget).unwrap());
+    }
     server(stack, ota::Ota::new(peripherals.FLASH, update_mode)).await
-}
-
-// ---- USB tasks ---------------------------------------------------------------
-
-/// Builds the USB device and runs it, on core 1.
-async fn usb_main(
-    usb_fs: esp_hal::peripherals::USB_FS<'static>,
-    dp: esp_hal::peripherals::GPIO20<'static>,
-    dm: esp_hal::peripherals::GPIO19<'static>,
-) {
-    // The ROM enumerated as the USB-Serial-JTAG. Drop its D+ pull-up long
-    // enough for the host to see a disconnect; without it the host never
-    // notices the switch to the OTG controller and the device never shows up.
-    disconnect_serial_jtag();
-    let start = esp_hal::time::Instant::now();
-    while start.elapsed() < esp_hal::time::Duration::from_millis(300) {}
-    let usb = Usb::new_fs(usb_fs, dp, dm);
-    let ep_out = mk_static!([u8; 1024], [0; 1024]);
-    let driver = UsbDriver::new(usb, ep_out, Default::default());
-
-    let mut config = embassy_usb::Config::new(0x303A, 0x4001);
-    config.manufacturer = Some("RawKVM");
-    config.product = Some("RawKVM ESP32 gadget");
-    config.serial_number = Some("0001");
-    config.max_power = 100;
-    config.max_packet_size_0 = 64;
-    config.supports_remote_wakeup = true;
-
-    let mut builder = Builder::new(
-        driver,
-        config,
-        mk_static!([u8; 256], [0; 256]),
-        mk_static!([u8; 64], [0; 64]),
-        &mut [],
-        mk_static!([u8; 64], [0; 64]),
-    );
-    let keyboard = HidReaderWriter::<_, 1, KB_LEN>::new(
-        &mut builder,
-        mk_static!(HidState<'static>, HidState::new()),
-        HidConfig {
-            report_descriptor: KEYBOARD_DESC,
-            request_handler: None,
-            poll_ms: 1,
-            max_packet_size: 8,
-            hid_subclass: HidSubclass::Boot,
-            hid_boot_protocol: HidBootProtocol::Keyboard,
-        },
-    );
-    let mouse = HidWriter::<_, MOUSE_LEN>::new(
-        &mut builder,
-        mk_static!(HidState<'static>, HidState::new()),
-        HidConfig {
-            report_descriptor: MOUSE_DESC,
-            request_handler: None,
-            poll_ms: 1,
-            max_packet_size: 8,
-            hid_subclass: HidSubclass::No,
-            hid_boot_protocol: HidBootProtocol::None,
-        },
-    );
-    builder.handler(mk_static!(UsbEvents, UsbEvents));
-    let usb = builder.build();
-    let mut usb = usb;
-    let (kb_reader, kb_writer) = keyboard.split();
-    embassy_futures::join::join4(
-        usb.run(),
-        kb_reader.run(false, &mut KeyboardLeds),
-        keyboard_in(kb_writer),
-        mouse_in(mouse),
-    )
-    .await;
-}
-
-/// Logs the USB device state changes.
-struct UsbEvents;
-
-impl embassy_usb::Handler for UsbEvents {
-    fn enabled(&mut self, enabled: bool) {
-        info!("usb enabled {enabled}");
-    }
-    fn reset(&mut self) {
-        info!("usb bus reset");
-    }
-    fn addressed(&mut self, addr: u8) {
-        info!("usb address {addr}");
-    }
-    fn configured(&mut self, configured: bool) {
-        info!("usb configured {configured}");
-        if configured {
-            USB_CONFIGURED.signal(());
-        }
-    }
-    fn suspended(&mut self, suspended: bool) {
-        info!("usb suspended {suspended}");
-    }
-}
-
-/// Keyboard LEDs (output report) from the PC.
-struct KeyboardLeds;
-
-impl RequestHandler for KeyboardLeds {
-    fn set_report(&mut self, _id: ReportId, data: &[u8]) -> OutResponse {
-        if let Some(&leds) = data.first() {
-            let _ = LEDS.try_send(leds);
-        }
-        OutResponse::Accepted
-    }
-}
-
-async fn keyboard_in(mut writer: HidWriter<'static, Usbd, KB_LEN>) -> ! {
-    loop {
-        let r = KB_REPORTS.receive().await;
-        if let Err(e) = writer.write(&r).await {
-            warn!("keyboard write: {e:?}");
-        }
-    }
-}
-
-async fn mouse_in(mut writer: HidWriter<'static, Usbd, MOUSE_LEN>) -> ! {
-    loop {
-        let r = MOUSE_REPORTS.receive().await;
-        if let Err(e) = writer.write(&r).await {
-            warn!("mouse write: {e:?}");
-        }
-    }
 }
 
 // ---- network tasks -----------------------------------------------------------
@@ -357,7 +199,7 @@ async fn net_task(mut runner: Runner<'static, Interface>) -> ! {
     runner.run().await
 }
 
-/// Test server: one client at a time.
+/// Service server (ping, log, firmware update): one client at a time.
 async fn server(stack: Stack<'static>, mut ota: ota::Ota) -> ! {
     let rx = mk_static!([u8; 1024], [0; 1024]);
     let tx = mk_static!([u8; 1024], [0; 1024]);
@@ -414,19 +256,15 @@ async fn session(
     let mut body = [0u8; 255];
     let mut log_next = 0u32;
     loop {
-        // A frame header, or keyboard LEDs from the PC, whichever comes first.
+        // A frame header or a new log line, whichever comes first.
         // Only the header read races: the body is read to the end.
         while let Some(line) = netlog::next_line(&mut log_next) {
             let n = line.len().min(255);
             send(sock, 5, &line.as_bytes()[..n]).await?;
         }
-        match select3(sock.read(&mut head[..1]), LEDS.receive(), netlog::NEW_LINE.wait()).await {
-            Either3::Second(leds) => {
-                send(sock, 4, &[leds]).await?;
-                continue;
-            }
-            Either3::Third(()) => continue,
-            Either3::First(n) => {
+        match select(sock.read(&mut head[..1]), netlog::NEW_LINE.wait()).await {
+            Either::Second(()) => continue,
+            Either::First(n) => {
                 if n? == 0 {
                     return Ok(());
                 }
@@ -441,23 +279,7 @@ async fn session(
         }
         let payload = &body[..len];
         match kind {
-            1 if len == KB_LEN => {
-                let mut r = [0u8; KB_LEN];
-                r.copy_from_slice(payload);
-                KB_REPORTS.send(r).await;
-            }
-            2 if len == MOUSE_LEN => {
-                let mut r = [0u8; MOUSE_LEN];
-                r.copy_from_slice(payload);
-                MOUSE_REPORTS.send(r).await;
-            }
             3 => send(sock, 3, payload).await?,
-            0xF0 => {
-                info!("restarting into the download mode");
-                let _ = send(sock, 5, b"download mode").await;
-                Timer::after(Duration::from_millis(100)).await;
-                download_mode();
-            }
             // Firmware update: begin (u32 LE size), data, end.
             0xF1 if len == 4 => {
                 let size = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
@@ -497,42 +319,4 @@ async fn session(
             _ => warn!("bad frame kind {kind} len {len}"),
         }
     }
-}
-
-/// Holds the USB-Serial-JTAG's D+ pull-up off (the host sees a disconnect).
-fn disconnect_serial_jtag() {
-    USB_DEVICE::regs().conf0().modify(|_, w| {
-        w.pad_pull_override().set_bit();
-        w.dp_pullup().clear_bit();
-        w.dm_pullup().clear_bit();
-        w.dp_pulldown().set_bit();
-        w.dm_pulldown().set_bit()
-    });
-}
-
-/// Restarts into the ROM download mode on the USB-Serial-JTAG, so espflash
-/// can flash again without the BOOT button: give the USB PHY back to the
-/// USB-Serial-JTAG and set the force-download flag, which survives the reset.
-fn download_mode() -> ! {
-    // Disconnect the OTG device first, so the host sees the USB-Serial-JTAG
-    // arrive as a new device.
-    USB_WRAP::regs().otg_conf().modify(|_, w| {
-        w.pad_pull_override().set_bit();
-        w.dp_pullup().clear_bit();
-        w.dm_pullup().clear_bit();
-        w.dp_pulldown().set_bit();
-        w.dm_pulldown().set_bit()
-    });
-    let start = esp_hal::time::Instant::now();
-    while start.elapsed() < esp_hal::time::Duration::from_millis(300) {}
-    USB_DEVICE::regs()
-        .conf0()
-        .modify(|_, w| w.pad_pull_override().clear_bit());
-    let rtc = LPWR::regs();
-    rtc.usb_conf().modify(|_, w| {
-        w.sw_hw_usb_phy_sel().clear_bit();
-        w.sw_usb_phy_sel().clear_bit()
-    });
-    rtc.option1().modify(|_, w| w.force_download_boot().set_bit());
-    esp_hal::system::software_reset()
 }

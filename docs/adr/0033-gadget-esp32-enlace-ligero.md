@@ -1,0 +1,73 @@
+# ADR 0033 — Gadget USB en una ESP32-S3 por el enlace ligero
+
+- Estado: propuesta (2026-11-12). Rama `gadget-esp32`. Fase 1 (USB, WiFi, OTA) probada en el Mac y en GAMER; el enlace con el hub, sin probar en hardware.
+
+## Contexto
+
+El gadget de Linux (ADR 0007) necesita una placa con Linux, y la Zero 2W ya hace de hub. Una ESP32-S3 (USB OTG de velocidad completa, WiFi de 2,4 GHz, unos 5 €) puede hacer de gadget para un PC: se conecta al hub por WiFi y presenta el receptor por USB.
+
+La placa no puede hablar QUIC: no hay una pila QUIC con TLS 1.3 razonable en `no_std`. Con 512 KB de RAM, el canal tiene que ser pequeño.
+
+## Decisión
+
+### Enlace ligero (`crates/light`, `no_std` + `alloc`)
+
+- **Transporte:** TCP al puerto **4434** del hub (`light_listen` en `hub.toml`, activo por defecto; quitar la clave lo desactiva). `TCP_NODELAY` en el hub.
+- **Apertura:**
+  - el nodo envía `RKL1` y un nonce de 16 bytes;
+  - el hub responde `RKL1` y su propio nonce.
+- **Claves:** HKDF-SHA256 sobre el **token de emparejamiento del hub** (el mismo de todos los agentes), con los dos nonces como sal. Sale una clave por sentido.
+- **Tramas:** `u16` LE de longitud, más ChaCha20-Poly1305 del mensaje en `postcard`. El nonce del AEAD es un contador por sentido.
+- **Garantías:**
+  - quien no tiene el token no produce una trama que el hub acepte;
+  - una sesión grabada no se puede reproducir, porque cada lado aporta un nonce nuevo;
+  - una trama no se puede devolver al otro lado, porque cada sentido tiene su clave.
+  No hay huella del hub fijada (TOFU): quien suplante al hub también necesita el token.
+- **Mensajes:**
+  - nodo → hub: `Hello { version, node_id, name, os, firmware, max_interfaces }`, `Output`, `Ping`, `Pong`;
+  - hub → nodo: `Welcome`, `Reject`, `Gadget`, `Report`, `Ping`, `Pong`.
+- **Versión propia** (`light::VERSION`, 1), independiente de `PROTO_VERSION`.
+
+### En el hub (`hub/src/light.rs`)
+
+- Cada placa es un nodo `Agent` normal: tiene índice, entra en el atajo y en la conmutación, y aparece en el widget. El módulo traduce entre la placa y el router; el router no cambia.
+- **El hub decide el gadget.**
+  - Aplica a la `DeviceList` las reglas del gadget de Linux (ADR 0031), ahora en `proto::gadget`, con el límite que anuncia la placa.
+  - Envía `Gadget` con el VID/PID y los textos del receptor. Por cada interfaz van el descriptor, la subclase y el protocolo boot, el informe más largo y los informes de «nada pulsado».
+  - Las interfaces que no caben van al router como `Unexposed`, igual que con el gadget de Linux.
+  - Con un PC Linux no se expone la interfaz HID++ (ADR 0007).
+- **Informes:**
+  - los datagramas pasan a `Report`;
+  - la copia redundante (ADR 0004) se descarta por `seq`, porque en TCP no sirve;
+  - si la cola de 256 se llena, se pierden informes, como hace quinn con los datagramas viejos.
+- **Salidas:** `Output` (LED) va a `Router::on_output`.
+- **Ping cada 1 s.** Si la placa pasa 5 s sin enviar nada, se la da por caída, como con QUIC.
+
+### En la placa (`firmware/rawkvm-esp-gadget`)
+
+- **USB:**
+  - el dispositivo se construye al arrancar a partir del último `Gadget` (`usb.rs`), en el núcleo 1;
+  - cada interfaz tiene solo un endpoint IN, y los LED llegan por SET_REPORT en el endpoint de control;
+  - caben **cuatro interfaces**, el mismo límite que el gadget de Linux.
+- **Un `Gadget` nuevo:**
+  - si dura 500 ms sin cambiar (el hub anuncia una lista por cada interfaz que abre), se guarda en la RAM del RTC y la placa se reinicia;
+  - al arrancar, antes de encender el núcleo 1, también se escribe en flash (último sector de `nvs`): escribir la flash con el núcleo 1 en marcha cuelga la placa;
+  - un `Gadget` vacío se ignora, y se conserva el USB actual.
+- **Sin ningún gadget guardado,** la placa arranca sin USB, espera el primero del hub y se reinicia con él.
+- **Si se pierde el hub,** la placa escribe los informes de «nada pulsado» y vuelve a conectar a 1, 2, 4 y 5 s.
+- **Ajustes en `firmware/wifi.env`,** que no está en git: `WIFI_SSID`, `WIFI_PASS`, `HUB_TOKEN`, `HUB_ADDR` (por defecto 192.168.1.39), `NODE_NAME` y `NODE_OS` (por defecto `windows`, que el hub usa para el perfil del teclado, ADR 0014).
+- **Identidad del nodo:** `RAWKVM-ESP` seguido de la MAC de la placa. Es estable y no se guarda en ningún sitio.
+- **El puerto 7790 queda para servicio:** ping, registro y actualización OTA.
+
+## Consecuencias
+
+- Un PC por cable sin instalar nada, con una placa de pocos euros y sin una segunda Raspberry.
+- **Latencia:** RTT de unos 5 ms de mediana por WiFi, más 1 ms de sondeo USB. Es parecida a la del gadget de la Zero.
+- **Un cambio de receptores en el hub** (añadir o quitar uno) hace que la placa se reinicie y que el PC vuelva a enumerarla. Con el gadget de Linux también se re-enumeraba.
+- **El token de emparejamiento queda grabado en el firmware** de la placa. Es lo mismo que guarda cualquier agente en su configuración.
+
+## Pendiente
+
+- **La OTA del puerto 7790 no está autenticada:** cualquiera en la LAN puede cargar un firmware. Hay que pasarla al enlace ligero, firmada con el token (fase 4).
+- **Descubrimiento por mDNS** en lugar de `HUB_ADDR`.
+- **El widget** no distingue la placa de otro agente. Mostrar su firmware y su señal WiFi es parte de la fase 4.

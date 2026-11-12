@@ -139,3 +139,7 @@ v8, ADR 0030. El hub puede leer varios receptores (`[[receiver]]` en `hub.toml`,
 ## Atajo de emergencia
 
 Interpretado por el hub sobre el informe de teclado, con el layout que da el descriptor (`KeyboardLayout`: boot de 8 bytes o los 7 bytes con report ID de los descriptores DJ). Dos pulsaciones limpias de Ctrl (izquierdo o derecho, ≤ 400 ms cada una, ≤ 500 ms entre ambas, sin otra tecla) arman el atajo durante 1,5 s; la siguiente tecla 1..4 (fila superior o teclado numérico) cambia a ese agente. Cualquier otra tecla o modificador lo desarma. El informe con el dígito **no se reenvía** a nadie; el resto de informes se reenvían sin alterar.
+
+## Enlace ligero (placas ESP32)
+
+Las placas que no hablan QUIC se conectan por TCP al puerto 4434 (`light_listen`), con tramas cifradas con ChaCha20-Poly1305 y claves derivadas del token. El hub las trata como agentes. Mensajes y garantías: `crates/light` y [ADR 0033](adr/0033-gadget-esp32-enlace-ligero.md).

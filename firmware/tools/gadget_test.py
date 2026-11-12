@@ -1,16 +1,12 @@
 #!/usr/bin/env python3
-"""Test client for the ESP32 gadget's phase-1 protocol (TCP 7790).
+"""Service client for the ESP32 gadget (TCP 7790). The keyboard and mouse
+come from the hub (light link); this is for diagnostics and updates.
 
 Frames are [kind u8][len u8][payload]. Usage:
   gadget_test.py HOST ping [N]       round-trip time over N pings
-  gadget_test.py HOST type TEXT      types TEXT (US layout, a-z 0-9 space . , - and Enter)
-  gadget_test.py HOST circle         moves the pointer in a circle
-  gadget_test.py HOST download       restarts the board into the ROM download mode
-  gadget_test.py HOST leds [SECONDS] prints keyboard LED changes from the PC
   gadget_test.py HOST log [SECONDS]  prints the board's log (kept lines, then live)
   gadget_test.py HOST ota IMAGE.bin  updates the firmware (espflash save-image output)
 """
-import math
 import socket
 import statistics
 import struct
@@ -45,28 +41,6 @@ def recv_exact(s, n):
 def recv(s):
     kind, n = recv_exact(s, 2)
     return kind, recv_exact(s, n)
-
-
-def keycode(ch):
-    """(modifier, usage) for a character, US layout."""
-    if "a" <= ch <= "z":
-        return 0, 0x04 + ord(ch) - ord("a")
-    if "A" <= ch <= "Z":
-        return 0x02, 0x04 + ord(ch) - ord("A")
-    if "1" <= ch <= "9":
-        return 0, 0x1E + ord(ch) - ord("1")
-    table = {"0": 0x27, "\n": 0x28, " ": 0x2C, "-": 0x2D, ".": 0x37, ",": 0x36}
-    if ch in table:
-        return 0, table[ch]
-    raise ValueError(f"no key for {ch!r}")
-
-
-def kb(s, mod=0, key=0):
-    send(s, 1, bytes([mod, 0, key, 0, 0, 0, 0, 0]))
-
-
-def mouse(s, dx, dy, buttons=0, wheel=0, pan=0):
-    send(s, 2, struct.pack("<BhhbB", buttons, dx, dy, wheel, pan & 0xFF))
 
 
 def wait_line(s, words, timeout=20):
@@ -110,23 +84,6 @@ def main():
         times.sort()
         print(f"rtt ms: min {times[0]:.1f}  median {statistics.median(times):.1f}  "
               f"p95 {times[int(n * 0.95) - 1]:.1f}  max {times[-1]:.1f}")
-    elif cmd == "type":
-        for ch in " ".join(rest):
-            mod, key = keycode(ch)
-            kb(s, mod, key)
-            time.sleep(0.01)
-            kb(s)
-            time.sleep(0.01)
-    elif cmd == "circle":
-        steps = 120
-        r = 150
-        for i in range(steps):
-            a1, a0 = 2 * math.pi * (i + 1) / steps, 2 * math.pi * i / steps
-            mouse(s, round(r * (math.cos(a1) - math.cos(a0))), round(r * (math.sin(a1) - math.sin(a0))))
-            time.sleep(0.008)
-    elif cmd == "download":
-        send(s, 0xF0)
-        time.sleep(0.5)
     elif cmd == "ota":
         image = open(rest[0], "rb").read()
         for attempt in range(2):
@@ -154,15 +111,6 @@ def main():
                 kind, payload = recv(s)
                 if kind == 5:
                     print(payload.decode(errors="replace"))
-        except socket.timeout:
-            pass
-    elif cmd == "leds":
-        s.settimeout(float(rest[0]) if rest else 30)
-        try:
-            while True:
-                kind, payload = recv(s)
-                if kind == 4:
-                    print(f"leds 0x{payload[0]:02x}")
         except socket.timeout:
             pass
     else:
