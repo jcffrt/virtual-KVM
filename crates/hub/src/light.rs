@@ -237,16 +237,21 @@ async fn handle(stream: TcpStream, router: Arc<Router>, token: [u8; TOKEN_LEN]) 
         }
     };
 
+    // Everything queued goes out in one write: with TCP_NODELAY each write
+    // is a WiFi packet, and every packet costs the board a buffer.
     let writer = tokio::spawn(async move {
+        let mut out = Vec::with_capacity(4096);
         while let Some(msg) = down_rx.recv().await {
-            let frame = match tx_c.seal(&msg) {
-                Ok(f) => f,
-                Err(e) => {
-                    warn!("light link: frame not sent: {e:?}");
-                    continue;
+            out.clear();
+            let mut next = Some(msg);
+            while let Some(msg) = next {
+                match tx_c.seal(&msg) {
+                    Ok(f) => out.extend_from_slice(&f),
+                    Err(e) => warn!("light link: frame not sent: {e:?}"),
                 }
-            };
-            if let Err(e) = wr.write_all(&frame).await {
+                next = if out.len() < 1400 { down_rx.try_recv().ok() } else { None };
+            }
+            if let Err(e) = wr.write_all(&out).await {
                 debug!("light link write failed: {e}");
                 break;
             }

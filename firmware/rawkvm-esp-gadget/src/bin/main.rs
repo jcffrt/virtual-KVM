@@ -71,6 +71,9 @@ macro_rules! mk_static {
 async fn main(spawner: Spawner) -> ! {
     let peripherals = esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::max()));
     esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 73744);
+    // The WiFi driver allocates its packet buffers here: the reclaimed RAM
+    // alone ran out under a stream of mouse reports.
+    esp_alloc::heap_allocator!(size: 96 * 1024);
     // The logger allocates its lines: after the heap.
     netlog::init();
     let panicked = diag::report_previous_run();
@@ -131,7 +134,7 @@ async fn main(spawner: Spawner) -> ! {
             .is_ok();
     info!("starting wifi (usb configured: {configured})");
     let controller =
-        WifiController::new(peripherals.WIFI, Default::default()).expect("Wi-Fi controller");
+        WifiController::new(peripherals.WIFI, wifi_config()).expect("Wi-Fi controller");
     let interface = Interface::station();
     let rng = Rng::new();
     let seed = (rng.random() as u64) << 32 | rng.random() as u64;
@@ -152,6 +155,14 @@ async fn main(spawner: Spawner) -> ! {
         spawner.spawn(hub::task(stack, gadget).unwrap());
     }
     server(stack, ota::Ota::new(peripherals.FLASH, update_mode)).await
+}
+
+/// Fewer packet buffers than the default 32 + 32 (about 1.6 KB each, from
+/// the heap): the board receives small frames and sends fewer.
+fn wifi_config() -> esp_radio::wifi::ControllerConfig {
+    esp_radio::wifi::ControllerConfig::default()
+        .with_dynamic_rx_buf_num(16)
+        .with_dynamic_tx_buf_num(12)
 }
 
 // ---- network tasks -----------------------------------------------------------
