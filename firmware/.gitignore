@@ -1,3 +1,4 @@
 # WiFi credentials, written by hand (see README).
 wifi.env
 backup/
+__pycache__/
