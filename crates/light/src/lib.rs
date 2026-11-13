@@ -28,8 +28,12 @@ use chacha20poly1305::aead::{Aead, KeyInit};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
-/// Version of this protocol. The hub rejects a node with another one.
-pub const VERSION: u16 = 1;
+/// Version of this protocol. 2 adds the firmware update.
+pub const VERSION: u16 = 2;
+/// Oldest node version the hub still serves (no firmware update for it).
+pub const MIN_VERSION: u16 = 1;
+/// Image bytes per `Down::UpdateData`.
+pub const UPDATE_CHUNK: usize = 1024;
 pub const DEFAULT_PORT: u16 = 4434;
 pub const MAGIC: [u8; 4] = *b"RKL1";
 pub const NONCE_LEN: usize = 16;
@@ -59,7 +63,8 @@ pub enum Up {
         name: String,
         os: Os,
         firmware: String,
-        /// HID interfaces the board can present.
+        /// HID interfaces the board can present. 0: the board is in its
+        /// update mode (no USB) and waits for `Down::Update` (version 2).
         max_interfaces: u8,
     },
     Ping(u32),
@@ -70,6 +75,9 @@ pub enum Up {
         dev_id: u8,
         report: Vec<u8>,
     },
+    /// Version 2. The end of a firmware update; on success the board
+    /// restarts into the new image right after.
+    UpdateResult(Result<(), String>),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,6 +104,17 @@ pub enum Down {
     },
     Ping(u32),
     Pong(u32),
+    /// Version 2. A firmware image for the board. Outside its update mode
+    /// the board restarts into it and connects again; in the update mode
+    /// it prepares the flash and the image follows as `UpdateData` (in
+    /// order, `UPDATE_CHUNK` bytes each) and `UpdateEnd`.
+    Update {
+        version: String,
+        size: u32,
+        sha256: [u8; 32],
+    },
+    UpdateData(Vec<u8>),
+    UpdateEnd,
 }
 
 /// The USB device the board presents: the receiver's identity and the
@@ -130,6 +149,22 @@ impl Gadget {
     pub fn from_bytes(b: &[u8]) -> Option<Self> {
         postcard::from_bytes(b).ok()
     }
+}
+
+/// Offset of the app description (`esp_app_desc_t`) in an ESP app image:
+/// the 24-byte image header and the first segment's 8-byte header.
+const APP_DESC: usize = 32;
+const APP_DESC_MAGIC: u32 = 0xABCD_5432;
+
+/// The version string of an ESP app image (`CARGO_PKG_VERSION` for ours).
+pub fn image_version(image: &[u8]) -> Option<&str> {
+    let d = image.get(APP_DESC..APP_DESC + 48)?;
+    if image[0] != 0xE9 || u32::from_le_bytes([d[0], d[1], d[2], d[3]]) != APP_DESC_MAGIC {
+        return None;
+    }
+    let v = &d[16..48];
+    let end = v.iter().position(|&b| b == 0).unwrap_or(v.len());
+    core::str::from_utf8(&v[..end]).ok()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -339,5 +374,17 @@ mod tests {
         };
         assert_eq!(Gadget::from_bytes(&g.to_bytes()), Some(g));
         assert_eq!(Gadget::from_bytes(&[0xFF]), None);
+    }
+
+    #[test]
+    fn image_version_reads_the_app_description() {
+        let mut img = vec![0u8; 256];
+        img[0] = 0xE9;
+        img[32..36].copy_from_slice(&0xABCD_5432u32.to_le_bytes());
+        img[48..53].copy_from_slice(b"0.3.0");
+        assert_eq!(image_version(&img), Some("0.3.0"));
+        img[0] = 0;
+        assert_eq!(image_version(&img), None);
+        assert_eq!(image_version(&[0xE9; 40]), None);
     }
 }

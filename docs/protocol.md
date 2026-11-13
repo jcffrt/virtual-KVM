@@ -142,4 +142,4 @@ Interpretado por el hub sobre el informe de teclado, con el layout que da el des
 
 ## Enlace ligero (placas ESP32)
 
-Las placas que no hablan QUIC se conectan por TCP al puerto 4434 (`light_listen`), con tramas cifradas con ChaCha20-Poly1305 y claves derivadas del token. El hub las trata como agentes. Mensajes y garantías: `crates/light` y [ADR 0033](adr/0033-gadget-esp32-enlace-ligero.md).
+Las placas que no hablan QUIC se conectan por TCP al puerto 4434 (`light_listen`), con tramas cifradas con ChaCha20-Poly1305 y claves derivadas del token. El hub las trata como agentes y les reparte el firmware de `{state_dir}/esp-gadget.bin`. Mensajes y garantías: `crates/light` y [ADR 0033](adr/0033-gadget-esp32-enlace-ligero.md).

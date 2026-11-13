@@ -20,6 +20,7 @@ name = "rawkvm-netwatch"
 path = "src/netwatch_main.rs"
 
 [dependencies]
+sha2.workspace = true
 proto.workspace = true
 light.workspace = true
 anyhow.workspace = true

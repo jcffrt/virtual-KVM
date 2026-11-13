@@ -10,8 +10,15 @@
 //!   reports twice (ADR 0004); over TCP the copy is useless, so duplicates
 //!   are dropped here by `seq`.
 //! - `Up::Output` (keyboard LEDs) goes to `Router::on_output`.
+//! - Firmware update (version 2): when `{state_dir}/esp-gadget.bin` holds
+//!   another version than the board runs, the hub offers it. The board
+//!   restarts into its update mode, connects again with no interfaces and
+//!   gets the image. The link is authenticated with the pairing token, so
+//!   only the hub can update the board.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -21,8 +28,9 @@ use light::{Down, Up};
 use proto::datagram::{Datagram, SeqTracker};
 use proto::gadget::{spec_for, GadgetSpec, Options};
 use proto::{Control, HidDevice, NodeKind, Os, TOKEN_LEN};
+use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::tcp::OwnedReadHalf;
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
@@ -38,24 +46,139 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Frames queued for one board. Full: reports are dropped, like quinn does
 /// with stale datagrams.
 const QUEUE: usize = 256;
+/// The board firmware the hub hands out, in the state directory.
+pub const FIRMWARE_FILE: &str = "esp-gadget.bin";
+/// Updates tried per board and image version before the hub gives up.
+const MAX_ATTEMPTS: u32 = 3;
+/// Time for the board to verify and activate the image.
+const UPDATE_RESULT_TIMEOUT: Duration = Duration::from_secs(30);
 
-pub async fn serve(addr: SocketAddr, token: [u8; TOKEN_LEN], router: Arc<Router>) -> Result<()> {
+/// The firmware image for the boards, read at each connection (replacing
+/// the file needs no restart).
+pub struct Firmware {
+    path: PathBuf,
+    /// (board, image version) -> updates tried.
+    attempts: Mutex<HashMap<(Uuid, String), u32>>,
+}
+
+struct Image {
+    version: String,
+    bytes: Vec<u8>,
+}
+
+impl Firmware {
+    pub fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            attempts: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// The image to give a board running `running`, if it needs one.
+    fn for_board(&self, node: Uuid, running: &str) -> Option<Image> {
+        let bytes = std::fs::read(&self.path).ok()?;
+        let Some(version) = light::image_version(&bytes).map(str::to_owned) else {
+            warn!(path = %self.path.display(), "light link: not an ESP app image");
+            return None;
+        };
+        if version == running {
+            return None;
+        }
+        let tried = *self
+            .attempts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&(node, version.clone()))
+            .unwrap_or(&0);
+        if tried >= MAX_ATTEMPTS {
+            debug!(node = %node, %version, "light link: update given up for this board");
+            return None;
+        }
+        Some(Image { version, bytes })
+    }
+
+    fn attempted(&self, node: Uuid, version: &str) {
+        *self
+            .attempts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry((node, version.to_owned()))
+            .or_default() += 1;
+    }
+}
+
+fn offer(img: &Image) -> Down {
+    Down::Update {
+        version: img.version.clone(),
+        size: img.bytes.len() as u32,
+        sha256: Sha256::digest(&img.bytes).into(),
+    }
+}
+
+pub async fn serve(
+    addr: SocketAddr,
+    token: [u8; TOKEN_LEN],
+    router: Arc<Router>,
+    firmware: PathBuf,
+) -> Result<()> {
     let listener = TcpListener::bind(addr)
         .await
         .with_context(|| format!("binding the light link on {addr}"))?;
-    info!("light link (ESP32 gadgets) listening on {addr}");
-    run(listener, token, router).await
+    info!(firmware = %firmware.display(), "light link (ESP32 gadgets) listening on {addr}");
+    run(listener, token, router, Arc::new(Firmware::new(firmware))).await
 }
 
-async fn run(listener: TcpListener, token: [u8; TOKEN_LEN], router: Arc<Router>) -> Result<()> {
+async fn run(
+    listener: TcpListener,
+    token: [u8; TOKEN_LEN],
+    router: Arc<Router>,
+    firmware: Arc<Firmware>,
+) -> Result<()> {
     loop {
         let (stream, remote) = listener.accept().await?;
-        let router = router.clone();
+        let (router, firmware) = (router.clone(), firmware.clone());
         tokio::spawn(async move {
-            if let Err(e) = handle(stream, router, token).await {
+            if let Err(e) = handle(stream, router, token, &firmware).await {
                 info!(%remote, "light link ended: {e:#}");
             }
         });
+    }
+}
+
+/// A board in its update mode: send the image, wait for the verdict.
+async fn push_update(
+    rd: &mut OwnedReadHalf,
+    wr: &mut OwnedWriteHalf,
+    tx_c: &mut light::Cipher,
+    rx_c: &mut light::Cipher,
+    img: &Image,
+) -> Result<()> {
+    let seal = |c: &mut light::Cipher, m: &Down| {
+        c.seal(m).map_err(|e| anyhow::anyhow!("sealing: {e:?}"))
+    };
+    wr.write_all(&seal(tx_c, &offer(img))?).await?;
+    // Several chunks per write: fewer packets for the board.
+    let mut out = Vec::with_capacity(8 * (light::UPDATE_CHUNK + 64));
+    for chunks in img.bytes.chunks(8 * light::UPDATE_CHUNK) {
+        out.clear();
+        for c in chunks.chunks(light::UPDATE_CHUNK) {
+            out.extend_from_slice(&seal(tx_c, &Down::UpdateData(c.to_vec()))?);
+        }
+        wr.write_all(&out).await?;
+    }
+    wr.write_all(&seal(tx_c, &Down::UpdateEnd)?).await?;
+    let deadline = Instant::now() + UPDATE_RESULT_TIMEOUT;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let body = timeout(left, read_frame(rd))
+            .await
+            .context("no result from the board")??;
+        match rx_c.open::<Up>(&body) {
+            Ok(Up::UpdateResult(Ok(()))) => return Ok(()),
+            Ok(Up::UpdateResult(Err(e))) => bail!("the board refused the image: {e}"),
+            Ok(_) => {}
+            Err(e) => bail!("bad frame: {e:?}"),
+        }
     }
 }
 
@@ -160,7 +283,12 @@ async fn read_frame(rd: &mut OwnedReadHalf) -> Result<Vec<u8>> {
     Ok(body)
 }
 
-async fn handle(stream: TcpStream, router: Arc<Router>, token: [u8; TOKEN_LEN]) -> Result<()> {
+async fn handle(
+    stream: TcpStream,
+    router: Arc<Router>,
+    token: [u8; TOKEN_LEN],
+    fw: &Firmware,
+) -> Result<()> {
     let remote = stream.peer_addr()?;
     stream.set_nodelay(true)?;
     let (mut rd, mut wr) = stream.into_split();
@@ -198,7 +326,7 @@ async fn handle(stream: TcpStream, router: Arc<Router>, token: [u8; TOKEN_LEN]) 
     else {
         bail!("first frame was not Hello");
     };
-    if version != light::VERSION {
+    if !(light::MIN_VERSION..=light::VERSION).contains(&version) {
         warn!(%remote, %name, "light link rejected: the board speaks version {version}, this hub {}", light::VERSION);
         let f = tx_c.seal(&Down::Reject(light::Reject::Version)).ok();
         if let Some(f) = f {
@@ -209,6 +337,27 @@ async fn handle(stream: TcpStream, router: Arc<Router>, token: [u8; TOKEN_LEN]) 
     let node_id = Uuid::from_bytes(node_id);
     let os = os_of(os);
     info!(%remote, node = %node_id, %name, %firmware, max_interfaces, "light link: board connected");
+    let update = if version >= 2 {
+        fw.for_board(node_id, &firmware)
+    } else {
+        None
+    };
+
+    if max_interfaces == 0 {
+        // The update mode: no USB, not a node for the router.
+        let Some(img) = update else {
+            info!(node = %node_id, "light link: board in its update mode, no update for it");
+            return Ok(());
+        };
+        fw.attempted(node_id, &img.version);
+        info!(node = %node_id, from = %firmware, to = %img.version, bytes = img.bytes.len(), "light link: updating the board");
+        let started = Instant::now();
+        push_update(&mut rd, &mut wr, &mut tx_c, &mut rx_c, &img)
+            .await
+            .with_context(|| format!("update of {name} to {}", img.version))?;
+        info!(node = %node_id, version = %img.version, secs = started.elapsed().as_secs_f32(), "light link: board updated, restarting");
+        return Ok(());
+    }
 
     let (down_tx, mut down_rx) = mpsc::channel::<Down>(QUEUE);
     let link = Arc::new(LightLink {
@@ -285,6 +434,10 @@ async fn handle(stream: TcpStream, router: Arc<Router>, token: [u8; TOKEN_LEN]) 
             ctl = ctl_rx.recv() => match ctl {
                 Some(Control::HelloAck { hub_name, assigned_index, .. }) => {
                     let _ = down_tx.try_send(Down::Welcome { hub_name, index: assigned_index });
+                    if let Some(img) = &update {
+                        info!(node = %node_id, from = %firmware, to = %img.version, "light link: offering a firmware update");
+                        let _ = down_tx.try_send(offer(img));
+                    }
                 }
                 Some(Control::DeviceList { devices }) => {
                     let (g, lo) = plan(&devices, max_interfaces, os);
@@ -325,6 +478,7 @@ async fn handle(stream: TcpStream, router: Arc<Router>, token: [u8; TOKEN_LEN]) 
                         router.on_output(node_id, dev_id, *seq, &report);
                     }
                     Some(Ok(Up::Hello { .. })) => debug!(node = %node_id, "second Hello ignored"),
+                    Some(Ok(Up::UpdateResult(r))) => debug!(node = %node_id, ?r, "update result outside an update"),
                     Some(Err(e)) => break Err(e),
                     None => break Ok(()),
                 }
@@ -357,6 +511,14 @@ mod tests {
 
     impl Board {
         async fn connect(addr: SocketAddr, token: [u8; 32]) -> Board {
+            Self::connect_as(addr, token, "test", 4).await
+        }
+        async fn connect_as(
+            addr: SocketAddr,
+            token: [u8; 32],
+            firmware: &str,
+            max_interfaces: u8,
+        ) -> Board {
             let mut s = TcpStream::connect(addr).await.unwrap();
             let nn = [3u8; 16];
             s.write_all(&light::prelude(&nn)).await.unwrap();
@@ -370,8 +532,8 @@ mod tests {
                 node_id: [0x42; 16],
                 name: "GAMER".into(),
                 os: light::Os::Windows,
-                firmware: "test".into(),
-                max_interfaces: 4,
+                firmware: firmware.into(),
+                max_interfaces,
             })
             .await;
             b
@@ -399,6 +561,10 @@ mod tests {
     }
 
     async fn hub(token: [u8; 32]) -> (SocketAddr, Arc<Router>) {
+        hub_with(token, PathBuf::from("/nonexistent/esp-gadget.bin")).await
+    }
+
+    async fn hub_with(token: [u8; 32], firmware: PathBuf) -> (SocketAddr, Arc<Router>) {
         let router = Arc::new(Router::new(
             Uuid::new_v4(),
             "hub".into(),
@@ -410,7 +576,12 @@ mod tests {
         router.add_device(dev(0, fx::BOOT_KEYBOARD));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        tokio::spawn(run(listener, token, router.clone()));
+        tokio::spawn(run(
+            listener,
+            token,
+            router.clone(),
+            Arc::new(Firmware::new(firmware)),
+        ));
         (addr, router)
     }
 
@@ -478,6 +649,79 @@ mod tests {
         let mut b = Board::connect(addr, [6u8; 32]).await;
         assert_eq!(b.recv().await, None);
         assert_eq!(router.active(), None);
+    }
+
+    fn image(version: &str, size: usize) -> Vec<u8> {
+        let mut img: Vec<u8> = (0..size).map(|i| i as u8).collect();
+        img[0] = 0xE9;
+        img[32..36].copy_from_slice(&0xABCD_5432u32.to_le_bytes());
+        img[48..80].fill(0);
+        img[48..48 + version.len()].copy_from_slice(version.as_bytes());
+        img
+    }
+
+    #[tokio::test]
+    async fn a_board_with_another_firmware_is_offered_and_sent_the_image() {
+        let token = [5u8; 32];
+        let dir = std::env::temp_dir().join(format!("rawkvm-light-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(FIRMWARE_FILE);
+        let img = image("0.3.0", 5000);
+        std::fs::write(&path, &img).unwrap();
+        let (addr, _router) = hub_with(token, path).await;
+
+        // The same version: no offer.
+        let mut b = Board::connect_as(addr, token, "0.3.0", 4).await;
+        assert!(matches!(b.recv().await, Some(Down::Welcome { .. })));
+        assert!(matches!(b.recv().await, Some(Down::Gadget(_))));
+        drop(b);
+
+        // Another version: offered after the welcome.
+        let mut b = Board::connect_as(addr, token, "0.2.2", 4).await;
+        assert!(matches!(b.recv().await, Some(Down::Welcome { .. })));
+        let Some(Down::Update { version, size, sha256 }) = b.recv().await else {
+            panic!("expected the offer")
+        };
+        assert_eq!((version.as_str(), size), ("0.3.0", 5000));
+        assert_eq!(sha256, <[u8; 32]>::from(Sha256::digest(&img)));
+        drop(b);
+
+        // In the update mode: the image, then the end.
+        let mut b = Board::connect_as(addr, token, "0.2.2", 0).await;
+        assert!(matches!(b.recv().await, Some(Down::Update { .. })));
+        let mut got = Vec::new();
+        loop {
+            match b.recv().await {
+                Some(Down::UpdateData(d)) => {
+                    assert!(d.len() <= light::UPDATE_CHUNK);
+                    got.extend_from_slice(&d);
+                }
+                Some(Down::UpdateEnd) => break,
+                m => panic!("unexpected {m:?}"),
+            }
+        }
+        assert_eq!(got, img);
+        b.send(&Up::UpdateResult(Ok(()))).await;
+        assert_eq!(b.recv().await, None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_update_is_given_up_after_three_attempts() {
+        let token = [5u8; 32];
+        let dir = std::env::temp_dir().join(format!("rawkvm-light-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(FIRMWARE_FILE);
+        std::fs::write(&path, image("0.3.0", 100)).unwrap();
+        let (addr, _router) = hub_with(token, path).await;
+        for _ in 0..MAX_ATTEMPTS {
+            let mut b = Board::connect_as(addr, token, "0.2.2", 0).await;
+            assert!(matches!(b.recv().await, Some(Down::Update { .. })));
+            b.send(&Up::UpdateResult(Err("bad sha256".into()))).await;
+        }
+        let mut b = Board::connect_as(addr, token, "0.2.2", 0).await;
+        assert_eq!(b.recv().await, None);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     fn dev(id: u8, desc: &[u8]) -> HidDevice {

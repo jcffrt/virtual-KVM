@@ -1286,6 +1286,7 @@ dependencies = [
  "rcgen",
  "rustls",
  "serde",
+ "sha2",
  "thiserror",
  "tokio",
  "toml 0.8.23",

@@ -151,10 +151,10 @@ async fn main(spawner: Spawner) -> ! {
     if let Some(cfg) = stack.config_v4() {
         info!("ip {}", cfg.address);
     }
-    if !update_mode {
-        spawner.spawn(hub::task(stack, gadget).unwrap());
-    }
-    server(stack, ota::Ota::new(peripherals.FLASH, update_mode)).await
+    // In the update mode the hub task fetches the new firmware instead.
+    let ota = update_mode.then(|| ota::Ota::new(peripherals.FLASH, true));
+    spawner.spawn(hub::task(stack, gadget, ota).unwrap());
+    server(stack).await
 }
 
 /// Fewer packet buffers than the default 32 + 32 (about 1.6 KB each, from
@@ -216,8 +216,9 @@ async fn net_task(mut runner: Runner<'static, Interface>) -> ! {
     runner.run().await
 }
 
-/// Service server (ping, log, firmware update): one client at a time.
-async fn server(stack: Stack<'static>, mut ota: ota::Ota) -> ! {
+/// Service server (ping, log): one client at a time. Firmware updates come
+/// from the hub over the light link, authenticated (see hub.rs).
+async fn server(stack: Stack<'static>) -> ! {
     let rx = mk_static!([u8; 1024], [0; 1024]);
     let tx = mk_static!([u8; 1024], [0; 1024]);
     loop {
@@ -231,7 +232,7 @@ async fn server(stack: Stack<'static>, mut ota: ota::Ota) -> ! {
         let mut hello = alloc::string::String::new();
         let _ = write!(hello, "rawkvm-esp-gadget {}", env!("CARGO_PKG_VERSION"));
         let _ = send(&mut sock, 5, hello.as_bytes()).await;
-        if let Err(e) = session(&mut sock, &mut ota).await {
+        if let Err(e) = session(&mut sock).await {
             warn!("session: {e:?}");
         }
         sock.close();
@@ -265,10 +266,7 @@ async fn read_exact(
     Ok(true)
 }
 
-async fn session(
-    sock: &mut TcpSocket<'_>,
-    ota: &mut ota::Ota,
-) -> Result<(), embassy_net::tcp::Error> {
+async fn session(sock: &mut TcpSocket<'_>) -> Result<(), embassy_net::tcp::Error> {
     let mut head = [0u8; 2];
     let mut body = [0u8; 255];
     let mut log_next = 0u32;
@@ -297,42 +295,6 @@ async fn session(
         let payload = &body[..len];
         match kind {
             3 => send(sock, 3, payload).await?,
-            // Firmware update: begin (u32 LE size), data, end.
-            0xF1 if len == 4 => {
-                let size = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
-                match ota.begin(size) {
-                    Ok(msg) => info!("{msg}"),
-                    Err(e) if e == ota::RESTART => {
-                        info!("{e}");
-                        while let Some(line) = netlog::next_line(&mut log_next) {
-                            let n = line.len().min(255);
-                            send(sock, 5, &line.as_bytes()[..n]).await?;
-                        }
-                        Timer::after(Duration::from_millis(200)).await;
-                        diag::request_update_mode();
-                        esp_hal::system::software_reset();
-                    }
-                    Err(e) => warn!("{e}"),
-                }
-            }
-            0xF2 => {
-                if let Err(e) = ota.data(payload) {
-                    warn!("{e}");
-                }
-            }
-            0xF3 => match ota.end() {
-                Ok(msg) => {
-                    info!("{msg}");
-                    // Let the log line reach the client before the restart.
-                    while let Some(line) = netlog::next_line(&mut log_next) {
-                        let n = line.len().min(255);
-                        send(sock, 5, &line.as_bytes()[..n]).await?;
-                    }
-                    Timer::after(Duration::from_millis(200)).await;
-                    esp_hal::system::software_reset();
-                }
-                Err(e) => warn!("{e}"),
-            },
             _ => warn!("bad frame kind {kind} len {len}"),
         }
     }

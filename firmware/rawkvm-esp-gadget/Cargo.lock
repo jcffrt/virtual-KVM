@@ -1743,7 +1743,7 @@ checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
 
 [[package]]
 name = "rawkvm-esp-gadget"
-version = "0.2.2"
+version = "0.3.1"
 dependencies = [
  "critical-section",
  "embassy-executor",
@@ -1763,6 +1763,7 @@ dependencies = [
  "esp-rtos",
  "log",
  "rawkvm-light",
+ "sha2 0.10.9",
  "smoltcp 0.14.0",
  "static_cell",
 ]

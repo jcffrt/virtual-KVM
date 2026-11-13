@@ -1,5 +1,10 @@
 //! Client of the hub's light link (`crates/light`): TCP to the hub, the
 //! pairing token as the key, and the board as an ordinary agent.
+//!
+//! Firmware updates come this way too, so only the hub (who holds the
+//! token) can load one. `Down::Update` restarts the board into its update
+//! mode (no USB, core 1 off: the flash can be written); there it connects
+//! with no interfaces, gets the image, checks its SHA-256 and boots it.
 
 use alloc::{string::String, vec, vec::Vec};
 
@@ -9,6 +14,7 @@ use embassy_time::{Duration, Instant, Timer};
 use embedded_io_async::Write as _;
 use light::{Down, Gadget, Up};
 use log::{info, warn};
+use sha2::{Digest, Sha256};
 
 use crate::usb::{self, OUTPUTS, REPORTS, Report};
 
@@ -52,9 +58,14 @@ fn os() -> light::Os {
 }
 
 /// Talks to the hub for ever. `current` is the gadget the USB was built
-/// with (`None`: no USB yet, waiting for the first one).
+/// with (`None`: no USB yet, waiting for the first one). With `ota`, the
+/// board is in its update mode and only fetches the new firmware.
 #[embassy_executor::task]
-pub async fn task(stack: Stack<'static>, current: Option<&'static Gadget>) -> ! {
+pub async fn task(
+    stack: Stack<'static>,
+    current: Option<&'static Gadget>,
+    mut ota: Option<crate::ota::Ota>,
+) -> ! {
     let rx = alloc::boxed::Box::leak(alloc::boxed::Box::new([0u8; 4096]));
     let tx = alloc::boxed::Box::leak(alloc::boxed::Box::new([0u8; 1024]));
     let hub: core::net::Ipv4Addr = HUB_ADDR.parse().expect("HUB_ADDR is an IPv4 address");
@@ -63,7 +74,11 @@ pub async fn task(stack: Stack<'static>, current: Option<&'static Gadget>) -> ! 
         let mut sock = TcpSocket::new(stack, &mut rx[..], &mut tx[..]);
         sock.set_timeout(Some(Duration::from_secs(10)));
         let started = Instant::now();
-        match session(&mut sock, hub, current).await {
+        let result = match ota.as_mut() {
+            Some(ota) => update(&mut sock, hub, ota).await,
+            None => session(&mut sock, hub, current).await,
+        };
+        match result {
             Ok(()) => info!("hub: session ended"),
             Err(e) => warn!("hub: {e}"),
         }
@@ -106,11 +121,12 @@ async fn send(sock: &mut TcpSocket<'_>, c: &mut light::Cipher, m: &Up) -> Result
     sock.flush().await.map_err(|_| "flush failed")
 }
 
-async fn session(
+/// Connects, opens the encrypted channel and says Hello.
+async fn open(
     sock: &mut TcpSocket<'_>,
     hub: core::net::Ipv4Addr,
-    current: Option<&'static Gadget>,
-) -> Result<(), Error> {
+    max_interfaces: u8,
+) -> Result<(light::Cipher, light::Cipher), Error> {
     sock.connect(IpEndpoint::new(IpAddress::Ipv4(hub), light::DEFAULT_PORT))
         .await
         .map_err(|_| "cannot connect")?;
@@ -123,7 +139,7 @@ async fn session(
     let mut p = [0u8; light::PRELUDE_LEN];
     read_exact(sock, &mut p).await?;
     let hub_nonce = light::parse_prelude(&p).ok_or("not a RawKVM hub")?;
-    let (mut tx, mut rx) = light::node_ciphers(&token(), &nonce, &hub_nonce);
+    let (mut tx, rx) = light::node_ciphers(&token(), &nonce, &hub_nonce);
     send(
         sock,
         &mut tx,
@@ -133,10 +149,85 @@ async fn session(
             name: String::from(NODE_NAME),
             os: os(),
             firmware: String::from(env!("CARGO_PKG_VERSION")),
-            max_interfaces: usb::MAX as u8,
+            max_interfaces,
         },
     )
     .await?;
+    Ok((tx, rx))
+}
+
+/// Reads one whole frame.
+async fn recv(sock: &mut TcpSocket<'_>, rx: &mut light::Cipher) -> Result<Down, Error> {
+    let mut len = [0u8; 2];
+    read_exact(sock, &mut len).await?;
+    let n = light::frame_len(len).map_err(|_| "bad frame length")?;
+    let mut body = vec![0u8; n];
+    read_exact(sock, &mut body).await?;
+    rx.open(&body).map_err(|_| "bad frame from the hub")
+}
+
+/// The update mode: fetch the firmware the hub offers and boot it.
+async fn update(
+    sock: &mut TcpSocket<'_>,
+    hub: core::net::Ipv4Addr,
+    ota: &mut crate::ota::Ota,
+) -> Result<(), Error> {
+    let (mut tx, mut rx) = open(sock, hub, 0).await?;
+    let (version, sha256) = loop {
+        match recv(sock, &mut rx).await {
+            Ok(Down::Update { version, size, sha256 }) => {
+                info!("update: {version}, {size} bytes");
+                if let Err(e) = ota.begin(size) {
+                    warn!("{e}");
+                    send(sock, &mut tx, &Up::UpdateResult(Err(e))).await?;
+                    return Err("update refused");
+                }
+                break (version, sha256);
+            }
+            Ok(Down::Ping(t)) => send(sock, &mut tx, &Up::Pong(t)).await?,
+            Ok(_) => {}
+            Err("the hub closed the connection") => return Err("no update from the hub"),
+            Err(e) => return Err(e),
+        }
+    };
+    let mut hash = Sha256::new();
+    let outcome: Result<(), String> = loop {
+        match recv(sock, &mut rx).await? {
+            Down::UpdateData(d) => {
+                hash.update(&d);
+                if let Err(e) = ota.data(&d) {
+                    break Err(e);
+                }
+            }
+            Down::UpdateEnd => {
+                if <[u8; 32]>::from(hash.finalize()) != sha256 {
+                    break Err(String::from("update: SHA-256 mismatch"));
+                }
+                break ota.end().map(|msg| info!("{msg}"));
+            }
+            Down::Ping(t) => send(sock, &mut tx, &Up::Pong(t)).await?,
+            _ => {}
+        }
+    };
+    let ok = outcome.is_ok();
+    if let Err(e) = &outcome {
+        warn!("{e}");
+    }
+    send(sock, &mut tx, &Up::UpdateResult(outcome)).await?;
+    if !ok {
+        return Err("update failed");
+    }
+    info!("update: {version} installed, restarting");
+    Timer::after(Duration::from_millis(300)).await;
+    esp_hal::system::software_reset()
+}
+
+async fn session(
+    sock: &mut TcpSocket<'_>,
+    hub: core::net::Ipv4Addr,
+    current: Option<&'static Gadget>,
+) -> Result<(), Error> {
+    let (mut tx, mut rx) = open(sock, hub, usb::MAX as u8).await?;
 
     let slots: Vec<u8> = current
         .map(|g| g.interfaces.iter().take(usb::MAX).map(|i| i.dev_id).collect())
@@ -201,6 +292,13 @@ async fn session(
                     }
                     Down::Ping(t) => send(sock, &mut tx, &Up::Pong(t)).await?,
                     Down::Pong(_) => {}
+                    Down::Update { version, .. } => {
+                        info!("hub: firmware {version} offered, restarting into the update mode");
+                        Timer::after(Duration::from_millis(200)).await;
+                        crate::diag::request_update_mode();
+                        esp_hal::system::software_reset();
+                    }
+                    Down::UpdateData(_) | Down::UpdateEnd => {}
                 }
             }
             Either3::Second((dev_id, r)) => {

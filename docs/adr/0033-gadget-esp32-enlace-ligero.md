@@ -1,6 +1,6 @@
 # ADR 0033 — Gadget USB en una ESP32-S3 por el enlace ligero
 
-- Estado: aceptada (2026-11-13). Rama `gadget-esp32`. Firmware 0.2.2 probado en GAMER a través del hub: conmutación, teclado, ratón, trackball y LED.
+- Estado: aceptada (2026-11-13). Rama `gadget-esp32`. Firmware 0.2.2 probado en GAMER a través del hub: conmutación, teclado, ratón, trackball y LED. Actualización por el enlace (0.3.0 → 0.3.1) probada en la Zero: 584 KB en 7 s.
 
 ## Contexto
 
@@ -25,8 +25,9 @@ La placa no puede hablar QUIC: no hay una pila QUIC con TLS 1.3 razonable en `no
   No hay huella del hub fijada (TOFU): quien suplante al hub también necesita el token.
 - **Mensajes:**
   - nodo → hub: `Hello { version, node_id, name, os, firmware, max_interfaces }`, `Output`, `Ping`, `Pong`;
-  - hub → nodo: `Welcome`, `Reject`, `Gadget`, `Report`, `Ping`, `Pong`.
-- **Versión propia** (`light::VERSION`, 1), independiente de `PROTO_VERSION`.
+  - hub → nodo: `Welcome`, `Reject`, `Gadget`, `Report`, `Ping`, `Pong`, `Update`, `UpdateData`, `UpdateEnd`;
+  - nodo → hub, versión 2: `UpdateResult`.
+- **Versión propia** (`light::VERSION`), independiente de `PROTO_VERSION`. La 2 añade la actualización de firmware; el hub sigue aceptando placas en la 1 (`MIN_VERSION`), sin actualizarlas.
 
 ### En el hub (`hub/src/light.rs`)
 
@@ -57,7 +58,17 @@ La placa no puede hablar QUIC: no hay una pila QUIC con TLS 1.3 razonable en `no
 - **Si se pierde el hub,** la placa escribe los informes de «nada pulsado» y vuelve a conectar a 1, 2, 4 y 5 s.
 - **Ajustes en `firmware/wifi.env`,** que no está en git: `WIFI_SSID`, `WIFI_PASS`, `HUB_TOKEN`, `HUB_ADDR` (por defecto 192.168.1.39), `NODE_NAME` y `NODE_OS` (por defecto `windows`, que el hub usa para el perfil del teclado, ADR 0014).
 - **Identidad del nodo:** `RAWKVM-ESP` seguido de la MAC de la placa. Es estable y no se guarda en ningún sitio.
-- **El puerto 7790 queda para servicio:** ping, registro y actualización OTA.
+- **El puerto 7790 queda para servicio:** ping y registro. No acepta firmware.
+
+### Actualización del firmware (versión 2)
+
+- **El hub reparte el firmware** que haya en `{state_dir}/esp-gadget.bin` (la imagen de `espflash save-image`). Lo lee en cada conexión: cambiar el fichero no requiere reiniciar el hub, pero la placa lo recibe en su siguiente conexión.
+- Si la versión de la imagen (la de `esp_app_desc`, que es la del `Cargo.toml`) **es distinta** de la que anuncia la placa, el hub le envía `Update` tras `Welcome`. Distinta, no mayor: poner una imagen anterior sirve para volver atrás.
+- La placa **se reinicia en modo actualización** (sin USB y sin núcleo 1, para poder escribir la flash) y conecta de nuevo con `max_interfaces = 0`. El hub no la registra como nodo: le manda `Update`, la imagen en `UpdateData` de 1 KB y `UpdateEnd`.
+- La placa escribe la partición OTA que no está en uso, **comprueba el SHA-256** anunciado, la activa y contesta `UpdateResult`. Después se reinicia con el firmware nuevo.
+- **Autenticación:** las tramas van cifradas y autenticadas con el token. Quien no lo tenga no puede cargar un firmware.
+- **Tres intentos** por placa y versión de imagen; después el hub deja de ofrecerla hasta que se reinicie. Un fallo no deja la placa sin arrancar: la partición activa no cambia hasta que la imagen está entera y verificada.
+- El modo actualización dura como mucho 2 minutos; después la placa vuelve a arrancar normal.
 - **Memoria:** el driver WiFi toma sus búferes del heap (por defecto hasta 32 de recepción y 32 de envío, de unos 1,6 KB). Con los 72 KB de RAM recuperada, el tráfico del ratón lo agotaba. La placa usa además 96 KB de RAM normal y limita los búferes a 16 y 12; el hub junta en una sola escritura las tramas que tiene en cola.
 - **Arranque seguro:** si la ejecución anterior acabó en panic, la placa arranca en modo actualización (WiFi sin USB, 2 minutos), para poder cargar un firmware corregido sin cable.
 - **embassy-usb** necesita `max-handler-count-8`: cada interfaz HID registra un handler, más el de eventos del dispositivo.
@@ -71,6 +82,6 @@ La placa no puede hablar QUIC: no hay una pila QUIC con TLS 1.3 razonable en `no
 
 ## Pendiente
 
-- **La OTA del puerto 7790 no está autenticada:** cualquiera en la LAN puede cargar un firmware. Hay que pasarla al enlace ligero, firmada con el token (fase 4).
 - **Descubrimiento por mDNS** en lugar de `HUB_ADDR`.
-- **El widget** no distingue la placa de otro agente. Mostrar su firmware y su señal WiFi es parte de la fase 4.
+- **El widget** no distingue la placa de otro agente. Mostrar su firmware y su señal WiFi requiere ampliar `NodeInfo`, es decir, un cambio de `PROTO_VERSION` para todos los agentes: queda para el próximo.
+- **El paquete del hub** no incluye el firmware: hoy la imagen se copia a mano a `/var/lib/rawkvm/esp-gadget.bin`.

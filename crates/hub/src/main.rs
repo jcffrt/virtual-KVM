@@ -272,8 +272,9 @@ async fn serve(args: Args) -> Result<()> {
 
     if let Some(addr) = cfg.light_listen {
         let (router, token) = (router.clone(), cfg.token_bytes()?);
+        let firmware = cfg.state_dir.join(light::FIRMWARE_FILE);
         tokio::spawn(async move {
-            if let Err(e) = light::serve(addr, token, router).await {
+            if let Err(e) = light::serve(addr, token, router, firmware).await {
                 warn!("light link disabled: {e:#}");
             }
         });
