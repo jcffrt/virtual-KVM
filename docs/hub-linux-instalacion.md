@@ -106,6 +106,14 @@ Hay que tener en cuenta:
 - **Identificadores de los dispositivos:** las interfaces del primer receptor son 0, 1, 2, como antes; las del segundo, 16, 17…
 - **Destino de la entrada de cada receptor.** Por defecto la entrada de cada receptor va al equipo activo («Red local (todos los equipos)»). En la pestaña **Hub** del widget, en «Receptores», se puede dar un receptor **en exclusiva** a un equipo. Entonces su teclado y su ratón van siempre a ese equipo, sin cambiar con los bordes ni con el atajo. Si ese equipo no está conectado, la entrada se descarta, y el widget lo avisa. Para devolverlo a la red desde su propio teclado: **modificador del atajo dos veces y `Esc`** (por defecto Ctrl, Ctrl, Esc). Funciona aunque el atajo esté desactivado. El hub guarda la exposición en `/var/lib/rawkvm/settings.toml` (`[[exposure]]`), por nombre de receptor; borrar ese fichero lo devuelve todo a la red.
 
+## Placas ESP32 (gadget por WiFi)
+
+Una ESP32-S3 enchufada a un PC puede hacer de gadget USB conectándose al hub por WiFi, sin instalar nada en el PC ([ADR 0034](adr/0034-gadget-esp32-enlace-ligero.md)).
+
+- El hub escucha a las placas en TCP **4434** (`light_listen` en `hub.toml`; quitar la clave lo desactiva). Las tramas van cifradas con el token de emparejamiento, que la placa lleva grabado.
+- **Firmware:** el hub ofrece a cada placa la imagen de `/var/lib/rawkvm/esp-gadget.bin` (la de `espflash save-image`) si su versión es otra. Basta con copiarla ahí; la placa la recibe en su siguiente conexión (o al reiniciar el hub) y se reinicia con ella. El paquete del hub no la incluye.
+- Ajustes de la placa en `firmware/wifi.env` (fuera de git): `WIFI_SSID`, `WIFI_PASS`, `HUB_TOKEN`, `HUB_ADDR`, `NODE_NAME`, `NODE_OS` y, para sustituir a un agente que el hub ya conoce, `NODE_ID`.
+
 ## Pasar de la instalación manual al paquete
 
 Antes de la versión 0.5.0 el hub se instalaba con `deploy/hub-linux/install.sh`, en `/usr/local/bin` y con la unidad en `/etc/systemd/system`. El paquete lo detecta y:

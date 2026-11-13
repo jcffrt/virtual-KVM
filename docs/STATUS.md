@@ -946,3 +946,14 @@ Según [fase8-plan.md](fase8-plan.md); decisiones en el [ADR 0032](adr/0032-rece
 
 - `v0.8.1` etiquetada y publicada; instalada solo en el Mac (protocolo 10 sin cambio). Log: «created again registry_id=…» tras la identidad nueva del teclado virtual y, al pulsar Bloq Mayús con el Mac activo, «output report sent to the hub dev=0 report=[2]» / «[0]». El LED del Logitech sigue al Mac. Cerrado.
 - Fase 7 completa en la rama `fase7` (f331946) salvo BlueZ, binario y `.deb`, en pausa hasta una placa con Bluetooth Broadcom o la variante Android (Mi A1, `BluetoothHidDevice`); `bridge-core` y el ADR 0033 permiten reimplementarla.
+
+## 0.9.0: GAMER por una placa ESP32-S3 (2026-11-13)
+
+Decisiones en el [ADR 0034](adr/0034-gadget-esp32-enlace-ligero.md) (renumerado: la 0033 es el puente Bluetooth de la rama `fase7`). Rama `gadget-esp32` fusionada en `main`. **Protocolo 10 sin cambio**: los agentes, helpers y widget no necesitan actualizarse.
+
+- **Enlace ligero** (`crates/light`, versión 2): TCP 4434, ChaCha20-Poly1305 con claves HKDF del token. La placa es un agente más; el hub decide sus interfaces con las reglas del gadget de Linux (ADR 0031, ahora en `proto::gadget`).
+- **Firmware de la placa** (`firmware/rawkvm-esp-gadget`, 0.3.2): hasta 4 interfaces HID con los descriptores reales del receptor, LED por SET_REPORT, arranque seguro tras un panic (modo actualización, WiFi sin USB). Actualizaciones solo desde el hub (`/var/lib/rawkvm/esp-gadget.bin`), verificadas con SHA-256: 584 KB en 7 s. El puerto 7790 queda para ping y registro (`firmware/tools/gadget_test.py`).
+- **Fallos encontrados en hardware y corregidos:** embassy-usb con 4 handlers por defecto (panic en cada arranque con 4 interfaces: `max-handler-count-8`); heap agotado por los búferes del WiFi con tráfico de ratón (96 KB más de heap, 16/12 búferes, el hub agrupa las tramas en una escritura).
+- **En producción (Zero .39):** hub de la rama con el enlace ligero; la placa (192.168.1.55) lleva `NODE_ID` = el del gadget de la Zero (`fa6b3eda…`), así que GAMER conserva el índice 1, la disposición y su helper de bordes. `rawkvm-agent-gadget` parado y desactivado (vuelta atrás: `systemctl enable --now rawkvm-agent-gadget` y quitar `NODE_ID` de la placa). Verificado: bordes, atajo, teclado, trackball, LED.
+- **Pendiente:** firmware y versión/señal de la placa en el widget (requiere ampliar `NodeInfo`, próximo cambio de protocolo); la imagen en el `.deb`; descubrimiento por mDNS en lugar de `HUB_ADDR`.
+

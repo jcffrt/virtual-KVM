@@ -1,4 +1,4 @@
-# ADR 0033 — Gadget USB en una ESP32-S3 por el enlace ligero
+# ADR 0034 — Gadget USB en una ESP32-S3 por el enlace ligero
 
 - Estado: aceptada (2026-11-13). Rama `gadget-esp32`. Firmware 0.2.2 probado en GAMER a través del hub: conmutación, teclado, ratón, trackball y LED. Actualización por el enlace (0.3.0 → 0.3.1) probada en la Zero: 584 KB en 7 s.
 
