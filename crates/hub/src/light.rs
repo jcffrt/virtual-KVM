@@ -153,9 +153,8 @@ async fn push_update(
     rx_c: &mut light::Cipher,
     img: &Image,
 ) -> Result<()> {
-    let seal = |c: &mut light::Cipher, m: &Down| {
-        c.seal(m).map_err(|e| anyhow::anyhow!("sealing: {e:?}"))
-    };
+    let seal =
+        |c: &mut light::Cipher, m: &Down| c.seal(m).map_err(|e| anyhow::anyhow!("sealing: {e:?}"));
     wr.write_all(&seal(tx_c, &offer(img))?).await?;
     // Several chunks per write: fewer packets for the board.
     let mut out = Vec::with_capacity(8 * (light::UPDATE_CHUNK + 64));
@@ -398,7 +397,11 @@ async fn handle(
                     Ok(f) => out.extend_from_slice(&f),
                     Err(e) => warn!("light link: frame not sent: {e:?}"),
                 }
-                next = if out.len() < 1400 { down_rx.try_recv().ok() } else { None };
+                next = if out.len() < 1400 {
+                    down_rx.try_recv().ok()
+                } else {
+                    None
+                };
             }
             if let Err(e) = wr.write_all(&out).await {
                 debug!("light link write failed: {e}");
@@ -679,7 +682,12 @@ mod tests {
         // Another version: offered after the welcome.
         let mut b = Board::connect_as(addr, token, "0.2.2", 4).await;
         assert!(matches!(b.recv().await, Some(Down::Welcome { .. })));
-        let Some(Down::Update { version, size, sha256 }) = b.recv().await else {
+        let Some(Down::Update {
+            version,
+            size,
+            sha256,
+        }) = b.recv().await
+        else {
             panic!("expected the offer")
         };
         assert_eq!((version.as_str(), size), ("0.3.0", 5000));
