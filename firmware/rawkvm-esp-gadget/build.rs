@@ -138,7 +138,10 @@ fn linker_be_nice() {
 /// - `HUB_TOKEN`: the hub's pairing token (`token` in its hub.toml);
 /// - `HUB_ADDR`: the hub's IPv4 address (default 192.168.1.39);
 /// - `NODE_NAME`: the name the hub and widget show (default "ESP32 gadget");
-/// - `NODE_OS`: the PC's OS, `windows` (default), `macos` or `linux`.
+/// - `NODE_OS`: the PC's OS, `windows` (default), `macos` or `linux`;
+/// - `NODE_ID`: a UUID to take over a node the hub already knows (its
+///   shortcut index, layout and edge helper), e.g. the agent this board
+///   replaces. Default: derived from the board's MAC.
 fn wifi_credentials() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../wifi.env");
     println!("cargo:rerun-if-changed={}", path.display());
@@ -166,7 +169,12 @@ fn wifi_credentials() {
     if !["windows", "macos", "linux"].contains(&os.as_str()) {
         panic!("NODE_OS must be windows, macos or linux");
     }
+    let node_id = get("NODE_ID").unwrap_or_default().replace('-', "").to_lowercase();
+    if !node_id.is_empty() && (node_id.len() != 32 || !node_id.chars().all(|c| c.is_ascii_hexdigit())) {
+        panic!("NODE_ID in {} must be a UUID", path.display());
+    }
     let vars = [
+        ("NODE_ID", node_id),
         ("WIFI_SSID", required("WIFI_SSID")),
         ("WIFI_PASS", required("WIFI_PASS")),
         ("HUB_TOKEN", token),

@@ -22,6 +22,8 @@ const HUB_ADDR: &str = env!("HUB_ADDR");
 const HUB_TOKEN: &str = env!("HUB_TOKEN");
 const NODE_NAME: &str = env!("NODE_NAME");
 const NODE_OS: &str = env!("NODE_OS");
+/// 32 hex digits, or empty: derived from the MAC.
+const NODE_ID: &str = env!("NODE_ID");
 
 /// The hub announces a new device list as each receiver interface opens,
 /// about 60 ms apart: act once the gadget has been stable this long.
@@ -32,17 +34,25 @@ const SILENCE: Duration = Duration::from_secs(5);
 
 type Error = &'static str;
 
-fn token() -> [u8; light::TOKEN_LEN] {
-    let mut t = [0u8; light::TOKEN_LEN];
-    let hex = HUB_TOKEN.as_bytes();
-    let digit = |c: u8| (c as char).to_digit(16).expect("HUB_TOKEN is hex (build.rs)") as u8;
-    for (i, b) in t.iter_mut().enumerate() {
+/// Hex digits to bytes; build.rs checked the length and the digits.
+fn unhex<const N: usize>(hex: &str) -> [u8; N] {
+    let hex = hex.as_bytes();
+    let digit = |c: u8| (c as char).to_digit(16).expect("hex (build.rs)") as u8;
+    let mut out = [0u8; N];
+    for (i, b) in out.iter_mut().enumerate() {
         *b = digit(hex[2 * i]) << 4 | digit(hex[2 * i + 1]);
     }
-    t
+    out
+}
+
+fn token() -> [u8; light::TOKEN_LEN] {
+    unhex(HUB_TOKEN)
 }
 
 fn node_id() -> [u8; 16] {
+    if !NODE_ID.is_empty() {
+        return unhex(NODE_ID);
+    }
     let mac = esp_hal::efuse::base_mac_address();
     let mut id = *b"RAWKVM-ESP\0\0\0\0\0\0";
     id[10..].copy_from_slice(mac.as_bytes());

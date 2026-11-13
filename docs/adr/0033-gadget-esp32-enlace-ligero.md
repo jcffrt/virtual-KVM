@@ -57,7 +57,7 @@ La placa no puede hablar QUIC: no hay una pila QUIC con TLS 1.3 razonable en `no
 - **Sin ningún gadget guardado,** la placa arranca sin USB, espera el primero del hub y se reinicia con él.
 - **Si se pierde el hub,** la placa escribe los informes de «nada pulsado» y vuelve a conectar a 1, 2, 4 y 5 s.
 - **Ajustes en `firmware/wifi.env`,** que no está en git: `WIFI_SSID`, `WIFI_PASS`, `HUB_TOKEN`, `HUB_ADDR` (por defecto 192.168.1.39), `NODE_NAME` y `NODE_OS` (por defecto `windows`, que el hub usa para el perfil del teclado, ADR 0014).
-- **Identidad del nodo:** `RAWKVM-ESP` seguido de la MAC de la placa. Es estable y no se guarda en ningún sitio.
+- **Identidad del nodo:** `RAWKVM-ESP` seguido de la MAC de la placa. Es estable y no se guarda en ningún sitio. Con `NODE_ID` en `wifi.env` la placa toma el id de un nodo que el hub ya conoce, con su índice de atajo, sus pantallas en la disposición y su helper de bordes: así sustituye al gadget de la Zero en GAMER sin tocar el PC. El agente que reemplaza tiene que estar parado.
 - **El puerto 7790 queda para servicio:** ping y registro. No acepta firmware.
 
 ### Actualización del firmware (versión 2)
