@@ -1,6 +1,6 @@
 # ADR 0033 — Gadget USB en una ESP32-S3 por el enlace ligero
 
-- Estado: propuesta (2026-11-12). Rama `gadget-esp32`. Fase 1 (USB, WiFi, OTA) probada en el Mac y en GAMER; el enlace con el hub, sin probar en hardware.
+- Estado: aceptada (2026-11-13). Rama `gadget-esp32`. Firmware 0.2.2 probado en GAMER a través del hub: conmutación, teclado, ratón, trackball y LED.
 
 ## Contexto
 
@@ -58,6 +58,9 @@ La placa no puede hablar QUIC: no hay una pila QUIC con TLS 1.3 razonable en `no
 - **Ajustes en `firmware/wifi.env`,** que no está en git: `WIFI_SSID`, `WIFI_PASS`, `HUB_TOKEN`, `HUB_ADDR` (por defecto 192.168.1.39), `NODE_NAME` y `NODE_OS` (por defecto `windows`, que el hub usa para el perfil del teclado, ADR 0014).
 - **Identidad del nodo:** `RAWKVM-ESP` seguido de la MAC de la placa. Es estable y no se guarda en ningún sitio.
 - **El puerto 7790 queda para servicio:** ping, registro y actualización OTA.
+- **Memoria:** el driver WiFi toma sus búferes del heap (por defecto hasta 32 de recepción y 32 de envío, de unos 1,6 KB). Con los 72 KB de RAM recuperada, el tráfico del ratón lo agotaba. La placa usa además 96 KB de RAM normal y limita los búferes a 16 y 12; el hub junta en una sola escritura las tramas que tiene en cola.
+- **Arranque seguro:** si la ejecución anterior acabó en panic, la placa arranca en modo actualización (WiFi sin USB, 2 minutos), para poder cargar un firmware corregido sin cable.
+- **embassy-usb** necesita `max-handler-count-8`: cada interfaz HID registra un handler, más el de eventos del dispositivo.
 
 ## Consecuencias
 
